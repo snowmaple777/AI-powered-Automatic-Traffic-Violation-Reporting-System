@@ -1,0 +1,15 @@
+# Install torch and mmcv first as described in README.md.
+numpy==1.26.4
+opencv-python==4.10.0.84
+mmengine==0.10.7
+matplotlib==3.10.9
+scipy==1.15.3
+packaging==24.2
+prettytable==3.18.0
+pillow==12.3.0
+ftfy==6.3.1
+regex==2026.9.3
+tqdm==4.65.2
+pyyaml==6.0.3
+addict==2.4.0
+yapf==0.43.0

@@ -1,0 +1,36 @@
+{
+  "start_url": "https://trv.ylhpb.gov.tw/Home/Report",
+  "verification_timing": "before_submit",
+  "selectors": {
+    "reporter_name": "#Name",
+    "reporter_id": "#IdentityNumber",
+    "reporter_phone": "#Telphone",
+    "reporter_email": "#Email",
+    "email_send_verify": "#c_send",
+    "email_verify_code": "#VerificationCode",
+    "reporter_address_town": "#TownId",
+    "reporter_address_detail": "#Address",
+    
+    "car_type": "#CarTypeId",
+    "violation_plate_part1": "#FistCarNumber",
+    "violation_plate_part2": "#LastCarNumber",
+    "violation_date": "input[name='SetDateOfOccurrence']",
+    "violation_time": "input[name='SetTimeOfOccurrence']",
+    "violation_category": "#ViolationId",
+    "violation_description": "#ViolationRemark",
+    "violation_district": "#TownIdOfOccurrence",
+    "violation_location_address": "#AddressOfOccurrence",
+    
+    "agreement_checkbox": "#che_agree",
+    
+    "file_uploads": [
+      "#File1",
+      "#File2",
+      "#File3"
+    ],
+    
+    "captcha_image": "#_Captcha_CaptchaImage",
+    "captcha_input": "#CaptchaCode",
+    "submit_btn": "#submit_from"
+  }
+}

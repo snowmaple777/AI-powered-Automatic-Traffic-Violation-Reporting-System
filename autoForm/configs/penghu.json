@@ -1,0 +1,29 @@
+{
+  "start_url": "https://www.phpb.gov.tw/home.jsp?id=404",
+  "selectors": {
+    "agreement_next_btn": "#sendbutton",
+    "name": "#name",
+    "pid": "#pid",
+    "tel": "#tel",
+    "address": "#address",
+    "email": "#email",
+    "carno1": "#carno1",
+    "carno2": "#carno2",
+    "imparea": "#imparea",
+    "impaddress": "#impaddress",
+    "impdate": "#impdate",
+    "hh": "#hh",
+    "mm": "#mm",
+    "subject": "#subject",
+    "dataread": "#dataread",
+    "file_inputs": [
+      "#file1",
+      "#file2",
+      "#file3",
+      "#file4",
+      "#file5"
+    ],
+    "chkint": "#chkint",
+    "submit_btn": "#sendbutton"
+  }
+}

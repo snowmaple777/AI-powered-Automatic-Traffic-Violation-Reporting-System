@@ -1,0 +1,32 @@
+{
+  "start_url": "https://tvrs.ntpd.gov.tw/Home/Report",
+  "selectors": {
+    "agreement_checkbox": "#ck",
+    "agreement_submit": "input[type='button'][value='下一步']",
+    "violation_type": "#eventsData_vio_type_code",
+    "plate_type": "#eventsData_CarNumberType_code",
+    "license_prefix": "#vio_car_num1",
+    "license_suffix": "#vio_car_num2",
+    "case_date": "#eventsData_vio_date",
+    "case_hour": "#eventsData_vio_hour",
+    "case_minute": "#eventsData_vio_min",
+    "is_city_area": "#eventsData_isArea",
+    "district": "#eventsData_dist_code",
+    "road": "#eventsData_road_code",
+    "addr_remark": "#eventsData_custom_addr",
+    "violation_law": "#eventsData_vio_content_code",
+    "violation_remark": "#eventsData_vio_content_memo",
+    "add_file_btn": "input[type='button'][value='新增檔案']",
+    "file_input": "input[name='upfile[]']",
+    "reporter_name": "#informerData_informer_name",
+    "foreigner_radio_taiwan": "input[name='informerData.isForeigner'][value='taiwan']",
+    "reporter_id": "#informerData_identity",
+    "reporter_address": "#informerData_contact_address",
+    "reporter_phone": "#informerData_Phone",
+    "reporter_email": "#informerData_Email",
+    "send_email_btn": "input[value='認證信箱']",
+    "login_captcha": "#VaildCode",
+    "login_captcha_img": "#verifyimage",
+    "submit_btn": "#submit_btn"
+  }
+}

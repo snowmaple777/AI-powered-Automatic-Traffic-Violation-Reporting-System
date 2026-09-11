@@ -1,0 +1,33 @@
+{
+  "start_url": "https://traffic.hchpb.gov.tw/ReportStep1.aspx",
+  "selectors": {
+    "step1_agree_checkbox": "#MainContent_chkAgree",
+    "step1_next_btn": "#MainContent_btnNext",
+    "reporter_id": "#MainContent_txtIdNumber",
+    "reporter_name": "#MainContent_txtName",
+    "reporter_city": "#MainContent_ddlCity",
+    "reporter_town": "#MainContent_ddlTown",
+    "reporter_address_number": "#MainContent_txtNumber",
+    "reporter_phone": "#MainContent_txtPhone",
+    "reporter_email": "#MainContent_txtEmail",
+    "step2_next_btn": "#MainContent_btnNext",
+    "violation_date": "#MainContent_txtViolationDate",
+    "violation_time": "#MainContent_txtViolationTime",
+    "violation_fact_select": "#MainContent_ddlLegislation",
+    "violation_city": "#MainContent_ddlViolationCity",
+    "violation_town": "#MainContent_ddlViolationTown",
+    "violation_road_select": "#ddlViolationRoad",
+    "violation_road_hidden": "#MainContent_hidSelectedViolationRoadId",
+    "violation_neighborhood": "#MainContent_txtViolationNeighborhood",
+    "violation_lane": "#MainContent_txtViolationLane",
+    "violation_alley": "#MainContent_txtViolationAlley",
+    "violation_number": "#MainContent_txtViolationNumber",
+    "violation_detail_location": "#MainContent_txtViolationOther",
+    "license_plate_prefix": "#MainContent_txtCarCode1",
+    "license_plate_suffix": "#MainContent_txtCarCode2",
+    "violation_description": "#MainContent_txtContent",
+    "file_input": "#fileInput",
+    "step3_next_btn": "#MainContent_btnNext",
+    "submit_btn": "#MainContent_btnNext"
+  }
+}

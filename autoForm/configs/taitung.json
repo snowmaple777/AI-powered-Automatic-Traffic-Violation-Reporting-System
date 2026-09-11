@@ -1,0 +1,29 @@
+{
+  "start_url": "https://www.ttcpb.gov.tw/chinese/home.jsp?serno=201108090002",
+  "form_url": "https://www.ttcpb.gov.tw/chinese/home.jsp?serno=201108090002&&contlink=ap/mail1_1.jsp",
+  "selectors": {
+    "consent_checkbox": "#OK",
+    "next_btn": "#nextStep a",
+    "reporter_name": "input#name",
+    "reporter_id": "input#pid",
+    "reporter_phone": "input#tel",
+    "reporter_email": "input#email",
+    "reporter_address": "input#address",
+    "violation_fact_select": "select#subject",
+    "violation_date": "input#odate_view",
+    "violation_hour": "select#hh",
+    "violation_minute": "select#mm",
+    "location_district": "select#area",
+    "location_detail": "input#oad",
+    "license_plate": "input#car",
+    "violation_remark": "input#subjectother",
+    "violation_content": "textarea#content1",
+    "file_inputs": [
+      "input#file1",
+      "input#file2",
+      "input#file3"
+    ],
+    "captcha_input": "input#chkint",
+    "submit_btn": "button#save"
+  }
+}

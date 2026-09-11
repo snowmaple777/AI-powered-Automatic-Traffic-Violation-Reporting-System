@@ -1,0 +1,28 @@
+{
+  "start_url": "https://traffic.chpb.gov.tw/ViolatePetition/C005400",
+  "selectors": {
+    "agreement_link": "a:has-text('我已詳細閱讀並同意遵守')",
+    "reporter_name": "#Name",
+    "reporter_id": "#IdentityCard",
+    "reporter_phone": "#OfficeTel",
+    "reporter_address": "#Address",
+    "reporter_email": "#Mail",
+    "subject": "#Subject",
+    "license_plate": "#LicensePlateNumber",
+    "location_town": "#ViolationArea",
+    "location_detail": "#ViolationLocation",
+    "violation_date": "#ViolationDate",
+    "violation_time": "#ViolationTime",
+    "violation_description": "#ViolationDescription",
+    "agreement_checkbox": "#DataCollectionConsultation",
+    "file_inputs": [
+      "#File1",
+      "#File2",
+      "#File3",
+      "#File4",
+      "#File5"
+    ],
+    "captcha_input": "#onlineform05",
+    "submit_btn": "#submitBtn"
+  }
+}

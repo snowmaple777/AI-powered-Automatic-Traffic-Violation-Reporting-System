@@ -1,0 +1,21 @@
+# 檢舉人個人私密資料 (包含真實身分證字號、姓名、住址、電話與信箱)
+reporter_profile.json
+
+# 除錯、測試截圖與暫存資料夾
+scratch/
+.tempmediaStorage/
+*.log
+
+# Python 快取與虛擬環境
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+
+# IDE 設定檔
+.vscode/
+.idea/
+*.swp

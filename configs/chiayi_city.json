@@ -1,0 +1,42 @@
+{
+  "start_url": "https://trn.ccpb.gov.tw/user-login/2/6",
+  "verification_timing": "pre_verification",
+  "selectors": {
+    "login_email": "input[type='email']",
+    "login_send_otp": "button:has-text('發送驗證碼')",
+    "login_otp_input": "#otpCode",
+    "login_verify_otp": "button:has-text('確認驗證碼')",
+    
+    "agreement_checkbox": "#agreement_2078",
+    "reporter_id": "input[placeholder*='身分證']",
+    "reporter_phone_land": "html > body > div > main > article > div > div > div > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(2) > form > div > div > div:nth-of-type(4) > div > input",
+    "reporter_phone_mobile": "html > body > div > main > article > div > div > div > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(2) > form > div > div > div:nth-of-type(5) > div > input",
+    
+    "reporter_address_city": "html > body > div > main > article > div > div > div > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(2) > form > div > div > div:nth-of-type(7) > div > div > div > select",
+    "reporter_address_district": "html > body > div > main > article > div > div > div > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(2) > form > div > div > div:nth-of-type(7) > div > div > div:nth-of-type(2) > select",
+    "reporter_address_detail": "html > body > div > main > article > div > div > div > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(2) > form > div > div > div:nth-of-type(7) > div > div > div:nth-of-type(4) > input",
+    
+    "violation_category": "html > body > div > main > article > div > div > div > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(2) > form > div > div > div:nth-of-type(8) > div > select",
+    
+    "violation_year": "html > body > div > main > article > div > div > div > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(2) > form > div > div > div:nth-of-type(9) > div > div > div > div > select",
+    "violation_month": "html > body > div > main > article > div > div > div > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(2) > form > div > div > div:nth-of-type(9) > div > div > div > div:nth-of-type(2) > select",
+    "violation_day": "html > body > div > main > article > div > div > div > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(2) > form > div > div > div:nth-of-type(9) > div > div > div > div:nth-of-type(3) > select",
+    
+    "violation_time": "input[type='time']",
+    "violation_plate": "input[placeholder='請輸入車牌號碼']",
+    
+    "car_type_scooter": "input[type='radio'][value='機車']",
+    "car_type_car": "input[type='radio'][value='汽車']",
+    
+    "violation_address_city": "html > body > div > main > article > div > div > div > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(2) > form > div > div > div:nth-of-type(14) > div > div > div > select",
+    "violation_address_district": "html > body > div > main > article > div > div > div > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(2) > form > div > div > div:nth-of-type(14) > div > div > div:nth-of-type(2) > select",
+    "violation_address_detail": "html > body > div > main > article > div > div > div > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(2) > form > div > div > div:nth-of-type(14) > div > div > div:nth-of-type(4) > input",
+    
+    "file_uploads_video": "input[type='file'][id^='video-input-']",
+    "file_uploads_image": "input[type='file'][id^='image-input-']",
+    
+    "violation_description": "html > body > div > main > article > div > div > div > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(2) > form > div > div > div:nth-of-type(17) > div > textarea",
+    
+    "submit_btn": "form button[type='submit'], form button:has-text('確認送出'), form button:has-text('送出')"
+  }
+}

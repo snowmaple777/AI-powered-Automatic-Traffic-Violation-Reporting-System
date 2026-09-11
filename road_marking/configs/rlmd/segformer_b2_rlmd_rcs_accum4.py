@@ -1,0 +1,347 @@
+_base_ = [
+    '../segformer/segformer_mit-b2_8xb2-160k_ade20k-512x512.py'
+]
+
+# Load the custom dataset class without editing mmseg/datasets/__init__.py.
+custom_imports = dict(
+    imports=['mmseg.datasets.rlmd_rcs_dataset'],
+    allow_failed_imports=False
+)
+
+# =========================================================
+# Dataset
+# =========================================================
+
+dataset_type = 'RLMDRCSDataset'
+data_root = 'data/rlmd'
+
+classes = (
+    'background',
+    'box junction',
+    'crosswalk',
+    'stop line',
+    'solid single white',
+    'solid single yellow',
+    'solid single red',
+    'solid double white',
+    'solid double yellow',
+    'dashed single white',
+    'dashed single yellow',
+    'left arrow',
+    'straight arrow',
+    'right arrow',
+    'left straight arrow',
+    'right straight arrow',
+    'channelizing line',
+    'motor prohibited',
+    'slow',
+    'motor priority lane',
+    'motor waiting zone',
+    'left turn box',
+    'motor icon',
+    'bike icon',
+    'parking lot',
+)
+
+palette = [
+    [0, 0, 0],
+    [255, 242, 0],
+    [34, 117, 76],
+    [61, 72, 204],
+    [237, 28, 36],
+    [163, 73, 164],
+    [185, 122, 87],
+    [136, 0, 21],
+    [112, 146, 190],
+    [181, 230, 29],
+    [153, 217, 234],
+    [158, 159, 76],
+    [121, 138, 134],
+    [41, 64, 96],
+    [7, 102, 146],
+    [247, 153, 255],
+    [255, 204, 153],
+    [155, 255, 153],
+    [255, 153, 173],
+    [230, 224, 147],
+    [35, 27, 87],
+    [193, 158, 155],
+    [109, 29, 78],
+    [3, 164, 204],
+    [175, 157, 185],
+]
+
+metainfo = dict(
+    classes=classes,
+    palette=palette
+)
+
+crop_size = (512, 512)
+
+# =========================================================
+# Pipeline
+# =========================================================
+
+train_pipeline = [
+    dict(type='LoadImageFromFile'),
+    dict(type='LoadAnnotations'),
+
+    dict(
+        type='RandomResize',
+        scale=(1920, 1080),
+        ratio_range=(0.5, 2.0),
+        keep_ratio=True
+    ),
+
+    dict(
+        type='RandomCrop',
+        crop_size=crop_size,
+        cat_max_ratio=0.75
+    ),
+
+    dict(
+        type='RandomFlip',
+        prob=0.5
+    ),
+
+    dict(type='PackSegInputs')
+]
+
+test_pipeline = [
+    dict(type='LoadImageFromFile'),
+
+    dict(
+        type='Resize',
+        scale=(1920, 1080),
+        keep_ratio=True
+    ),
+
+    dict(type='LoadAnnotations'),
+    dict(type='PackSegInputs')
+]
+
+# =========================================================
+# Dataloader
+# =========================================================
+
+train_dataloader = dict(
+    batch_size=1,
+    num_workers=2,
+    persistent_workers=True,
+
+    sampler=dict(
+        type='InfiniteSampler',
+        shuffle=True
+    ),
+
+    dataset=dict(
+        type=dataset_type,
+        data_root=data_root,
+
+        data_prefix=dict(
+            img_path='images/train',
+            seg_map_path='annotations/train'
+        ),
+
+        img_suffix='.jpg',
+        seg_map_suffix='.png',
+
+        metainfo=metainfo,
+        pipeline=train_pipeline,
+
+        # =================================================
+        # B: Rare Class Sampling
+        # =================================================
+        rcs_temperature=0.5,
+
+        # A class only needs to exist in the source mask to make the image
+        # eligible. This avoids excluding very sparse stop lines.
+        rcs_min_pixels=1,
+
+        # After augmentation/crop, try to retain at least this many pixels
+        # of the selected rare class.
+        rcs_min_crop_pixels=32,
+
+        # Background and ignore label are never chosen as RCS target classes.
+        rcs_ignore_ids=(0, 255),
+
+        rcs_max_retries=10
+    )
+)
+
+# Validation does NOT use RCS.
+val_dataloader = dict(
+    batch_size=1,
+    num_workers=2,
+    persistent_workers=True,
+
+    sampler=dict(
+        type='DefaultSampler',
+        shuffle=False
+    ),
+
+    dataset=dict(
+        type='BaseSegDataset',
+        data_root=data_root,
+
+        data_prefix=dict(
+            img_path='images/val',
+            seg_map_path='annotations/val'
+        ),
+
+        img_suffix='.jpg',
+        seg_map_suffix='.png',
+
+        metainfo=metainfo,
+        pipeline=test_pipeline
+    )
+)
+
+test_dataloader = val_dataloader
+
+# =========================================================
+# Class weights
+# =========================================================
+
+class_weight = [
+    1.0,   # 0 background
+    5.0,   # 1 box junction
+    5.0,   # 2 crosswalk
+    10.0,  # 3 stop line
+    5.0,   # 4 solid single white
+    5.0,   # 5 solid single yellow
+    10.0,  # 6 solid single red
+    10.0,  # 7 solid double white
+    10.0,  # 8 solid double yellow
+    5.0,   # 9 dashed single white
+    20.0,  # 10 dashed single yellow
+    10.0,  # 11 left arrow
+    10.0,  # 12 straight arrow
+    20.0,  # 13 right arrow
+    10.0,  # 14 left straight arrow
+    10.0,  # 15 right straight arrow
+    10.0,  # 16 channelizing line
+    10.0,  # 17 motor prohibited
+    20.0,  # 18 slow
+    10.0,  # 19 motor priority lane
+    5.0,   # 20 motor waiting zone
+    10.0,  # 21 left turn box
+    20.0,  # 22 motor icon
+    20.0,  # 23 bike icon
+    10.0,  # 24 parking lot
+]
+
+# =========================================================
+# Model
+# =========================================================
+
+model = dict(
+    decode_head=dict(
+        num_classes=25,
+
+        loss_decode=[
+            dict(
+                type='CrossEntropyLoss',
+                use_sigmoid=False,
+                loss_weight=1.0,
+                class_weight=class_weight
+            ),
+
+            dict(
+                type='DiceLoss',
+                loss_weight=1.0,
+                ignore_index=255
+            )
+        ]
+    )
+)
+
+# =========================================================
+# A: Gradient accumulation + AMP
+# =========================================================
+
+# Physical batch size = 1
+# accumulative_counts = 4
+# Effective batch ~= 4
+#
+# AMP is enabled here, so DO NOT add --amp to tools/train.py.
+
+optim_wrapper = dict(
+    _delete_=True,
+    type='AmpOptimWrapper',
+    loss_scale='dynamic',
+    accumulative_counts=4,
+
+    optimizer=dict(
+        type='AdamW',
+        lr=6e-5,
+        betas=(0.9, 0.999),
+        weight_decay=0.01
+    ),
+
+    paramwise_cfg=dict(
+        custom_keys={
+            'pos_block': dict(decay_mult=0.0),
+            'norm': dict(decay_mult=0.0),
+            'head': dict(lr_mult=10.0)
+        }
+    )
+)
+
+# =========================================================
+# Training schedule
+# =========================================================
+
+# Baseline:
+#   60,000 iterations, accumulation=1
+#   ~= 60,000 optimizer updates
+#
+# AB:
+#   240,000 micro-iterations, accumulation=4
+#   ~= 60,000 optimizer updates
+
+max_iters = 240000
+
+param_scheduler = [
+    dict(
+        type='LinearLR',
+        start_factor=1e-6,
+        by_epoch=False,
+        begin=0,
+        end=1500
+    ),
+
+    dict(
+        type='PolyLR',
+        eta_min=0.0,
+        power=1.0,
+        begin=1500,
+        end=max_iters,
+        by_epoch=False
+    )
+]
+
+train_cfg = dict(
+    type='IterBasedTrainLoop',
+    max_iters=max_iters,
+    val_interval=8000
+)
+
+default_hooks = dict(
+    checkpoint=dict(
+        type='CheckpointHook',
+        by_epoch=False,
+        interval=8000,
+        save_best='mIoU',
+        max_keep_ckpts=5
+    )
+)
+
+# =========================================================
+# Output
+# =========================================================
+
+work_dir = (
+    'work_dirs/'
+    'segformer_b2_rlmd_rcs_accum4'
+)

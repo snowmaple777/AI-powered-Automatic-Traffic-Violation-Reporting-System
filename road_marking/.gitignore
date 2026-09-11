@@ -1,0 +1,17 @@
+﻿# Local environments and generated files
+.venv/
+.venv_old/
+mmseg_env/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+mmseg/.mim/
+install_logs/
+environment_ready.json
+handoff_backup_*/
+inputs/*
+!inputs/.gitkeep
+outputs/*
+!outputs/.gitkeep

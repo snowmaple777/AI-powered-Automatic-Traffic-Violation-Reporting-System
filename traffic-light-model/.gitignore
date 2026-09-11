@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+archive/
+traffic_light_dataset/
+label_check/
+runs/
+outputs/
+*.pt
+!models/traffic_light_best.pt

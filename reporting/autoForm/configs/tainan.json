@@ -1,0 +1,39 @@
+{
+  "start_url": "https://tr.tnpd.gov.tw/TrafficMailbox/Index/92929b01-cf5e-99d6-2539-bee668350a6d",
+  "verification_timing": "before_submit",
+  "selectors": {
+    "agreement_checkbox": "#checkRead",
+    "agreement_submit": "#btnSend",
+    
+    "reporter_name": "#Name",
+    "reporter_phone": "#TEL",
+    "reporter_id": "#Pid",
+    "reporter_address": "#Address",
+    "reporter_email": "#Email",
+    "email_send_verify": "#sendmail",
+    
+    "violation_subject": "#Subject",
+    "violation_district": "#violation_place_area",
+    "violation_road_search": "#violation_place_road_search",
+    "violation_location_address": "#violation_place",
+    "violation_date": "#violation_date",
+    "violation_time_hours": "#violation_time1",
+    "violation_time_minutes": "#violation_time2",
+    "violation_plate_part1": "#violation_carno1",
+    "violation_plate_part2": "#violation_carno2",
+    "violation_category": "#itemno",
+    
+    "file_uploads": [
+      "#Upfile1",
+      "#Upfile2",
+      "#Upfile3",
+      "#Upfile4",
+      "#Upfile5",
+      "#Upfile6"
+    ],
+    
+    "captcha_image": "#imgVerify",
+    "captcha_input": "#checkCode",
+    "submit_btn": "button.btn-info"
+  }
+}

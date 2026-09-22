@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "target_class": "stop line",
+  "roi_top": 0.4,
+  "min_observations": 3,
+  "smoothing_alpha": 0.65,
+  "max_occluded_seconds": 0.5,
+  "max_missing_seconds": 0.1,
+  "confidence_half_life": 0.35,
+  "min_rule_support": 0.65,
+  "max_uncertainty_ratio": 0.01
+}

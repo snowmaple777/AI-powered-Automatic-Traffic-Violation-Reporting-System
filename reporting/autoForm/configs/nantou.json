@@ -1,0 +1,25 @@
+{
+  "start_url": "https://jiaowei.ncpd.gov.tw/sc11/rwd/rincase1.aspx",
+  "selectors": {
+    "step1_btn": "#Button1",
+    "step2_btn": "#Button1",
+    "reporter_name": "#mname",
+    "reporter_id": "#mpid",
+    "reporter_phone": "#mtel",
+    "reporter_address": "#maddr",
+    "reporter_email": "#memail",
+    "car_class": "#mcarclass",
+    "license_plate": "#mcarno",
+    "location_district": "#Loc1",
+    "location_street": "#Loc2",
+    "location_detail": "#mcaraddr",
+    "violation_date": "#txtDate",
+    "violation_hour": "#mcarhour",
+    "violation_minute": "#mcarmitu",
+    "violation_fact_select": "#rlid",
+    "violation_fact_desc": "#mcarblack",
+    "file_input": "#FileUpload1",
+    "captcha_input": "#mcode",
+    "submit_btn": "#Button1"
+  }
+}

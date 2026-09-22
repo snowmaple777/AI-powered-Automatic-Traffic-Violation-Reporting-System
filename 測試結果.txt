@@ -1,0 +1,22 @@
+測試環境
+- Python 3.10.11
+- PyTorch 2.11.0 + CUDA 12.8
+- NVIDIA GeForce RTX 5060 Laptop GPU
+- 專用環境：.venv
+
+測試結果
+- input 內 13 支影片皆可正常開啟。
+- 車輛模型：13 支影片皆完成中間影格推論。
+- 燈號模型：13 支影片皆完成三個抽樣影格推論。
+- 標線模型：13 支影片皆完成中間影格推論。
+- BoT-SORT：ms01 前 30 幀測試成功，物件編號可持續追蹤。
+- 三模型整合：ms01 前 5 幀成功輸出 JSONL、CSV、MP4 與違規事件檔。
+
+測試輸出
+- outputs\integration_test\ms01_annotated.mp4
+- outputs\integration_test\ms01_detections.jsonl
+- outputs\integration_test\ms01_detections.csv
+- outputs\integration_test\ms01_violations.jsonl
+
+注意
+- 違規事件檔為空代表測試片段內沒有符合規則的候選事件，並非執行失敗。

@@ -1,0 +1,31 @@
+{
+  "start_url": "https://tra2.hccp.gov.tw/new/",
+  "selectors": {
+    "agree_checkbox": "#agree",
+    "agree_submit": "input[type='submit']",
+    "email": "#case_email",
+    "email_verify_btn": "a:has-text('驗證')",
+    "name": "#case_name",
+    "id_number": "#case_id_number",
+    "contact_address": "#case_contact_address",
+    "phone": "#case_phone",
+    "violated_date": "#case_violated_at_date",
+    "violated_hour": "#case_violated_at_hour",
+    "violated_min": "#case_violated_at_min",
+    "car_type": "#case_car_type_code",
+    "first_car_number": "#case_first_car_number",
+    "last_car_number": "#case_last_car_number",
+    "area_district": "#case_area_district",
+    "area_code": "#case_area_code",
+    "addr1": "#case_addr1",
+    "addr2": "#case_addr2",
+    "addr3": "#case_addr3",
+    "addr4": "#case_addr4",
+    "addr5": "#case_addr5",
+    "addr_detail": "#case_addr_detail",
+    "illegality_code": "#case_illegality_code",
+    "illegality_details": "#case_illegality_details",
+    "read_statement": "#case_read_statement",
+    "preview_btn": "input[type='submit'][value='預覽']"
+  }
+}

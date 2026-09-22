@@ -1,5 +1,9 @@
 # 交通影像辨識：可替換模型與 perception-v2 整合
 
+合作夥伴可直接下載[包含全部 7 個模型權重的測試包](https://github.com/snowmaple777/AI-powered-Automatic-Traffic-Violation-Reporting-System/releases/tag/traffic-ai-partner-20260922)。
+請選 Release 附件 `traffic_ai-partner-20260922.zip`；解壓後依 [合作夥伴啟動說明](PARTNER_README.md) 安裝環境並啟動。
+這份完整包不需另外下載權重，GitHub 的 Source code ZIP 則仍只有程式碼。
+
 2026-09-22 整合版支援 `--rule all`（`--rules all` 同義）自動啟用所有已註冊規則。
 已加入[騎士與兩輪車組合追蹤](docs/rider_tracking.md)、影片組合標註及
 [疑似／確認違規事件](docs/violation_events.md)。越線以車輛底邊及前後軌跡判斷，

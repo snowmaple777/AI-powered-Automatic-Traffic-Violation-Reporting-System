@@ -2,6 +2,10 @@
 
 ## 整合版交通影像辨識（2026-09-22）
 
+**合作夥伴快速測試：** [下載含全部模型權重的完整測試包](https://github.com/snowmaple777/AI-powered-Automatic-Traffic-Violation-Reporting-System/releases/tag/traffic-ai-partner-20260922)，
+選擇附件 `traffic_ai-partner-20260922.zip`，依 [合作夥伴說明](traffic_ai/PARTNER_README.md) 啟動。
+完整包包含 7 個模型權重與校驗清單，不需 Git LFS；仍需 Python 環境及自己的影片。
+
 新增 [traffic_ai](traffic_ai/README.md)，整合車輛、號誌、道路標線與可替換的模型接口，
 提供騎士／兩輪車組合追蹤及影片標註、停止線補償、疑似／規則確認的違規 JSONL。
 `--rule all` 自動啟用所有已註冊規則。原有各模組仍保留。

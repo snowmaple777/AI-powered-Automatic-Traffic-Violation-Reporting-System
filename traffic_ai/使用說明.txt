@@ -1,0 +1,30 @@
+三模型交通影像辨識－使用說明
+
+使用條件
+- Windows、Python 3.10
+- 建議使用 NVIDIA GPU
+- 三個模型檔須放在 models 對應資料夾
+
+首次安裝
+1. 雙擊「安裝環境.cmd」。
+2. 等待顯示 Environment ready。
+
+基本使用
+- 只輸出辨識資料：
+  啟動辨識.cmd "input\影片.mp4"
+
+- 同時輸出標記影片：
+  啟動辨識.cmd "input\影片.mp4" --save-video
+
+- 啟用紅燈越線判斷：
+  啟動辨識.cmd "input\影片.mp4" --save-video --rules red_light_stop_line_crossing
+
+輸出位置
+- outputs/*_detections.jsonl：逐幀完整辨識資料
+- outputs/*_detections.csv：表格資料
+- outputs/*_annotated.mp4：標記影片（需加 --save-video）
+- outputs/*_violations.jsonl：疑似違規事件（需加 --rules）
+
+注意
+- 第一次啟動較慢，屬正常現象。
+- 違規結果是候選事件，仍需人工確認。

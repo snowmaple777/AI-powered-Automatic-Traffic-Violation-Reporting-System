@@ -1,0 +1,26 @@
+[
+  {
+    "source": "perception-v2\\AI-powered-Automatic-Traffic-Violation-Reporting-System-feature-perception-v2\\perception\\checkpoints\\yolo26s.onnx",
+    "target": "models\\vehicle\\yolo26s.onnx",
+    "sha256": "f2b02a290c0a654b70d91128a35291d8466f66dc2f095ca6a7085a4fdc2db055",
+    "bytes": 38832423
+  },
+  {
+    "source": "perception-v2\\AI-powered-Automatic-Traffic-Violation-Reporting-System-feature-perception-v2\\perception\\checkpoints\\license-plate-finetune-v1s.onnx",
+    "target": "models\\plate\\license-plate-finetune-v1s.onnx",
+    "sha256": "fa0aa53e802444b1dc99904060d65f4412bb58591e5b4eb9fef054f9df5cbece",
+    "bytes": 39271328
+  },
+  {
+    "source": "perception-v2\\AI-powered-Automatic-Traffic-Violation-Reporting-System-feature-perception-v2\\perception\\checkpoints\\depth_anything_v2_metric_vkitti_vits.onnx",
+    "target": "models\\depth\\depth_anything_v2_metric_vkitti_vits.onnx",
+    "sha256": "528467b574d0198657f28d8c5d0dc85ad3ce63313015c4145697b1cdf1b0fe11",
+    "bytes": 98991477
+  },
+  {
+    "source": "perception-v2\\AI-powered-Automatic-Traffic-Violation-Reporting-System-feature-perception-v2\\perception\\checkpoints\\ch_PP-OCRv4_rec_infer.onnx",
+    "target": "models\\ocr\\ch_PP-OCRv4_rec_infer.onnx",
+    "sha256": "48fc40f24f6d2a207a2b1091d3437eb3cc3eb6b676dc3ef9c37384005483683b",
+    "bytes": 10857958
+  }
+]

@@ -1,0 +1,30 @@
+{
+  "start_url": "https://trv.mpb.gov.tw/Home/Report",
+  "verification_timing": "before_submit",
+  "selectors": {
+    "reporter_name": "#Name",
+    "reporter_id": "#IdentityNumber",
+    "reporter_phone": "#Telphone",
+    "reporter_email": "#Email",
+    "reporter_district": "#TownId",
+    "reporter_address": "#Address",
+    "car_type": "#CarTypeId",
+    "plate_first": "#FistCarNumber",
+    "plate_last": "#LastCarNumber",
+    "violation_date": "#DateOfOccurrence",
+    "violation_law": "#ViolationId",
+    "violation_remark": "#ViolationRemark",
+    "violation_district": "#TownIdOfOccurrence",
+    "violation_address": "#AddressOfOccurrence",
+    "login_captcha": "#CaptchaCode",
+    "login_captcha_img": "#_Captcha_CaptchaImage",
+    "file_inputs": [
+      "#File1",
+      "#File2",
+      "#File3",
+      "#File4"
+    ],
+    "consent_checkbox": "#che_agree",
+    "submit_btn": "#submit_from"
+  }
+}

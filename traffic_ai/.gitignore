@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+outputs/
+reporting/autoForm/reporter_profile.json
+reporting/autoForm/cases/
+input/
+models/**/*.pt
+models/**/*.pth
+models/**/*.onnx

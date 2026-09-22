@@ -1,0 +1,30 @@
+{
+  "start_url": "https://tvrweb.police.taichung.gov.tw/#/",
+  "selectors": {
+    "agreement_checkbox": "label:has-text('我已閱讀並同意以上檢舉聲明')",
+    "start_button": "a:has-text('開始檢舉')",
+    "reporter_id": "input[aria-label='身分證/居留證']",
+    "reporter_name": "input[aria-label='姓名']",
+    "reporter_phone": "input[aria-label='連絡電話']",
+    "reporter_address": "input[aria-label='地址']",
+    "reporter_email": "input[aria-label='電子信箱']",
+    "violation_date_label": "label:has-text('違規日期')",
+    "violation_time_label": "label:has-text('違規時間')",
+    "vehicle_type": "input[aria-label='違規車號-車種']",
+    "license_plate_1": "input[aria-label='違規車號-車牌1']",
+    "license_plate_2": "input[aria-label='違規車號-車牌2']",
+    "location_town": "input[aria-label='違規地點-行政區']",
+    "location_road": "input[aria-label='違規地點-路段']",
+    "location_km": "input[aria-label='違規地點-公里']",
+    "location_lane": "input[aria-label='違規地點-巷']",
+    "location_alley": "input[aria-label='違規地點-弄']",
+    "location_number": "input[aria-label='違規地點-號']",
+    "location_sub_number": "input[aria-label='違規地點-之']",
+    "location_remark": "input[aria-label='地點備註']",
+    "violation_fact": "input[aria-label='違規事實']",
+    "plate_confirm_checkbox": "label:has-text('我確認所提供資料包含清晰車牌')",
+    "violation_description": "textarea[aria-label='違規事實說明']",
+    "file_input": "input[type='file']",
+    "policy_confirm_checkbox": "label:has-text('我已閱讀臺中市政府警察局 [隱私權政策]')"
+  }
+}

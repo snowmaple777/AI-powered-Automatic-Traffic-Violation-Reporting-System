@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "models": {
+    "vehicles": {
+      "backend": "yolo_vehicle",
+      "params": {
+        "weights": "../models/vehicle/yolo26s.onnx",
+        "tracker": "../botsort_dashcam.yaml"
+      }
+    },
+    "traffic_lights": {
+      "backend": "yolo_light",
+      "params": {
+        "weights": "../models/traffic_light/traffic_light_best.pt"
+      }
+    },
+    "road_markings": {
+      "backend": "mmseg_marking",
+      "params": {
+        "weights": "../models/road_marking/segformer_b2_rlmd.pth",
+        "config": "../road_marking_config.py",
+        "sha256": "5c8da1343ab2848b480db84431dfdceb27a9e58c1139e7aaeed3bb0d8c2379df"
+      }
+    },
+    "depth": {
+      "enabled": false,
+      "backend": "onnx_depth",
+      "params": {
+        "weights": "../models/depth/depth_anything_v2_metric_vkitti_vits.onnx",
+        "interval": 2
+      }
+    },
+    "plates": {
+      "enabled": false,
+      "backend": "yolo_plate",
+      "params": {
+        "weights": "../models/plate/license-plate-finetune-v1s.onnx"
+      }
+    },
+    "ocr": {
+      "enabled": false,
+      "backend": "rapidocr",
+      "params": {
+        "weights": "../models/ocr/ch_PP-OCRv4_rec_infer.onnx"
+      }
+    }
+  }
+}

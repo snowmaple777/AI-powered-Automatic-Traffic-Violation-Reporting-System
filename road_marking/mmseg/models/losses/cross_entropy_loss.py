@@ -63,11 +63,13 @@ def cross_entropy(pred,
 
         else:
             # the average factor should take the class weights into account
-            label_weights = torch.stack([class_weight[cls] for cls in label
-                                         ]).to(device=class_weight.device)
-
-            if avg_non_ignore:
-                label_weights[label == ignore_index] = 0
+            # Ignore values (e.g. padding=255) are not class indices.
+            # Mask them BEFORE indexing, including when averaging all pixels.
+            ignored = label == ignore_index
+            safe_label = label.masked_fill(ignored, 0)
+            label_weights = class_weight[safe_label]
+            label_weights = label_weights.masked_fill(
+                ignored, 0.0 if avg_non_ignore else 1.0)
             avg_factor = label_weights.sum()
 
     if weight is not None:

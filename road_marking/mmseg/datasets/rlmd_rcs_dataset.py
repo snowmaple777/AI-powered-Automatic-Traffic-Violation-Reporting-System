@@ -31,6 +31,7 @@ class RLMDRCSDataset(BaseSegDataset):
         rcs_min_crop_pixels=32,
         rcs_ignore_ids=(0, 255),
         rcs_max_retries=10,
+        rcs_min_foreground_ratio=0.0,
         **kwargs,
     ):
         # IMPORTANT:
@@ -41,6 +42,9 @@ class RLMDRCSDataset(BaseSegDataset):
         self.rcs_min_crop_pixels = int(rcs_min_crop_pixels)
         self.rcs_ignore_ids = {int(x) for x in rcs_ignore_ids}
         self.rcs_max_retries = int(rcs_max_retries)
+        self.rcs_min_foreground_ratio = float(rcs_min_foreground_ratio)
+        if not 0 <= self.rcs_min_foreground_ratio <= 1:
+            raise ValueError('rcs_min_foreground_ratio must be in [0, 1]')
 
         super().__init__(**kwargs)
 
@@ -195,6 +199,8 @@ class RLMDRCSDataset(BaseSegDataset):
 
         candidates = self.samples_with_class[target_class]
         last_valid_sample = None
+        best_sample = None
+        best_score = (-1, -1.0, -1)
 
         for _ in range(self.rcs_max_retries):
             chosen_idx = random.choice(candidates)
@@ -210,11 +216,28 @@ class RLMDRCSDataset(BaseSegDataset):
                 target_class,
             )
 
-            if kept_pixels >= self.rcs_min_crop_pixels:
+            foreground_ratio = 0.0
+            if self.rcs_min_foreground_ratio > 0:
+                gt = packed['data_samples'].gt_sem_seg.data
+                valid_pixels = int((gt != 255).sum().item())
+                foreground_pixels = int(((gt != 0) & (gt != 255)).sum().item())
+                foreground_ratio = foreground_pixels / max(valid_pixels, 1)
+                # Prefer a crop containing the requested class, then foreground
+                # coverage. Ignore padding must not count as foreground.
+                score = (int(kept_pixels > 0), foreground_ratio, kept_pixels)
+                if score > best_score:
+                    best_score, best_sample = score, packed
+
+            if (kept_pixels >= self.rcs_min_crop_pixels
+                    and foreground_ratio >= self.rcs_min_foreground_ratio):
                 return packed
 
         # If repeated random crops miss the selected class, return the last
         # valid sample instead of crashing the entire training process.
+        # Opt-in bounded best-effort fallback; the ratio is not guaranteed.
+        # Default ratio=0 retains the original SegFormer sampling behavior.
+        if best_sample is not None:
+            return best_sample
         if last_valid_sample is not None:
             return last_valid_sample
 

@@ -2,6 +2,7 @@
 import logging
 from typing import List, Optional
 
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from mmengine.logging import print_log
@@ -261,12 +262,26 @@ class EncoderDecoder(BaseSegmentor):
 
         h_stride, w_stride = self.test_cfg.stride
         h_crop, w_crop = self.test_cfg.crop_size
+        blend = self.test_cfg.get('blend', 'uniform')
+        if blend not in ('uniform', 'gaussian'):
+            raise ValueError(f'Unknown slide blend: {blend}')
+        sigma = self.test_cfg.get('blend_sigma', 0.25)
+        if blend == 'gaussian' and sigma <= 0:
+            raise ValueError('blend_sigma must be positive')
+        whole_weight = self.test_cfg.get('whole_weight', 0.0)
+        if not 0 <= whole_weight <= 1:
+            raise ValueError('whole_weight must be between 0 and 1')
         batch_size, _, h_img, w_img = inputs.size()
         out_channels = self.out_channels
         h_grids = max(h_img - h_crop + h_stride - 1, 0) // h_stride + 1
         w_grids = max(w_img - w_crop + w_stride - 1, 0) // w_stride + 1
         preds = inputs.new_zeros((batch_size, out_channels, h_img, w_img))
         count_mat = inputs.new_zeros((batch_size, 1, h_img, w_img))
+        if blend == 'gaussian':
+            # FP32 accumulation and positive weights keep image borders safe.
+            preds = preds.float()
+            count_mat = count_mat.float()
+        blend_weights = None
         for h_idx in range(h_grids):
             for w_idx in range(w_grids):
                 y1 = h_idx * h_stride
@@ -277,17 +292,39 @@ class EncoderDecoder(BaseSegmentor):
                 x1 = max(x2 - w_crop, 0)
                 crop_img = inputs[:, :, y1:y2, x1:x2]
                 # change the image shape to patch shape
-                batch_img_metas[0]['img_shape'] = crop_img.shape[2:]
+                crop_metas = [dict(meta, img_shape=crop_img.shape[2:])
+                              for meta in batch_img_metas]
                 # the output of encode_decode is seg logits tensor map
                 # with shape [N, C, H, W]
-                crop_seg_logit = self.encode_decode(crop_img, batch_img_metas)
+                crop_seg_logit = self.encode_decode(crop_img, crop_metas)
+                if blend == 'gaussian':
+                    shape = crop_img.shape[2:]
+                    if blend_weights is None or blend_weights.shape[-2:] != shape:
+                        y = (torch.arange(shape[0], device=inputs.device,
+                                          dtype=torch.float32) - (shape[0]-1)/2)
+                        x = (torch.arange(shape[1], device=inputs.device,
+                                          dtype=torch.float32) - (shape[1]-1)/2)
+                        blend_weights = torch.exp(-0.5 * (
+                            (y[:, None] / (sigma * shape[0]))**2 +
+                            (x[None, :] / (sigma * shape[1]))**2))
+                        blend_weights = (blend_weights / blend_weights.max()).clamp_min(1e-3)[None, None]
+                    crop_seg_logit = crop_seg_logit.float() * blend_weights
                 preds += F.pad(crop_seg_logit,
                                (int(x1), int(preds.shape[3] - x2), int(y1),
                                 int(preds.shape[2] - y2)))
 
-                count_mat[:, :, y1:y2, x1:x2] += 1
+                count_mat[:, :, y1:y2, x1:x2] += (
+                    blend_weights if blend == 'gaussian' else 1)
         assert (count_mat == 0).sum() == 0
         seg_logits = preds / count_mat
+
+        if whole_weight > 0:
+            # Fuse before argmax: a full-image pass supplies context that
+            # individual tiles cannot see. Release tile buffers first.
+            del preds, count_mat, crop_seg_logit, crop_img
+            whole_logits = self.whole_inference(inputs, batch_img_metas)
+            seg_logits.mul_(1 - whole_weight)
+            seg_logits.add_(whole_logits, alpha=whole_weight)
 
         return seg_logits
 

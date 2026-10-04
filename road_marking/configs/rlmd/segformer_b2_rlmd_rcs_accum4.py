@@ -43,6 +43,9 @@ classes = (
     'parking lot',
 )
 
+# =========================================================
+# 修正後的正確 Palette (25 類 RGB 顏色)
+# =========================================================
 palette = [
     [0, 0, 0],
     [255, 242, 0],
@@ -70,6 +73,7 @@ palette = [
     [3, 164, 204],
     [175, 157, 185],
 ]
+
 
 metainfo = dict(
     classes=classes,
@@ -103,6 +107,9 @@ train_pipeline = [
         type='RandomFlip',
         prob=0.5
     ),
+    
+    # 💥 新增：光學畸變增強，強化對台灣道路各種反光、陰影、新舊柏油路色差的辨識能力
+    dict(type='PhotoMetricDistortion'), 
 
     dict(type='PackSegInputs')
 ]
@@ -149,27 +156,14 @@ train_dataloader = dict(
         metainfo=metainfo,
         pipeline=train_pipeline,
 
-        # =================================================
-        # B: Rare Class Sampling
-        # =================================================
         rcs_temperature=0.5,
-
-        # A class only needs to exist in the source mask to make the image
-        # eligible. This avoids excluding very sparse stop lines.
         rcs_min_pixels=1,
-
-        # After augmentation/crop, try to retain at least this many pixels
-        # of the selected rare class.
         rcs_min_crop_pixels=32,
-
-        # Background and ignore label are never chosen as RCS target classes.
         rcs_ignore_ids=(0, 255),
-
         rcs_max_retries=10
     )
 )
 
-# Validation does NOT use RCS.
 val_dataloader = dict(
     batch_size=1,
     num_workers=2,
@@ -249,22 +243,24 @@ model = dict(
 
             dict(
                 type='DiceLoss',
-                loss_weight=1.0,
+                loss_weight=1.5,   # 💥 微調：拉高權重到 1.5，加強對小面積物件（如箭頭、icon）的邊緣約束
                 ignore_index=255
             )
         ]
+    ),
+    
+    # 💥 新增：測試/驗證時強制開啟滑動視窗推論 (Slide Inference)
+    # 避免 1920x1080 大圖直接縮放導致遠處微小標線直接消失
+    test_cfg=dict(
+        mode='slide', 
+        crop_size=crop_size,  # (512, 512)
+        stride=(341, 341)      # 重疊步長為 crop_size 的約 2/3
     )
 )
 
 # =========================================================
-# A: Gradient accumulation + AMP
+# Optim wrapper
 # =========================================================
-
-# Physical batch size = 1
-# accumulative_counts = 4
-# Effective batch ~= 4
-#
-# AMP is enabled here, so DO NOT add --amp to tools/train.py.
 
 optim_wrapper = dict(
     _delete_=True,
@@ -274,7 +270,7 @@ optim_wrapper = dict(
 
     optimizer=dict(
         type='AdamW',
-        lr=6e-5,
+        lr=3e-5,
         betas=(0.9, 0.999),
         weight_decay=0.01
     ),
@@ -292,15 +288,7 @@ optim_wrapper = dict(
 # Training schedule
 # =========================================================
 
-# Baseline:
-#   60,000 iterations, accumulation=1
-#   ~= 60,000 optimizer updates
-#
-# AB:
-#   240,000 micro-iterations, accumulation=4
-#   ~= 60,000 optimizer updates
-
-max_iters = 240000
+max_iters = 480000
 
 param_scheduler = [
     dict(
@@ -340,8 +328,12 @@ default_hooks = dict(
 # =========================================================
 # Output
 # =========================================================
+load_from = (
+    'work_dirs/segformer_b2_rlmd_rcs_accum4/'
+    'iter_240000.pth'
+)
 
 work_dir = (
     'work_dirs/'
-    'segformer_b2_rlmd_rcs_accum4'
+    'segformer_b2_rlmd_rcs_accum4_stage2_480k'
 )

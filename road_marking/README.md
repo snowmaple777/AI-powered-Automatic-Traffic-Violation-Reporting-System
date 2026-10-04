@@ -1,66 +1,57 @@
-# 標線辨識：組員交接包（啟動流程修正版）
+# 台灣道路標線語意分割 · SegFormer-B2
 
-## 先看這裡
+以 MMSegmentation 為基礎，辨識 RLMD 的25類道路標線。預設 **hybrid 推論：75%高斯加權滑窗 logits＋25%整張影像 logits**，先融合再分類。可用任意影片
 
-這包提供程式與模型，不包含已安裝的 Python 環境。**第一次要先執行「安裝環境.cmd」，看到 INSTALLATION COMPLETE 才能執行「開始辨識.cmd」。**
+## 快速開始（Windows）
 
-找不到 `.venv\Scripts\python.exe` 表示環境尚未建立成功；搬資料夾或重複貼推論指令不會修復。安裝失敗時應處理第一個錯誤，不要繼續往下執行。
+1. 安裝64位元 Python 3.10，保留 Python Launcher。
+2. 依 [模型說明](models/README.md) 把權重放入 `models/`。
+3. 執行 `安裝環境.cmd`，等到 `INSTALLATION COMPLETE`。第一次需要網路，會建立本目錄的 `.venv`，安裝 PyTorch 2.1.2 CUDA12.1、MMCV2.1.0及相依套件，執行模型檢查。使用者需有相容NVIDIA驅動；無CUDA則嘗試CPU，速度較慢。
+4. 執行 `開始辨識.cmd` 選影片，或把影片拖上去。預設hybrid，結果在 `outputs/時間戳記_hybrid/`。
 
-## 1. 第一次使用
+已有舊版 `.venv` 可先執行 `.venv\Scripts\python.exe check_environment.py` 與 `smoke_inference.py`，不需為了新版模型刪除環境。環境匯入失敗才處理安裝；不要搬移已建立的venv。
 
-1. 完整解壓到預計長期使用的位置（例如 `D:\標線`）。先不要執行影片指令。
-2. 雙擊 **安裝環境.cmd**（等同 `install_environment.cmd`）。它會尋找可用的 **64 位元 Python 3.10**，支援 Python Launcher 與常見安裝位置。
-3. 若顯示 `no working Python 3.10 64-bit was found`，先安裝 [Python 3.10 Windows installer (64-bit)](https://www.python.org/downloads/release/python-31011/)，保留 Python Launcher 安裝選項，再重開安裝檔。不是下載 embeddable package。
-4. 安裝程式會建立本資料夾的 `.venv`，下載並安裝套件，檢查模型，以及執行一次合成圖片的模型推論。第一次需要網路、數 GB 空間，PyTorch 下載可能較久。
-5. 必須看到 **INSTALLATION COMPLETE**。任何步驟失敗就會停止；把 `install_logs` 中最後一份 log 傳給負責維護的組員。
-6. 雙擊 **開始辨識.cmd** 選影片，或將影片拖到此檔案。結果在 `outputs`。
-
-
-## 2. 注意與手動測試
-
-- 安裝基準：Windows 64-bit / Python 3.10 / PyTorch 2.1.2 CUDA 12.1 / MMCV 2.1.0。
-- GPU 是否相容會在實際運算測試中檢查。未偵測到 CUDA 時程式嘗試 CPU，速度可能很慢；不保證所有硬體皆能使用這套環境。
-- `check_environment.py` 檢查匯入、權重雜湊與模型初始化；`smoke_inference.py` 檢查合成圖片前向運算，不代表辨識品質測試。
-- 同一台電腦改名或搬動資料夾後，啟動器會先檢查現有環境，通過後自動更新路徑並繼續，不會僅因改名就要求重裝。若環境實際失效，會保留具體錯誤訊息；跨電腦仍應建立自己的環境。
-- 分享給其他電腦時排除 `.venv` 與 `environment_ready.json`，對方仍需執行一次安裝環境。
-
-只有在 INSTALLATION COMPLETE 之後，才可用以下手動測試。先把影片放進 inputs，再在本資料夾開啟 PowerShell：
-
-```powershell
-& ".\.venv\Scripts\python.exe" video_inference_b2_rcs_diagnostic.py "inputs\ms06.mp4" --max-frames 10 --no-preview
+```cmd
+.venv\Scripts\python.exe infer_video.py "D:\videos\input.mp4"
+.venv\Scripts\python.exe infer_video.py "inputs\day.mp4" "inputs\rain.mp4" --no-preview
+.venv\Scripts\python.exe infer_video.py "inputs\day.mp4" --mode whole
+.venv\Scripts\python.exe infer_video.py "inputs\day.mp4" --mode smooth
+.venv\Scripts\python.exe infer_video.py "inputs\day.mp4" --mode uniform
 ```
 
-完整影片使用「開始辨識.cmd」即可。預覽按 q 結束。`run_video.cmd` 是同一個入口的英文檔名。
+`whole`是不切窗；`smooth`是高斯加權滑窗；`uniform`是原始等權滑窗。滑窗512×512、步長341，輸入等比例縮放至1920×1080範圍。預覽按q結束本次工作；`--max-frames 10 --no-preview`可檢查執行。`--checkpoint 路徑`可指定另一個相同25類B2模型。每次輸出新資料夾，包含影片與`run.json`。輸出影片不保留音訊。
 
-## 3. 畫面意義
+## 畫面與模型成績
 
-- 橘色 RGB(255,165,0)：停止線（ID 3）。
-- 深綠色：行人穿越道（ID 2）；深紫色：機車停等區（ID 20）。其他類別沿用 RLMD 配色。
+- 彩色疊圖是原始argmax分類，不補洞。顏色沿用RLMD：斑馬線深綠、停止線藍紫、停等區深紫；舊交接版的橘色停止線已回復RLMD配色。
+- CW/SL計數和YES/NO另外使用信心值（0.70/0.60）、下方65% ROI、連通區域（300/150像素）與總面積（1000/500像素）門檻，不改動疊圖。
+- 模型是768裁切訓練的第56000次checkpoint。原374張驗證集mIoU **58.66**、停止線IoU **57.04**、斑馬線IoU **77.11**。這些是原等權滑窗成績；尚未量化hybrid在独立雨夜測試集的準確率。
+- 可見區域與遮擋處可能誤判，單双線仍可能混淆。偵測到停止線不代表已判定闖紅燈。
 
+## 訓練與程式修正
 
-## 4. 模型與檔案
+保留正式768訓練設定、其完整繼承鏈、RCS資料集及訓練入口。資料不隨repo提供。
 
-- 主要程式：video_inference_b2_rcs_diagnostic.py（沿用舊檔名，內容是橘色正式推論版）。
-- 設定：configs/rlmd/segformer_b2_rlmd_rcs_accum4.py。
-- 權重：work_dirs/segformer_b2_rlmd_rcs_accum4/best_mIoU_iter_232000.pth。
-- configs 與 mmseg 完整保留可用原始碼及設定繼承鏈，含自訂 rlmd_rcs_dataset.py。
-- requirements.txt 是推論套件清單；requirements_upstream.txt 是原專案完整清單，包含測試等額外套件，不需另行安裝。
-- environment_reference.txt 是從原環境套件 METADATA 讀取的版本參考，不是可攜式虛擬環境，也不是實際 pip freeze 輸出。
-- 原 BEST 在 374 張驗證圖的結果：全類別 mIoU 53.34%；停止線 IoU 44.91%、Recall 75.95%、Precision 52.36%。這是原驗證集結果，不保證每支影片相同。
+```text
+data/rlmd/images/train/*.jpg
+data/rlmd/annotations/train/*.png
+data/rlmd/images/val/*.jpg
+data/rlmd/annotations/val/*.png
+```
 
-本包不含資料集、私人測試影片、其他 checkpoint、訓練紀錄、虛擬環境。configs 中保留的訓練路徑不會在正常影片推論時讀取。需要重新訓練時應回原完整專案操作。
+影像與標註同名。標註為單通道類別ID 0～24、忽略值255；帶調色盤的P模式PNG可以呈現彩色且保留ID。不要直接把RGB彩色圖當作ID mask。資料來源、授權與切分需自行確認，勿混入獨立測試集。
 
-## 5. 驗證與分享
+原訓練：2453張train、374張val，768裁切、FP32、activation checkpointing、累積4次、AdamW主幹3e-5／分割頭9e-5、加權CE＋Dice1.5。原始config保留歷史起始權重路徑。若要從本交接模型再微調，可明確覆寫：
 
-整理時完成來源檔案核對、Python 語法、設定繼承鏈與模型權重雜湊檢查；未在此整理環境重跑 GPU 推論。請依第 2 節先跑短片。
+```cmd
+.venv\Scripts\python.exe tools/train.py configs/rlmd/segformer_b2_rlmd_expanded_weather_relearn_768.py --work-dir work_dirs/my_run --cfg-options load_from=models/segformer_b2_rlmd_768_best_56000.pth
+```
 
-將整個資料夾壓縮成 ZIP 分享。日後若在此建立 .venv 或產生影片，再次分享前請排除 .venv、inputs 中的私人影片與 outputs 的大型結果。保留 LICENSE、CITATION.cff 及來源说明。
+這會啟動新的160000次排程，不是重現原訓練起點。中斷接續同一工作才用`--resume`。驗證保留512/341等權滑窗，與hybrid推論分開，避免混淆訓練與推論成效。
 
-## 6. 來源
+本地MMSeg修正：
+1. 加權CE在查詢class_weight之前處理ignore_index，避免補邊255造成CUDA索引越界。
+2. `EncoderDecoder.slide_inference`新增可選高斯融合與整張logits混合；未啟用時保留等權模式。
+3. RCS稀有類別抽樣實作與回歸檢查位於`mmseg/datasets`及`tests/`。
 
-- RLMD 官方類別表、資料集來源：https://github.com/stu9113611/RLMD
-- MMSegmentation：https://github.com/open-mmlab/mmsegmentation （授權見 LICENSE，原說明見 README_MMSegmentation.md）
-- PyTorch 歷史版本安裝：https://pytorch.org/get-started/previous-versions/
-- OpenMMLab 官方 Windows Python 3.10 / CUDA 12.1 / Torch 2.1 的 MMCV wheel：https://download.openmmlab.com/mmcv/dist/cu121/torch2.1/index.html
-
-RLMD 引用：Hsiao et al., “RLMD: A Dataset for Road Marking Segmentation”, ICCE-Taiwan 2023, pp. 427–428。原始碼 LICENSE 不等於另行授予 RLMD 資料集或衍生權重的所有使用權利。
+來源：[MMSegmentation](https://github.com/open-mmlab/mmsegmentation)、[RLMD](https://github.com/stu9113611/RLMD)。保留上游Apache-2.0 LICENSE及CITATION；上游說明見README_MMSegmentation.md。資料集／模型權利需依原始來源確認。

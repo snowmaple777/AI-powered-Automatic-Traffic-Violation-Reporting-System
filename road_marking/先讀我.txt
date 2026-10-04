@@ -1,5 +1,4 @@
-﻿第一次：雙擊「安裝環境.cmd」，等到 INSTALLATION COMPLETE。
-之後：雙擊「開始辨識.cmd」選影片，或將影片拖到該檔案。
-環境缺少 Python 3.10 時，依 README 安裝後再試。
-安裝錯誤會停止並寫到 install_logs，請勿直接跳到推論。
-不是免安裝版；不用原作者的環境路徑。
+新版預設hybrid推論。先看README.md。
+本機models已有權重，GitHub原始碼ZIP不含權重。
+已有環境可執行check_environment.py確認；開始辨識.cmd可選擇影片。
+輸出在outputs。

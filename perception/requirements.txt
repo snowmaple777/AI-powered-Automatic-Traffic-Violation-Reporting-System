@@ -1,0 +1,25 @@
+# ==============================================================================
+# Perception Subsystem Dependencies (requirements.txt)
+# 前向動態感知、公尺測距與台灣微調車牌辨識模組環境依賴清單
+# ==============================================================================
+
+# --- 核心視覺與深度學習推論框架 ---
+ultralytics>=8.3.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+Pillow>=10.0.0
+
+# --- ONNXRuntime GPU 高效推論引擎 ---
+onnxruntime-gpu>=1.18.0
+rapidocr-onnxruntime>=1.3.8
+
+# --- 深度學習主框架 (推薦依本機 CUDA 版本安裝) ---
+# 若需支援 GPU 加速，建議使用下方指令安裝對應 CUDA 之 PyTorch 與 PaddlePaddle:
+#
+# 1. PyTorch (CUDA 12.x):
+#    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+#
+# 2. PaddlePaddle-GPU (供台灣專屬微調 PP-OCRv6 獨立進程推論使用):
+#    pip install paddlepaddle-gpu -i https://www.paddlepaddle.org.cn/packages/stable/cu123/
+torch>=2.0.0
+torchvision>=0.15.0

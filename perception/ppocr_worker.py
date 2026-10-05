@@ -23,14 +23,112 @@ if os.path.isdir(cudnn_bin) and hasattr(os, 'add_dll_directory'):
 import paddle.inference as paddle_infer
 
 class TaiwanPlateValidator:
-    @staticmethod
-    def validate_and_normalize(plate_str):
-        if not plate_str:
+    DIGIT_FIX = {
+        'O': '0', 'D': '0', 'Q': '0',
+        'I': '1', 'L': '1', 'J': '1',
+        'Z': '2',
+        'S': '5',
+        'B': '8',
+        'G': '6',
+    }
+    LETTER_FIX = {
+        '8': 'B',
+        '3': 'B',
+        '2': 'Z',
+        '5': 'S',
+        '0': 'D',
+    }
+
+    @classmethod
+    def fix_digits(cls, s):
+        return ''.join(cls.DIGIT_FIX.get(c, c) for c in s)
+
+    @classmethod
+    def fix_letters(cls, s):
+        return ''.join(cls.LETTER_FIX.get(c, c) for c in s)
+
+    @classmethod
+    def validate_and_normalize(cls, raw_text):
+        if not raw_text:
             return None
-        pure = re.sub(r'[^A-Z0-9]', '', str(plate_str).upper())
-        if len(pure) < 5 or len(pure) > 7:
+        s = str(raw_text).upper().strip()
+        s = re.sub(r'[\s·・._:—–]+', '-', s)
+        s = re.sub(r'[^A-Z0-9-]', '', s).strip('-')
+        if len(s) < 4:
             return None
-        return pure
+
+        def check_candidate(cand):
+            if not cand or '-' not in cand:
+                return None
+            parts = cand.split('-')
+            if len(parts) != 2:
+                return None
+            p1, p2 = parts[0], parts[1]
+            if len(p1) == 3 and len(p2) == 4:
+                p1_c = cls.fix_letters(p1)
+                # 台灣新式 7 碼車牌 (XXX-0000) 尚未發放 G 字頭 (小客貨車目前僅發至 B/C 字頭)，
+                # 當車牌左側受邊框或轉彎視角微遮擋時，B 極易被誤判為 G 或 6
+                if p1_c[0] in ('G', '6', 'J'):
+                    p1_c = 'B' + p1_c[1:]
+                p2_c = cls.fix_digits(p2)
+                c = f"{p1_c}-{p2_c}"
+                if re.match(r'^[A-HJ-NP-Z]{3}-[0-9]{4}$', c):
+                    return c
+            if len(p1) == 3 and len(p2) == 3:
+                p1_c = cls.fix_letters(p1)
+                p2_c = cls.fix_digits(p2)
+                c = f"{p1_c}-{p2_c}"
+                if re.match(r'^[A-HJ-NP-Z]{3}-[0-9]{3}$', c):
+                    return c
+                p1_d = cls.fix_digits(p1)
+                p2_l = cls.fix_letters(p2)
+                c_rev = f"{p1_d}-{p2_l}"
+                if re.match(r'^[0-9]{3}-[A-HJ-NP-Z]{3}$', c_rev):
+                    return c_rev
+            if len(p1) == 2 and len(p2) == 4:
+                p2_c = cls.fix_digits(p2)
+                c = f"{p1}-{p2_c}"
+                if re.match(r'^[A-HJ-NP-Z0-9]{2}-[0-9]{4}$', c):
+                    if re.search(r'[A-HJ-NP-Z]', p1) or p1 in ('22', '88', '66', '99'):
+                        return c
+            if len(p1) == 4 and len(p2) == 2:
+                p1_c = cls.fix_digits(p1)
+                c = f"{p1_c}-{p2}"
+                if re.match(r'^[0-9]{4}-[A-HJ-NP-Z0-9]{2}$', c):
+                    if re.search(r'[A-HJ-NP-Z]', p2) or p2 in ('22', '88', '66', '99'):
+                        return c
+            if len(p1) == 2 and len(p2) == 3:
+                p2_c = cls.fix_digits(p2)
+                c = f"{p1}-{p2_c}"
+                if re.match(r'^[A-HJ-NP-Z0-9]{2}-[0-9]{3}$', c) and re.search(r'[A-HJ-NP-Z]', p1):
+                    return c
+            if len(p1) == 3 and len(p2) == 2:
+                p1_c = cls.fix_digits(p1)
+                c = f"{p1_c}-{p2}"
+                if re.match(r'^[0-9]{3}-[A-HJ-NP-Z0-9]{2}$', c) and re.search(r'[A-HJ-NP-Z]', p2):
+                    return c
+            return None
+
+        if '-' in s:
+            valid = check_candidate(s)
+            if valid:
+                return valid
+        pure = s.replace('-', '')
+        if len(pure) == 7:
+            valid = check_candidate(f"{pure[:3]}-{pure[3:]}")
+            if valid:
+                return valid
+        elif len(pure) == 6:
+            for c_str in (f"{pure[:3]}-{pure[3:]}", f"{pure[:2]}-{pure[2:]}", f"{pure[:4]}-{pure[4:]}"):
+                valid = check_candidate(c_str)
+                if valid:
+                    return valid
+        elif len(pure) == 5:
+            for c_str in (f"{pure[:2]}-{pure[2:]}", f"{pure[:3]}-{pure[3:]}"):
+                valid = check_candidate(c_str)
+                if valid:
+                    return valid
+        return None
 
 class PPOCRWorker:
     def __init__(self, model_dir="checkpoints/PP-OCRv6_taiwan_infer", dict_path="train_data/ppocrv6_dict.txt", device="cuda"):
@@ -126,19 +224,20 @@ class PPOCRWorker:
         if img is None or img.size == 0 or img.shape[0] < 6 or img.shape[1] < 12:
             return None, 0.0
         h, w = img.shape[:2]
+        imgC, imgH, imgW = 3, 48, 320
         ratio = w / float(h)
-        img_h = 48
-        base_w = int(math.ceil(img_h * ratio))
-        min_w = 120
-        resized_w = max(min_w, min(base_w, 320))
-        resized = cv2.resize(img, (resized_w, img_h), interpolation=cv2.INTER_LINEAR)
+        if math.ceil(imgH * ratio) > imgW:
+            resized_w = imgW
+        else:
+            resized_w = max(16, int(math.ceil(imgH * ratio)))
+        resized = cv2.resize(img, (resized_w, imgH), interpolation=cv2.INTER_LINEAR)
         resized = (resized.astype(np.float32) / 255.0 - 0.5) / 0.5
-        norm_img = np.zeros((1, 3, img_h, resized_w), dtype=np.float32)
-        norm_img[0] = resized.transpose((2, 0, 1))
+        padding_im = np.zeros((1, imgC, imgH, imgW), dtype=np.float32)
+        padding_im[0, :, :, 0:resized_w] = resized.transpose((2, 0, 1))
 
         input_tensor = self.predictor.get_input_handle(self.input_name)
-        input_tensor.reshape(norm_img.shape)
-        input_tensor.copy_from_cpu(norm_img)
+        input_tensor.reshape(padding_im.shape)
+        input_tensor.copy_from_cpu(padding_im)
         self.predictor.run()
 
         output_tensor = self.predictor.get_output_handle(self.output_name)
@@ -182,12 +281,19 @@ class PPOCRWorker:
         if img is None or img.size == 0 or img.shape[0] < 6 or img.shape[1] < 12:
             return "", 0.0
 
+        def score_cand(txt, conf, valid_norm):
+            if not valid_norm:
+                return conf
+            # 完整 7 碼新式車牌 (XXX-0000，含連字號長 8) 具備更高資訊完整度，避免被斜角漏字之 6 碼覆蓋
+            bonus = 1.15 if len(valid_norm) == 8 else 1.0
+            return conf + bonus
+
         # 第一步：原圖推論 (高速通道)
         orig_text, orig_conf = self._infer_single(img)
         orig_valid = TaiwanPlateValidator.validate_and_normalize(orig_text) if orig_text else None
 
         # 若原圖已符合標準長度且信心度高 (>= 0.88)，直接採用 (僅需 ~7ms)
-        if orig_valid and orig_conf >= 0.88:
+        if orig_valid and orig_conf >= 0.88 and (len(orig_valid) == 8 or (img.shape[1] / max(1.0, float(img.shape[0]))) >= 1.9):
             return orig_text, orig_conf
 
         # 第二步：啟動自適應超解析銳化 + 保邊降噪 + 局部對比增強
@@ -196,8 +302,8 @@ class PPOCRWorker:
         enh_valid = TaiwanPlateValidator.validate_and_normalize(enh_text) if enh_text else None
 
         # 候選人優先權仲裁 (符合車牌規範格式獲得加權)
-        s_orig = orig_conf + (1.0 if orig_valid else 0.0)
-        s_enh = enh_conf + (1.0 if enh_valid else 0.0)
+        s_orig = score_cand(orig_text, orig_conf, orig_valid)
+        s_enh = score_cand(enh_text, enh_conf, enh_valid)
 
         if s_enh > s_orig:
             best_text, best_conf, best_valid = enh_text, enh_conf, enh_valid
@@ -205,6 +311,19 @@ class PPOCRWorker:
         else:
             best_text, best_conf, best_valid = orig_text, orig_conf, orig_valid
             best_score = s_orig
+
+        # 若車牌因轉彎/側面斜視角導致長寬比偏方 (< 1.95)，測試水平拉寬 1.35 倍還原擠壓字元
+        h, w = img.shape[:2]
+        if (w / max(1.0, float(h))) < 1.95 and (not best_valid or len(best_valid) < 8 or best_conf < 0.88):
+            for st_src in (img, enh_img):
+                st_img = cv2.resize(st_src, (int(round(st_src.shape[1] * 1.35)), st_src.shape[0]), interpolation=cv2.INTER_CUBIC)
+                st_text, st_conf = self._infer_single(st_img)
+                if st_text:
+                    st_valid = TaiwanPlateValidator.validate_and_normalize(st_text)
+                    st_score = score_cand(st_text, st_conf, st_valid)
+                    if st_score > best_score:
+                        best_score = st_score
+                        best_text, best_conf, best_valid = st_text, st_conf, st_valid
 
         # 第三步：若仍不合規或信心度偏低 (< 0.70)，在增強影像上嘗試微調傾角校正
         if not best_valid or best_conf < 0.70:
@@ -214,15 +333,17 @@ class PPOCRWorker:
                 if not r_text:
                     continue
                 r_valid = TaiwanPlateValidator.validate_and_normalize(r_text)
-                r_score = r_conf + (1.0 if r_valid else 0.0)
+                r_score = score_cand(r_text, r_conf, r_valid)
                 if r_score > best_score:
                     best_score = r_score
                     best_text = r_text
                     best_conf = r_conf
+                    best_valid = r_valid
                     if r_valid and r_conf >= 0.85:
                         break
 
         return (best_text or ""), float(best_conf)
+
 
 def recv_exact(sock, n):
     buf = bytearray()

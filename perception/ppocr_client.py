@@ -35,11 +35,7 @@ class PaddleInferWorkerRecognizer:
         paths = env.get("PATH", "").split(os.pathsep)
         clean_paths = [p for p in paths if "torch\\lib" not in p.lower() and "torch/lib" not in p.lower()]
         
-        try:
-            import nvidia.cudnn
-            cudnn_bin = os.path.join(os.path.dirname(nvidia.cudnn.__file__), "bin")
-        except Exception:
-            cudnn_bin = r"C:\Users\User\AppData\Local\Programs\Python\Python310\lib\site-packages\nvidia\cudnn\bin"
+        cudnn_bin = r"C:\Users\User\AppData\Local\Programs\Python\Python310\lib\site-packages\nvidia\cudnn\bin"
         if os.path.isdir(cudnn_bin):
             clean_paths.insert(0, cudnn_bin)
         env["PATH"] = os.pathsep.join(clean_paths)

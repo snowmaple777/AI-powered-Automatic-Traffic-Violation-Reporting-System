@@ -283,6 +283,7 @@ class TaiwanPlateValidator:
 
     LETTER_FIX = {
         '8': 'B',
+        '3': 'B',
         '2': 'Z',
         '5': 'S',
         '0': 'D',
@@ -318,6 +319,8 @@ class TaiwanPlateValidator:
             # 1. 第八代新式汽車 / 重機 / 白牌機車 (最主流 7 碼: 3 英文 - 4 數字，例: ABC-1234, BXH-6208)
             if len(p1) == 3 and len(p2) == 4:
                 p1_c = cls.fix_letters(p1)
+                if p1_c[0] in ('G', '6', 'J'):
+                    p1_c = 'B' + p1_c[1:]
                 p2_c = cls.fix_digits(p2)
                 c = f"{p1_c}-{p2_c}"
                 # 台灣字母無 I, O，此處嚴格檢查
@@ -911,21 +914,38 @@ class PlateOCRTracker:
         avg_conf = sum(composite_confs) / len(composite_confs) if composite_confs else 0.0
         return assembled, avg_conf
 
-    def should_infer(self, track_id, current_frame, plate_w, dist_m=None):
-        if dist_m is not None and dist_m > self.max_dist:
-            return False
+    def should_infer(self, track_id, current_frame, plate_w, dist_m=None, plate_h=None, frame_w=1920, veh_cls=None):
+        # 依影片水平解析度自動縮放像素門檻 (以 1920x1080 為 1.0 基準，720p 自動按 ~0.67 比例換算)
+        res_scale = min(1.0, max(0.5, float(frame_w) / 1920.0)) if frame_w else 1.0
+
+        # 判斷是否為機車/窄版車牌 (類別為騎士/單車/機車，或車牌長寬比 < 2.15)
+        aspect = (float(plate_w) / max(float(plate_h), 1.0)) if plate_h else 3.0
+        is_moto_plate = (veh_cls in (0, 1, 3)) or (plate_h is not None and aspect < 2.15)
+
+        if is_moto_plate:
+            # 機車車牌實體寬度較汽車窄約 35%，且字體高度佔比大
+            base_min_w = max(25, int(round(self.min_width * 0.65 * res_scale)))
+            receding_min_w = max(22, int(round(36 * res_scale)))
+        else:
+            base_min_w = max(32, int(round(self.min_width * res_scale)))
+            receding_min_w = max(28, int(round(45 * res_scale)))
+
+        # 若車牌垂直高度已足夠清晰 (1080p >= 18px / 720p >= 15px)，適度放寬水平寬度限制
+        if plate_h is not None and plate_h >= max(15, int(round(18 * res_scale))):
+            base_min_w = min(base_min_w, max(25, int(round(38 * res_scale))))
+
         if track_id is None:
-            return plate_w >= self.min_width
+            return plate_w >= base_min_w
 
         rec = self.records.get(track_id)
-        # 🎯 動態門檻 (Motion-Aware Resolution Gating):
-        # - 若車輛正在「遠離中 (receding)」，寬度會逐格變小，放寬門檻至 45px 搶拍免得漏失
-        # - 若車輛「接近中 (approaching)」或初次出現，使用標準黃金門檻 (預設 58px) 等待最佳畫質
-        min_w = self.min_width
+        # 🎯 動態像素門檻 (Motion-Aware Resolution Gating):
+        # - 若車輛正在「遠離中 (receding)」，寬度會逐格變小，放寬門檻搶拍免得漏失
+        # - 若車輛「接近中 (approaching)」或初次出現，使用標準像素門檻等待最佳畫質
+        min_w = base_min_w
         if rec is not None:
             prev_w = rec.get("last_plate_w", None)
-            if prev_w is not None and plate_w < prev_w and plate_w >= 45:
-                min_w = 45
+            if prev_w is not None and plate_w < prev_w and plate_w >= receding_min_w:
+                min_w = receding_min_w
 
         if plate_w < min_w:
             return False
@@ -933,6 +953,11 @@ class PlateOCRTracker:
         if not rec:
             return True
         if rec.get("confirmed", False):
+            # 若已確認車牌僅為 6 碼 (可能因斜角漏 1 碼)，或車牌寬度比確認時放大 >= 1.25 倍且尚未取得 7 碼，維持高頻重測
+            conf_comp = rec.get("best_compensated_text") or ""
+            conf_w = rec.get("confirmed_plate_w") or 0
+            if len(conf_comp) < 8 and plate_w and conf_w > 0 and plate_w >= conf_w * 1.20:
+                return (current_frame - rec.get("last_infer_frame", 0)) >= self.interval
             # 已確認車牌，每 30 幀才抽檢複驗一次
             return (current_frame - rec.get("last_infer_frame", 0)) >= 30
         return (current_frame - rec.get("last_infer_frame", 0)) >= self.interval
@@ -972,6 +997,7 @@ class PlateOCRTracker:
                 "raw_history": [],
                 "compensated_history": [],
                 "confirmed": False,
+                "confirmed_plate_w": plate_w or 0,
                 "best_raw_text": raw_clean,
                 "best_compensated_text": compensated_clean or raw_clean,
                 "best_conf": conf,
@@ -987,36 +1013,43 @@ class PlateOCRTracker:
         # 🛡️ 車牌確認鎖定與防遮擋保護 (Confirmed Plate Freeze Protection):
         # 若該車輛已被鎖定為合規台灣車牌 (如 AUY-6695)，任何低信心、殘字或短暫遮擋讀數不得破壞已確認車牌
         if rec.get("confirmed", False):
-            confirmed_comp = rec.get("best_compensated_text")
-            # 狀況 1：新讀數經過法規校驗後與已確認車牌相同，維持鎖定並更新最高信心
-            if compensated_clean and compensated_clean == confirmed_comp:
-                rec["best_conf"] = max(rec["best_conf"], conf)
-                rec["pending_count"] = 0
-                return rec["best_raw_text"], rec["best_conf"]
-
-            # 狀況 2：新讀數為無法通過台灣法規校驗之殘字 (如遮擋導致的 UY6695, ALIY6695, PC9668)
-            # 嚴格禁止寫入歷史，杜絕污染已確認車牌
-            if not compensated_clean:
-                return rec["best_raw_text"], rec["best_conf"]
-
-            # 狀況 3：新讀數通過台灣法規校驗，但與確認車牌不同 (可能發生於追蹤目標切換)
-            # 必須連續出現 >= 4 次相同的新高信心車牌 (conf >= 0.88)，才允許覆蓋已確認車牌
-            if rec.get("pending_new_plate") == compensated_clean:
-                rec["pending_count"] = rec.get("pending_count", 0) + 1
+            confirmed_comp = rec.get("best_compensated_text") or ""
+            conf_w = rec.get("confirmed_plate_w") or 0
+            # 若原先僅鎖定 6 碼車牌，而後續讀到完整 7 碼車牌 (或車牌放大 >= 1.25 倍)，解除鎖定以升級為完整車牌
+            if compensated_clean and len(confirmed_comp) < 8 and (len(compensated_clean) == 8 or (plate_w and conf_w > 0 and plate_w >= conf_w * 1.25 and conf >= 0.85)):
+                rec["confirmed"] = False
             else:
-                rec["pending_new_plate"] = compensated_clean
-                rec["pending_count"] = 1
+                # 狀況 1：新讀數經過法規校驗後與已確認車牌相同，維持鎖定並更新最高信心
+                if compensated_clean and compensated_clean == confirmed_comp:
+                    rec["best_conf"] = max(rec["best_conf"], conf)
+                    rec["confirmed_plate_w"] = max(conf_w, plate_w or 0)
+                    rec["pending_count"] = 0
+                    return rec["best_raw_text"], rec["best_conf"]
 
-            if rec["pending_count"] >= 4 and conf >= 0.88:
-                rec["confirmed"] = True
-                rec["best_compensated_text"] = compensated_clean
-                rec["best_raw_text"] = compensated_clean
-                rec["best_conf"] = conf
-                rec["raw_history"] = [(raw_clean, conf)]
-                rec["compensated_history"] = [(compensated_clean, conf)]
-                rec["pending_count"] = 0
+                # 狀況 2：新讀數為無法通過台灣法規校驗之殘字 (如遮擋導致的 UY6695, ALIY6695, PC9668)
+                # 嚴格禁止寫入歷史，杜絕污染已確認車牌
+                if not compensated_clean:
+                    return rec["best_raw_text"], rec["best_conf"]
 
-            return rec["best_raw_text"], rec["best_conf"]
+                # 狀況 3：新讀數通過台灣法規校驗，但與確認車牌不同 (可能發生於追蹤目標切換)
+                # 必須連續出現 >= 4 次相同的新高信心車牌 (conf >= 0.88)，才允許覆蓋已確認車牌
+                if rec.get("pending_new_plate") == compensated_clean:
+                    rec["pending_count"] = rec.get("pending_count", 0) + 1
+                else:
+                    rec["pending_new_plate"] = compensated_clean
+                    rec["pending_count"] = 1
+
+                if rec["pending_count"] >= 4 and conf >= 0.88:
+                    rec["confirmed"] = True
+                    rec["confirmed_plate_w"] = plate_w or conf_w
+                    rec["best_compensated_text"] = compensated_clean
+                    rec["best_raw_text"] = compensated_clean
+                    rec["best_conf"] = conf
+                    rec["raw_history"] = [(raw_clean, conf)]
+                    rec["compensated_history"] = [(compensated_clean, conf)]
+                    rec["pending_count"] = 0
+
+                return rec["best_raw_text"], rec["best_conf"]
 
         rec["raw_history"].append((raw_clean, conf))
         if len(rec["raw_history"]) > 12:
@@ -1030,23 +1063,48 @@ class PlateOCRTracker:
         # 1. 原始版字元級時序投票 (供影片畫面標註)
         composite_raw, composite_raw_conf = self.assemble_composite_plate(rec["raw_history"])
         rec["best_raw_text"] = composite_raw or raw_clean
-        rec["best_conf"] = composite_raw_conf or conf
+        rec["best_conf"] = min(0.999, float(composite_raw_conf or conf))
 
         # 2. 補償版多數決投票與規則消歧義 (供外出資料使用)
         if rec["compensated_history"]:
-            counts_comp = Counter([h[0] for h in rec["compensated_history"]])
+            # 若歷史中存在完整 7 碼新式車牌 (XXX-0000，長 8)，且另有因轉彎斜角漏 1 碼之同尾數 6 碼讀數 (XX-0000，長 7)，將完整 7 碼優先聚合
+            seven_char_cands = [h[0] for h in rec["compensated_history"] if len(h[0]) == 8 and '-' in h[0]]
+            normalized_hist = []
+            for h_txt, h_conf in rec["compensated_history"]:
+                if len(h_txt) == 7 and '-' in h_txt and seven_char_cands:
+                    suf = h_txt.split('-')[1]
+                    matching_7 = [c7 for c7 in seven_char_cands if c7.endswith('-' + suf) or c7[-3:] == suf[-3:]]
+                    if matching_7:
+                        normalized_hist.append((matching_7[-1], h_conf))
+                        continue
+                normalized_hist.append((h_txt, h_conf))
+
+            counts_comp = Counter([h[0] for h in normalized_hist])
             most_common_comp, freq_comp = counts_comp.most_common(1)[0]
-            matching_confs = [h[1] for h in rec["compensated_history"] if h[0] == most_common_comp]
+            matching_confs = [h[1] for h in normalized_hist if h[0] == most_common_comp]
             avg_conf = sum(matching_confs) / len(matching_confs)
             max_conf = max(matching_confs)
 
             rec["best_compensated_text"] = most_common_comp
-            rec["best_conf"] = avg_conf
-
-            # 鎖定條件：同字串累計出現 >= 3 次且平均信心度 >= 0.70，或出現 >= 2 次且最高信心度 >= 0.88
-            if (freq_comp >= 3 and avg_conf >= 0.70) or (freq_comp >= 2 and max_conf >= 0.88):
-                rec["confirmed"] = True
+            rec["best_conf"] = min(0.999, float(avg_conf))
+            # 若補償版已取得完整 7 碼車牌，同步更新畫面顯示文字以免斜角缺字影響標註
+            if len(most_common_comp) == 8:
                 rec["best_raw_text"] = most_common_comp
+
+            # 鎖定條件：
+            # - 若為完整 7 碼車牌 (len == 8) 或二輪機車車牌 (veh_cls in (0, 1, 3))：累計 >= 3 次 (avg >= 0.70) 或 >= 2 次 (max >= 0.88) 即鎖定
+            # - 若四輪汽車/貨車僅讀到 6 碼 (可能因轉彎斜角暫時漏首字，如 J5-6837)：必須累計 >= 5 次才鎖定，保留後續轉正讀出 7 碼 (BHS-6837) 的機會
+            is_four_wheel_6char = (veh_cls in (2, 5, 7) and len(most_common_comp) < 8)
+            if is_four_wheel_6char:
+                if freq_comp >= 5 and avg_conf >= 0.80:
+                    rec["confirmed"] = True
+                    rec["confirmed_plate_w"] = max(rec.get("confirmed_plate_w") or 0, plate_w or 0)
+                    rec["best_raw_text"] = most_common_comp
+            else:
+                if (freq_comp >= 3 and avg_conf >= 0.70) or (freq_comp >= 2 and max_conf >= 0.88):
+                    rec["confirmed"] = True
+                    rec["confirmed_plate_w"] = max(rec.get("confirmed_plate_w") or 0, plate_w or 0)
+                    rec["best_raw_text"] = most_common_comp
         else:
             # 若尚無完整合規字串，嘗試對複合原始字串進行語法修復
             cand_from_comp = TaiwanPlateValidator.validate_and_normalize(composite_raw) if composite_raw else None
@@ -1054,7 +1112,7 @@ class PlateOCRTracker:
                 rec["best_compensated_text"] = cand_from_comp
             else:
                 rec["best_compensated_text"] = composite_raw
-            rec["best_conf"] = composite_raw_conf
+            rec["best_conf"] = min(0.999, float(composite_raw_conf or conf))
 
         return rec["best_raw_text"], rec["best_conf"]
 
@@ -1247,7 +1305,7 @@ def main():
         return p1
 
     parser = argparse.ArgumentParser(description="兩階段車輛追蹤與車牌辨識影片標註系統")
-    parser.add_argument("--video", type=str, default="vid2.mp4", help="輸入影片路徑")
+    parser.add_argument("--video", type=str, default="s05.mp4", help="輸入影片路徑")
     parser.add_argument("--output", type=str, default="annotated_output.mp4", help="輸出影片路徑")
     parser.add_argument("--conf-vehicle", type=float, default=0.25, help="車輛偵測信心門檻")
     parser.add_argument("--conf-plate", type=float, default=0.30, help="車牌偵測信心門檻 (兩階段裁切建議 0.30~0.35，徹底杜絕水箱罩/飾條誤檢)")
@@ -1602,12 +1660,10 @@ def main():
                         if not is_target:
                             continue
 
-                        # 📏 統一車牌距離門檻：超過指定公尺距離 (預設 25m)，不切圖、不跑車牌 YOLO、不跑 OCR
-                        if dist_m > 0 and dist_m > args.plate_max_dist:
-                            continue
-
-                        # 過濾尺寸過小的遠距微小車輛
-                        if vw < args.min_vehicle_size or vh < args.min_vehicle_size:
+                        # 📏 依影片解析度自動縮放車輛最小像素尺寸門檻 (取代容易受廣角鏡頭影響的 Depth 距離硬限制)
+                        res_scale = min(1.0, max(0.5, float(fw) / 1920.0))
+                        min_v_size = max(32, int(round(args.min_vehicle_size * res_scale)))
+                        if vw < min_v_size or vh < min_v_size:
                             continue
 
                         # 外擴緩衝邊距 (Padding)，防止車輛框裁切到貼邊車牌
@@ -1643,7 +1699,22 @@ def main():
                             "crop_h": cy2 - cy1,
                         })
 
-                # 蒐集每格影格之全圖坐標候選車牌
+                        # 🚚 針對大型車輛框 (寬或高 > 240px，如近距離大貨車/公車)：
+                        # 額外加入「車尾下半部 60% 保險桿聚焦裁切」，避免整台大車塞入 320x320 被過度縮小而漏檢陰影處車牌
+                        if cls in (2, 5, 7) and (vw > 240 or vh > 240):
+                            low_cy1 = max(0, vy1 + int(vh * 0.35))
+                            low_crop = frame_item[low_cy1:cy2, cx1:cx2]
+                            if low_crop.shape[0] >= 20 and low_crop.shape[1] >= 20:
+                                crops_to_infer.append(low_crop)
+                                crop_metadata.append({
+                                    "frame_idx": i,
+                                    "offset_x": cx1,
+                                    "offset_y": low_cy1,
+                                    "crop_w": cx2 - cx1,
+                                    "crop_h": cy2 - low_cy1,
+                                })
+
+                # 蒐集每格影格之全圖坐標候選車牌 (最後一欄標記來源: 'crop' 或 'road')
                 frame_raw_plates = [[] for _ in range(len(frame_queue))]
                 if crops_to_infer:
                     # 批次送入車牌模型
@@ -1680,7 +1751,7 @@ def main():
                                     gy1 = oy + py1
                                     gx2 = ox + px2
                                     gy2 = oy + py2
-                                    frame_raw_plates[f_idx].append([gx1, gy1, gx2, gy2, pconf, pcls])
+                                    frame_raw_plates[f_idx].append([gx1, gy1, gx2, gy2, pconf, pcls, "crop"])
 
                 # 🌐 全域道路車牌安全網 (Road-level Global Safety Net):
                 # 避免外送機車未被 YOLO 檢出或邊界車輛漏檢，在道路可見區域 (下半部 65%) 全域補漏掃描
@@ -1712,7 +1783,7 @@ def main():
                                     gy1 = oy + py1
                                     gx2 = px2
                                     gy2 = oy + py2
-                                    frame_raw_plates[f_idx].append([gx1, gy1, gx2, gy2, pconf, pcls])
+                                    frame_raw_plates[f_idx].append([gx1, gy1, gx2, gy2, pconf, pcls, "road"])
 
                     # 針對每一格影格進行車牌去重、車輛關聯匹配、時序追蹤與 OCR
                     for i in range(len(frame_queue)):
@@ -1720,11 +1791,55 @@ def main():
                         deduped_plates = filter_duplicate_boxes(frame_raw_plates[i], iou_thresh=0.45)
                         matched_tids = set()
 
+                        # 先進行車輛匹配與物理比例過濾，並落實 top1_per_vehicle (杜絕一車多框與假鐵架干擾)
+                        valid_matched_plates = []
+                        best_per_tid = {}
                         for p_box in deduped_plates:
                             gx1, gy1, gx2, gy2, pconf, pcls = p_box[:6]
+                            src = p_box[6] if len(p_box) > 6 else "crop"
+                            pw = gx2 - gx1
+                            ph = gy2 - gy1
+                            pcy = (gy1 + gy2) / 2.0
 
-                            # 2. 空間幾何嚴格匹配：尋找最符合的車輛/騎士實體 (徹底杜絕張冠李戴)
                             matched_v = match_plate_to_vehicle(p_box, batch_vehicle_boxes[i])
+                            tid = matched_v[6] if matched_v is not None else None
+                            v_cls = matched_v[5] if matched_v is not None else None
+                            v_box = matched_v[:4] if matched_v is not None else None
+                            vw = (v_box[2] - v_box[0]) if v_box is not None else pw * 3.0
+                            vh = (v_box[3] - v_box[1]) if v_box is not None else ph * 5.0
+
+                            if matched_v is not None and v_cls in (2, 5, 7):
+                                # 🛡️ 防護 A：四輪車輛 (汽車/公車/貨車) 實體車牌寬度必定 >= 車寬的 9.5%，剔除尾燈旁微小支架/反光片誤檢
+                                if pw < vw * 0.095:
+                                    continue
+                                # 🛡️ 防護 B：大型車輛 (vw >= 180) 已具備高解析專屬裁切，禁止全域道路安全網在車尾中段產生假車牌框干擾
+                                if src == "road" and vw >= 180 and pcy < (v_box[1] + vh * 0.75):
+                                    continue
+                                # 🛡️ 防護 C：剔除車尾中段低信心度之紅光煞車燈/尾燈誤檢 (R 通道顯著高於 G/B 通道且位於保險桿上方)
+                                if pconf < 0.55 and pcy < (v_box[1] + vh * 0.78):
+                                    fh_i, fw_i = frame_queue[i].shape[:2]
+                                    bx1, by1 = max(0, int(gx1)), max(0, int(gy1))
+                                    bx2, by2 = min(fw_i, int(gx2)), min(fh_i, int(gy2))
+                                    if bx2 > bx1 and by2 > by1:
+                                        patch_bgr = frame_queue[i][by1:by2, bx1:bx2]
+                                        b_m, g_m, r_m = patch_bgr.mean(axis=(0, 1))
+                                        if (r_m - max(g_m, b_m)) > 35.0 or (pw < vw * 0.13 and pconf < 0.35):
+                                            continue
+
+                            item = (p_box, matched_v)
+                            if args.top1_per_vehicle and tid is not None:
+                                # 同輛車若有多個候選框，優先選擇位於車尾下半部保險桿區且信心度較高者
+                                rank_score = pconf + (0.25 if (v_box is not None and pcy > v_box[1] + vh * 0.68) else 0.0)
+                                if tid not in best_per_tid or rank_score > best_per_tid[tid][0]:
+                                    best_per_tid[tid] = (rank_score, item)
+                            else:
+                                valid_matched_plates.append(item)
+
+                        if args.top1_per_vehicle:
+                            valid_matched_plates.extend([v[1] for v in best_per_tid.values()])
+
+                        for p_box, matched_v in valid_matched_plates:
+                            gx1, gy1, gx2, gy2, pconf, pcls = p_box[:6]
                             tid = matched_v[6] if matched_v is not None else None
                             v_cls = matched_v[5] if matched_v is not None else None
                             dist_m = float(matched_v[7]) if (matched_v is not None and len(matched_v) > 7 and matched_v[7] is not None) else 0.0
@@ -1735,14 +1850,18 @@ def main():
                                 matched_tids.add(tid)
 
                             final_box = [gx1, gy1, gx2, gy2]
+                            pw_raw = gx2 - gx1
+                            ph_raw = gy2 - gy1
                             # 🌊 跨影格平滑追蹤 (Temporal EMA Smoothing - 消除每格抖動)
                             if args.smooth and tid is not None:
                                 if tid in plate_tracker:
                                     prev_box = plate_tracker[tid]["box"]
                                     prev_cx = (prev_box[0] + prev_box[2]) / 2.0
+                                    prev_cy = (prev_box[1] + prev_box[3]) / 2.0
                                     curr_cx = (gx1 + gx2) / 2.0
-                                    # 限制單格橫向位移不得超過車寬 40%，防止瞬移
-                                    if abs(curr_cx - prev_cx) < vw * 0.4:
+                                    curr_cy = (gy1 + gy2) / 2.0
+                                    # 限制新舊框中心距離不得超過 1.2 倍車牌寬度，徹底杜絕不同位置的假框把真車牌拉歪
+                                    if abs(curr_cx - prev_cx) < max(pw_raw * 1.2, 35.0) and abs(curr_cy - prev_cy) < max(ph_raw * 1.5, 25.0):
                                         final_box = [
                                             args.smooth_alpha * final_box[k] + (1.0 - args.smooth_alpha) * prev_box[k]
                                             for k in range(4)
@@ -1753,25 +1872,25 @@ def main():
                             p_text = None
                             t_conf = 0.0
                             if ocr_tracker is not None and ocr_model is not None:
-                                pw = final_box[2] - final_box[0]
-                                ph = final_box[3] - final_box[1]
+                                pw = pw_raw
+                                ph = ph_raw
                                 curr_frame_idx = processed_count + i
-                                if ocr_tracker.should_infer(tid, curr_frame_idx, pw, dist_m=dist_m):
+                                if ocr_tracker.should_infer(tid, curr_frame_idx, pw, dist_m=dist_m, plate_h=ph, frame_w=width, veh_cls=v_cls):
                                     # 🛡️ 防護 1：外擴邊界保護 (Border Padding)
-                                    # 水平兩側放寬至 10%，確保首尾字元 (如 B, E, 8, 數字) 筆畫 100% 納入；垂直保持 5% 避免上下包進過多底盤
+                                    # 必須使用當幀真實檢測框 (gx1, gy1, gx2, gy2) 裁切，避免 EMA 視覺平滑框因車輛移動滯後而切掉邊緣字元
                                     f_item = frame_queue[i]
-                                    pad_x = max(4, int(pw * 0.10))
+                                    pad_x = max(2, int(pw * 0.05))
                                     pad_y = max(2, int(ph * 0.05))
-                                    px1 = max(0, int(round(final_box[0] - pad_x)))
-                                    py1 = max(0, int(round(final_box[1] - pad_y)))
-                                    px2 = min(f_item.shape[1], int(round(final_box[2] + pad_x)))
-                                    py2 = min(f_item.shape[0], int(round(final_box[3] + pad_y)))
+                                    px1 = max(0, int(round(gx1 - pad_x)))
+                                    py1 = max(0, int(round(gy1 - pad_y)))
+                                    px2 = min(f_item.shape[1], int(round(gx2 + pad_x)))
+                                    py2 = min(f_item.shape[0], int(round(gy2 + pad_y)))
                                     plate_roi = f_item[py1:py2, px1:px2]
                                     if plate_roi.shape[0] >= 8 and plate_roi.shape[1] >= 16:
-                                        # 🔍 清晰度評估：若嚴重動態模糊 (Laplacian 方差 < 100)，略過此格等待更清晰幀
+                                        # 🔍 清晰度評估：若嚴重動態模糊 (Laplacian 方差 < 45)，略過此格等待更清晰幀
                                         gray_roi = cv2.cvtColor(plate_roi, cv2.COLOR_BGR2GRAY)
                                         lap_var = cv2.Laplacian(gray_roi, cv2.CV_64F).var()
-                                        if lap_var >= 100.0:
+                                        if lap_var >= 45.0:
                                             try:
                                                 t_o0 = time.perf_counter()
                                                 ocr_res, _ = ocr_model(plate_roi, use_det=False, use_cls=False)
@@ -1798,8 +1917,9 @@ def main():
                                         curr_vbox = matching_v[0][:4]
                                         prev_vbox = pt["v_box"]
                                         if prev_vbox is not None:
+                                            # 車牌位於車尾下方保險桿，當車輛遠離縮小 (vh 變小) 時應跟隨車底邊界 (vy2) 上移，而非跟隨車頂 (vy1) 下移
                                             dx = curr_vbox[0] - prev_vbox[0]
-                                            dy = curr_vbox[1] - prev_vbox[1]
+                                            dy = curr_vbox[3] - prev_vbox[3]
                                             held_box = [
                                                 pt["box"][0] + dx,
                                                 pt["box"][1] + dy,
@@ -1809,7 +1929,7 @@ def main():
                                             # 空間幾何有效性檢查：補償框中心必須仍然位於該車身範圍內 (防止位移飄出車身)
                                             hcx = (held_box[0] + held_box[2]) / 2.0
                                             hcy = (held_box[1] + held_box[3]) / 2.0
-                                            if not (curr_vbox[0] <= hcx <= curr_vbox[2] and curr_vbox[1] + 0.15 * (curr_vbox[3] - curr_vbox[1]) <= hcy <= curr_vbox[3] + 0.15 * (curr_vbox[3] - curr_vbox[1])):
+                                            if not (curr_vbox[0] <= hcx <= curr_vbox[2] and curr_vbox[1] + 0.15 * (curr_vbox[3] - curr_vbox[1]) <= hcy <= curr_vbox[3]):
                                                 continue
 
                                             pt["lost"] += 1
@@ -1859,7 +1979,7 @@ def main():
                                 pw = xyxy[2] - xyxy[0]
                                 ph = xyxy[3] - xyxy[1]
                                 curr_frame_idx = processed_count + i
-                                if ocr_tracker.should_infer(tid, curr_frame_idx, pw, dist_m=dist_m):
+                                if ocr_tracker.should_infer(tid, curr_frame_idx, pw, dist_m=dist_m, plate_h=ph, frame_w=width, veh_cls=v_cls):
                                     # 🛡️ 防護 1：外擴邊界保護 (Border Padding)
                                     # 徹底拔除向內縮切邏輯，向外擴張 5% 邊距，確保首尾字元完整納入 ROI
                                     f_item = frame_queue[i]
@@ -1901,6 +2021,8 @@ def main():
                     all_vehicle_confs.append(vb[4])
                 for pb in p_boxes:
                     all_plate_confs.append(pb[4])
+                    if len(pb) >= 9 and pb[6] is not None and pb[6] in video_plate_map:
+                        pb[7] = video_plate_map[pb[6]][0]
 
                 if v_boxes:
                     f = draw_boxes(f, v_boxes, vehicle_model.names, color=(255, 140, 0), vehicle_plate_map=video_plate_map)

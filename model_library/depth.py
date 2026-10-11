@@ -3,18 +3,22 @@ import warnings
 import cv2
 import numpy as np
 from .base import ModelResult, PerceptionModel
+from .runtime import prepare_onnx_cuda
 
 
 class DepthModel(PerceptionModel):
-    def __init__(self, weights, device="cpu", input_size=392, interval=2):
+    def __init__(self, weights, device="cpu", input_size=392, interval=2, cuda_conv_search="HEURISTIC"):
         import onnxruntime as ort
         if interval < 1 or input_size < 14:
             raise ValueError("depth interval >= 1 and input_size >= 14 required")
+        if cuda_conv_search not in {"HEURISTIC", "EXHAUSTIVE", "DEFAULT"}:
+            raise ValueError("Invalid CUDA convolution search mode")
         providers = ["CPUExecutionProvider"]
         if str(device).startswith("cuda"):
-            if "CUDAExecutionProvider" in ort.get_available_providers():
+            if "CUDAExecutionProvider" in prepare_onnx_cuda():
                 device_id = int(str(device).split(":")[1]) if ":" in str(device) else 0
-                providers.insert(0, ("CUDAExecutionProvider", {"device_id": device_id}))
+                providers.insert(0, ("CUDAExecutionProvider", {"device_id": device_id,
+                                     "cudnn_conv_algo_search": cuda_conv_search}))
             else:
                 warnings.warn("ONNX Runtime CUDA unavailable; depth runs on CPU")
         self.session = ort.InferenceSession(str(weights), providers=providers)

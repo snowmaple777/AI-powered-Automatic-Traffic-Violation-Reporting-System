@@ -2,10 +2,10 @@
   "version": 1,
   "models": {
     "vehicles": {
-      "backend": "yolo_vehicle",
+      "backend": "perception_vehicle",
       "params": {
-        "weights": "../models/vehicle/yolo26s.pt",
-        "tracker": "../botsort_dashcam.yaml"
+        "weights": "../models/vehicle/yolo26s.onnx",
+        "interval": 2
       }
     },
     "traffic_lights": {
@@ -32,16 +32,21 @@
     },
     "plates": {
       "enabled": true,
-      "backend": "yolo_plate",
+      "backend": "perception_plate",
       "params": {
-        "weights": "../models/plate/license-plate-finetune-v1s.onnx"
+        "weights": "../models/plate/license-plate-finetune-v1s.onnx",
+        "max_distance": 22.0
       }
     },
     "ocr": {
       "enabled": true,
-      "backend": "rapidocr",
+      "backend": "ppocrv6",
       "params": {
-        "weights": "../models/ocr/ch_PP-OCRv4_rec_infer.onnx"
+        "weights": "../models/ocr/PP-OCRv6_taiwan_infer",
+        "dict_path": "../models/ocr/ppocrv6_dict.txt",
+        "min_width": 58,
+        "max_distance": 22.0,
+        "device": "cpu"
       }
     }
   }

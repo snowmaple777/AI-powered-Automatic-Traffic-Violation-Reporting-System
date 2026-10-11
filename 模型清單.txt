@@ -1,6 +1,18 @@
 車輛模型
-  models/vehicle/yolo26s.pt
-  SHA256 646F8BC3FE0A656803D95C294F7852321748CB29D13466A1AF8862E2DB384A1B
+  models/vehicle/yolo26s.onnx（Perception / ByteTrack）
+
+車牌定位
+  models/plate/license-plate-finetune-v1s.onnx
+
+車距估測
+  models/depth/depth_anything_v2_metric_vkitti_vits.onnx
+
+車牌文字
+  models/ocr/PP-OCRv6_taiwan_infer/（預設，台灣微調 Paddle）
+  models/ocr/ppocrv6_dict.txt（微調模型字典）
+  models/ocr/PP-OCRv6_rec_small.onnx（純 ONNX 替代）
+
+以上 Perception 檔案大小與 SHA256 記錄於 models/perception_manifest.json。
 
 道路標線模型
   models/road_marking/segformer_b2_rlmd.pth

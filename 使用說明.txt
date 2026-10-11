@@ -1,30 +1,282 @@
-三模型交通影像辨識－使用說明
+﻿使用說明
 
-使用條件
-- Windows、Python 3.10
-- 建議使用 NVIDIA GPU
-- 三個模型檔須放在 models 對應資料夾
+更新日期：2026-10-04。以下命令均在 traffic_ai 目錄的 PowerShell 執行。
 
-首次安裝
-1. 雙擊「安裝環境.cmd」。
-2. 等待顯示 Environment ready。
+環境與安裝
 
-基本使用
-- 只輸出辨識資料：
-  啟動辨識.cmd "input\影片.mp4"
+使用 Windows、Python 3.10。CPU 可執行；GPU 需對應階段安裝可用的 CUDA 套件。
+請保留 models 內的權重與 OCR 字典，清單見根目錄「模型清單.txt」。
+推論不需要相鄰的 perception 目錄，也不會自動下載模型。
 
-- 同時輸出標記影片：
-  啟動辨識.cmd "input\影片.mp4" --save-video
+.\安裝環境.cmd
 
-- 啟用紅燈越線判斷：
-  啟動辨識.cmd "input\影片.mp4" --save-video --rules red_light_stop_line_crossing
+安裝器建立繼承系統套件的 .venv，安裝 requirements-perception.txt，
+包含基礎辨識套件與 PaddlePaddle 3.3.1 CPU；顯示 Environment ready. 後即可使用。
+既有環境亦可重跑此命令更新依賴。只安裝 requirements.txt 不含完整 OCR 依賴。
 
-輸出位置
-- outputs/*_detections.jsonl：逐幀完整辨識資料
-- outputs/*_detections.csv：表格資料
-- outputs/*_annotated.mp4：標記影片（需加 --save-video）
-- outputs/*_violations.jsonl：疑似違規事件（需加 --rules）
+辨識影片
 
-注意
-- 第一次啟動較慢，屬正常現象。
-- 違規結果是候選事件，仍需人工確認。
+只輸出資料：
+
+.\啟動辨識.cmd "input\影片.mp4"
+
+同時輸出標記影片：
+
+.\啟動辨識.cmd "input\影片.mp4" --save-video
+
+先處理前 30 幀並分開保存：
+
+.\啟動辨識.cmd "input\影片.mp4" --max-frames 30 --save-video --output-dir "outputs\preview"
+
+--max-frames 0 代表整段影片。路徑可使用絕對路徑，含空白時保留雙引號。
+同一輸出目錄內，相同影片檔名會覆寫同名結果；不同實驗請指定不同 --output-dir。
+
+設定與裝置
+
+configs/default.json 與 configs/full.json 目前內容相同，均啟用六階段：
+車輛、紅綠燈、道路標線、車距、車牌定位、OCR。
+「啟動辨識.cmd」使用 default；「啟動完整辨識.cmd」使用 full。
+預設車輛使用 YOLO26s ONNX + ByteTrack，車輛及深度每 2 幀推論，中間影格使用快取。
+車牌使用車輛裁切及道路補漏，OCR 使用台灣微調 PP-OCRv6 獨立子程序。
+
+不使用 Paddle 的替代推論路徑：
+
+.\啟動辨識.cmd "input\影片.mp4" --model-config configs/onnx_vehicle.json --save-video
+
+此設定採一般 PP-OCRv6 ONNX OCR，並非台灣微調模型。紅綠燈及道路標線仍使用
+PyTorch，整個系統並非全 ONNX；基礎安裝器仍安裝 Paddle，但這條推論路徑不使用它。
+
+全部使用 CPU：
+
+.\啟動辨識.cmd "input\影片.mp4" --device cpu
+
+--device auto 為預設，依 PyTorch 是否可用 CUDA 選擇裝置；亦可指定 --device cuda:0。
+ONNX Runtime 未提供 CUDA provider 時，YOLO ONNX／深度改用 CPU。
+安裝器使用 onnxruntime-gpu==1.23.2，並移除會共用模組檔案的 CPU 版 onnxruntime。
+此機器以 PyTorch CUDA 12.8／cuDNN 9 提供 GPU DLL；程式在建立 ONNX GPU 工作階段前預載 DLL。
+不要同時安裝 onnxruntime 與 onnxruntime-gpu；GPU 套件亦支援 --device cpu。
+default 與 full 的 models.ocr.params.device 明確設為 cpu，會覆蓋命令列共用裝置。
+OCR 改用 GPU 前須有適用的 Paddle GPU 套件，再修改該欄位；勿並裝 CPU 與 GPU Paddle。
+
+調整車牌距離、OCR 最小寬度、偵測間隔或停用階段，請修改 JSON；這些不是
+run_pipeline.py 的獨立命令列選項。複製設定建議放在 configs 內以維持相對路徑。
+plates 需要 vehicles，ocr 需要 plates；停用 depth 後無法依估測距離篩選車牌。
+常用設定位置（位於 models 下的各階段 params）：
+
+- vehicles.interval：車輛推論間隔，預設 2；設為 1 可每幀推論。
+- vehicles.tracker：可指定追蹤器檔案，預設使用 configs/bytetrack_perception.yaml。
+- depth.interval：深度推論間隔，預設 2。
+- plates.max_distance、ocr.max_distance：距離上限，預設 22 公尺，建議同步修改。
+- plates.road_scan：預設 true，可設 false 停用道路區域補漏。
+- ocr.min_width：車牌最小寬度，預設 58 像素。
+- ocr.interval：尚未確認車牌的辨識間隔，預設 4。
+
+設定檔路徑均相對 JSON 所在目錄；每階段 enabled:false 可停用。
+現行車輛融合需使用 COCO 類別 ID；不能只替換任意模型權重而不調整類別介面。
+舊 yolo_vehicle、yolo_plate、rapidocr 後端與舊權重已移除，請使用隨附設定。
+
+違規判定與標線補償
+
+預設只辨識，不啟用違規規則。啟用紅燈越線判定：
+
+.\啟動辨識.cmd "input\影片.mp4" --save-video --rules red_light_stop_line_crossing
+
+--rules all 啟用所有已註冊規則；--rule 是同義選項。
+啟用規則後，辨識結束會自動剪輯每個疑似／確認違規事件，即使未加 --save-video 也會輸出。
+預設保留事件前後各 5 秒；用 --clip-before 3 --clip-after 8 調整，--no-violation-clips 停用。
+疑似違規為橘框（SUSPECTED），規則確認違規為紅框（RULE CONFIRMED）。
+片段以中文資訊卡固定列出狀態、違規理由、車輛編號、車牌及事件／原影片時間。
+未辨識車牌顯示「未辨識」；目標暫時消失時仍顯示事件證據中的車牌與「目標暫未追蹤」。
+規則成立顯示「規則確認・待覆核」，證據不完整顯示「疑似違規・待覆核」。
+框線依逐幀追蹤位置移動；漏追蹤時不沿用舊位置。事件前的畫面是供覆核的前情片段。
+片段遇到影片頭尾或 --max-frames 分析終點會自動縮短；目前輸出 MP4 不含音訊。
+預設越線方向 away 表示前方車輛遠離鏡頭，朝向鏡頭可用 --crossing-direction toward。
+停止線補償預設開啟，使用 --no-marking-compensation 可停用。
+
+已有辨識 JSONL 時，不重跑模型就能重新判定：
+
+.\.venv\Scripts\python.exe evaluate_violations.py "outputs\影片_detections.jsonl" --rules all --output "outputs\影片_rechecked_violations.jsonl" --diagnostics "outputs\影片_rechecked_diagnostics.jsonl"
+
+在上述重新判定命令加上 --video "input\影片.mp4" 即可一併輸出違規片段。
+已有事件檔時，可直接剪輯而不重跑模型或規則：
+
+.\.venv\Scripts\python.exe violation_clips.py "input\影片.mp4" "outputs\影片_detections.jsonl" "outputs\影片_violations.jsonl"
+
+suspected 表示部分證據成立，confirmed 表示目前規則條件成立，仍需人工覆核。
+事件檔為空表示沒有符合條件的事件，不代表執行失敗。
+紅燈越線規則需具備追蹤車輛、合格停止線、線前／線後觀測，以及越線前後一致的紅燈證據。
+車框底邊僅為接地位置代理值；融合或漏檢延伸的機車框不等於輪胎偵測。
+
+從原影片與既有 JSONL 重算停止線補償：
+
+.\.venv\Scripts\python.exe compensate_recording.py "input\影片.mp4" "outputs\影片_detections.jsonl" --output "outputs\影片_compensated.jsonl" --save-video
+
+重算結果可再交給 evaluate_violations.py；使用新的輸出檔名避免覆寫先前結果。
+
+輸出檔案
+
+預設保存在 outputs，前綴為輸入影片檔名（不含副檔名）。
+
+- *_detections.jsonl：逐幀辨識、距離、車牌與後處理資料。
+- *_detections.csv：車輛／號誌／車牌及標線資料，適合表格查看。
+- *_annotated.mp4：標記影片，僅加上 --save-video 時產生。
+- *_violations.jsonl：違規事件，僅啟用規則時產生。
+- *_rule_diagnostics.jsonl：逐幀規則診斷，僅啟用規則時產生。
+- *_violation_clips/run_*/：每次剪輯的獨立資料夾，內含 suspected／confirmed MP4、對應事件 JSON、中文 TXT 摘要及 index.json 索引；無事件時不建立片段。
+
+中文字型預設使用 Windows 微軟正黑體；其他環境可用 TRAFFIC_AI_FONT 指定繁體中文字型檔。
+既有影片不會自動更新標記；可使用 violation_clips.py 從已有辨識與事件 JSONL 重產生新版片段。
+
+distance_m 為單目模型估測的公尺值，尚未加入相機實測校正。
+車牌 raw_text 是供顯示的時序辨識結果，text 是格式檢查後文字，無有效結果為 null。
+無車輛可匹配的車牌可能有文字，但 object_id／track_id 為 null。
+車輛持續追蹤時，plate_text 保留最高 OCR 信心度的有效車牌文字，text_confidence 保存對應信心度。
+只有信心度更高的有效結果才會取代；低分、同分、辨識失敗或車牌漏檢均不清除標記。
+車輛離開追蹤超過 ocr.cache_ttl（預設 90 幀）才清除快取，新影片會重設。
+
+雙黃線／雙白線完整跨越判定
+
+double_yellow_line_crossing、double_white_line_crossing 判定車輛完整跨越雙實線，
+並依相機運動補償後的軌跡分類為 lane_change（變換車道）、u_turn（迴轉），
+或 complete_crossing（完整跨越但方向未能分類）。--rules all 也會載入這兩項規則。
+confirmed 僅代表設定的影像規則成立；行為分類為軌跡推定，仍需人工覆核。
+既有紅燈越線判定不變。只執行雙線判定：
+
+.\啟動辨識.cmd "input\影片.mp4" --save-video --rules double_yellow_line_crossing,double_white_line_crossing
+
+啟用道路標線模型時，主流程自動從原始分割 mask 擷取雙線幾何，不需新增權重。
+schema_version 1.3 新增 observations.double_lines；原有 road_markings 欄位不變。
+每筆雙線資料包含有限長度 centerline、left_boundary、right_boundary、bbox_xyxy、
+class_name、track_id、observed_frames、source_frame、tracking_status 及 geometry_status。
+members 保存配對前每條線的中心線與邊界，供平行程度、間隙與可見範圍檢查。
+座標使用原影片像素；不把原有延伸至整幅畫面的 line_xyxy 當作雙線幾何。
+CSV 增加 model=double_line 的資料列；標記影片顯示有限中心線與追蹤編號。
+
+幾何按可見連通區擷取逐列邊界，保留彎曲形狀；斷裂區域不補成完整標線。
+同類且距離近、配對唯一的兩個區域可合成 paired；其餘為 provisional。
+paired 還需通過可見長度、間隙、方向、穩定觀測及有限範圍檢查才可用於判定。
+rule_eligible 是預設幾何門檻的提示；規則重算會以此次設定重新檢查，不直接相信該欄位。
+單一連通區 provisional 可作為模型辨識的雙實線語意線帶；此路徑只輸出 suspected，
+不宣稱已辨識兩條實體線。allow_semantic_band=false 可停用此路徑。
+初始篩選值集中在 double_lines.py：面積至少 40 像素、高度至少 8 像素、
+逐列寬度不超過畫面寬度 8%、配對距離不超過 3.5%、追蹤距離不超過 max(3 像素, 1%)。
+這些數值尚未以完整影片調校；接近水平或寬大分岔的區域可能被保守排除。
+
+追蹤沿用 road_marking_compensation.motion 的前幀至目前幀單應矩陣。
+畫面不連續、時間間隔超過 0.2 秒、尺寸改變、運動估計無效、漏檢或配對歧義時不延續身份。
+--no-marking-compensation 下仍輸出當幀雙線幾何，但無相機運動資料時每幀建立新編號，
+雙線規則回報 motion_unavailable，不累積跨線事件。
+postprocessing.double_lines 記錄原始追蹤狀態；規則另維護有限長度的標線參考幾何，
+容許同一標線因遮擋切碎或追蹤 ID 改變時，以同色、共同範圍與垂直距離重新匹配。
+部分可見片段可修正道路配準的法向漂移，不延伸以前未觀測的線段端點。
+部分支持最長保留 3 秒；完全失去片段時，還需有車框遮住至少 20% 參考點，最多保留 0.5 秒。
+運動估計失效立即清除。使用上述補償的事件一律 suspected，幾何來源幀及匹配片段 ID 保存在證據內。
+
+evaluate_violations.py 可直接重算新資料；舊 JSONL 缺少 double_lines 時回報
+geometry_unavailable；舊框架資料缺 members 時回報 invalid_geometry 或 unverified_pair。
+不會由舊的無限延伸直線推造雙線資料。缺少成員幾何時須重跑原影片。
+規則診斷另列 fresh_vehicle_count；只有 source_frame 等於當幀的車輛會傳入判定框架，
+快取或來源幀未知的車框不當成新觀測；快取期間仍檢查標線與運動是否連續。
+
+判定流程為「穩定起始側 → 跨越中 → 穩定另一側 → 輸出 → 等待重新建立起始側」。
+以車框底邊兩端各內縮 15% 寬度及中心作為接地範圍代理，三點都超出整個雙線帶與誤差區才視為穩定側別。
+footprint_inset_ratio 可調為 0 恢復整條底邊；側面車框外角通常不在輪胎接地位置，會使判定延遲。
+這不等於輪胎或實際車身分割。觸線後返回、影片開始已在線上、僅部分車框越線均不成立完整跨越。
+只有跨越前後側別穩定、中途底部中心進入雙線帶，且使用直接觀測的實體配對幾何，才輸出 confirmed。
+前後側別成立但缺少線帶內觀測時，預設輸出 suspected；可用 emit_suspected=false 停用。
+身份切換、漏檢、低分車框、框尺寸／位置異常、幾何品質失敗或超時會中止候選。
+影片結束不會把尚未完成的跨越自動升級為事件。同一跨越只輸出一次；在新側穩定停留
+rearm_seconds 後才可重新建立起始側，辨識下一次反向跨越。
+
+變換車道要求前後軌跡沿標線同向、夾角小；迴轉要求沿標線反向且夾角大。
+先把歷史接地代理點用每幀道路單應矩陣轉到當幀座標，避免直接以螢幕位移推定迴轉。
+位移太小、方向不穩定或斜向移動不符合門檻時，保留完整跨越事件但不硬分類。
+目前不辨識本車跨線，也不辨識沒有跨越雙線的迴轉。
+
+調整 configs/double_line_rules.json，或用 --double-line-config 指定另一份設定。
+兩個入口共用此選項；未知鍵、非有限值及不合理參數會立即報錯。缺省鍵沿用程式預設值。
+
+.\啟動辨識.cmd "input\影片.mp4" --rules all --double-line-config "configs\double_line_rules.json"
+.\.venv\Scripts\python.exe evaluate_violations.py "outputs\影片_detections.jsonl" --rules double_yellow_line_crossing,double_white_line_crossing --double-line-config "configs\double_line_rules.json" --output "outputs\影片_double_recheck.jsonl" --diagnostics "outputs\影片_double_diagnostics.jsonl"
+
+常用門檻（像素皆為原影片座標；角度為度，時間為秒）：
+
+| 參數 | 預設 | 用途 |
+| --- | --- | --- |
+| min_line_observations / min_line_length_px | 3 / 30 | 標線最少連續觀測／可見長度 |
+| min_pair_gap_px / max_pair_gap_ratio | 2 / 4 | 兩線最小間隙／最大與最小間隙比 |
+| max_pair_angle_deg | 20 | 兩線局部走向差 |
+| endpoint_margin_px | 6 | 排除線段端點附近 |
+| side_margin_px / margin_width_ratio | 4 / 0.2 | 側別誤差帶：固定值＋線帶寬度比例＋配準誤差 |
+| max_motion_error_px | 5 | 可接受的配準誤差上限（沿用補償層提供的值） |
+| min_vehicle_confidence | 0.35 | 車輛最低信心度 |
+| stable_observations / stable_seconds | 3 / 0.15 | 每側同時需達到的觀測次數與穩定時間 |
+| max_observation_gap_sec / max_frame_gap_sec | 0.3 / 0.2 | 車輛新觀測最大間隔／影格最大時間間隔 |
+| max_crossing_seconds | 6 | 跨越過程超時 |
+| max_box_scale_ratio / max_step_box_ratio | 1.7 / 1 | 框長寬變化比／單次位移相對框最大邊長的上限 |
+| rearm_seconds | 1 | 新側穩定等待後才重新啟動 |
+| heading_window_sec | 0.6 | 跨越前軌跡保留窗口（至少保留穩定時間） |
+| min_heading_displacement_px / heading_consistency | 8 / 0.8 | 軌跡淨位移／淨位移與路徑長度比 |
+| max_lane_change_angle_deg / min_uturn_angle_deg | 35 / 140 | 變換車道最大角度／迴轉最小角度 |
+| min_longitudinal_alignment | 0.7 | 前後單位移動方向與標線切向內積的絕對值下限 |
+| emit_suspected | true | 是否輸出缺少線帶內觀測的完整跨越候選 |
+| allow_semantic_band | true | 允許模型單一雙實線語意線帶產生疑似事件 |
+| max_partial_support_seconds | 3 | 有限參考幾何只剩部分片段支持時的期限 |
+| min_fragment_length_px / fragment_match_distance_px | 45 / 12 | 片段最少長度／匹配法向距離（80 百分位） |
+| max_occluded_gap_sec | 0.5 | 有車框遮擋時完全漏檢的最長保留時間 |
+| footprint_inset_ratio | 0.15 | 底邊左右各內縮比例，允許 0 至小於 0.5 |
+
+建議先查看診斷的 blocked_lines、skipped_vehicles、reset_reason 與 states，再調整對應門檻。
+若一直無法取得 paired 或追蹤 ID 持續改變，僅降低規則門檻不能補回缺失幾何。
+事件保存本次 parameters，方便比對不同設定的結果。
+
+後續維護入口：double_lines.py 使用一般函式與一個影片專屬 state 字典；
+violation_engine.py 的 DoubleLineCrossingRule 由兩項規則共用，不新增顏色專用類別。
+_evaluate_crossing 維護每個車輛 ID／雙線 ID 的狀態字典，無新增狀態類別。
+build_event 沿用 suspected／confirmed、中文摘要及剪輯介面；evidence 保存 before、transition、
+after 三階段原始快照、double_line、vehicle、direction、maneuver 及 parameters。
+frame／timestamp_sec 為觀測到的跨越時刻；confirmation_frame／confirmation_timestamp_sec
+為完成另一側穩定觀測的時刻。剪輯以跨越時刻為中心，主影片資訊卡在確認時顯示。
+
+執行驗證：
+
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+
+測試涵蓋有限／彎曲／斷裂幾何、不同顏色及歧義配對、相機運動追蹤與中斷、
+舊資料相容、快取車框、兩色雙向跨越、變換車道／迴轉分類、相機移動、觸線返回、
+框跳動、超時、去重、重新啟動、參數調整，以及實際規則產生事件後的重算與剪輯。
+合成序列驗證邏輯，不代表完整實際影片的辨識準確率；門檻仍需人工標註影片調校。
+cdy01 實例保存於 tests/fixtures/cdy01_crossing.jsonl.gz，涵蓋第 3 至 6.67 秒的既有模型輸出。
+vehicle-000010 的語意線帶與遮擋跨線路徑納入回歸驗證；不是針對特定 ID 或秒數硬編碼判定。
+
+填表工具（選用）
+
+工具位於 reporting/autoForm，不會由影片辨識流程自動啟動。
+
+.\.venv\Scripts\python.exe -m pip install -r requirements-reporting.txt
+.\.venv\Scripts\python.exe -m playwright install chromium
+.\啟動填表.cmd
+
+無參數時開啟 GUI。操作見 reporting/autoForm/README.md。
+目前未驗證外部網站填表／送出，也未建立辨識輸出到填表案件的自動轉換。
+
+常見問題
+
+- 找不到環境或套件：執行「安裝環境.cmd」，確認使用專案 .venv 的 Python。
+- 找不到權重／字典：依 weights、dict_path 檢查，路徑相對 JSON 所在目錄。
+- OCR worker 初始化失敗：確認 Paddle 已安裝，微調模型包含 inference.json 與
+  inference.pdiparams，且字典存在；可先用 configs/onnx_vehicle.json 驗證替代路徑。
+- 中文模型路徑：Windows 會暫存 Paddle 權重後載入，正常結束會清理。
+  系統暫存目錄需可寫，且 Paddle 原生載入器需能讀取該路徑。
+- 辨識較慢：CPU 同時執行多模型可能較慢；先用 --max-frames 做短片段測試。
+- 沒有車牌文字：可能未達尺寸／距離／信心門檻或格式檢查未通過，請比對原圖與 JSONL。
+- 沒有違規事件：先確認已加 --rules，再查看診斷檔，不能只憑紅燈推定違規。
+- 受限沙箱卡在 YAPF 快取：道路模型依賴可能需要快取寫入權限；受限環境需管理者
+  允許必要的快取寫入，一般本機終端機不受同一沙箱限制。
+
+使用版範圍
+
+保留影片辨識、規則重算、補償重算、選用填表流程及現行回歸測試；歷史文件、
+重複影片壓縮包及舊模型已清除。輸入影片、既有輸出、填表案件與個人設定均保留。
+目錄用途見根目錄 README.md，權重位置見「模型清單.txt」。
+已完成的短片段整合驗證不代表完整影片準確率；ONNX／Paddle GPU 路徑未實測。

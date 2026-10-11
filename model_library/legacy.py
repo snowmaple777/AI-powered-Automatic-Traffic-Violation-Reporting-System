@@ -4,7 +4,7 @@ import sys
 
 import cv2
 import numpy as np
-from .runtime import yolo_device
+from .runtime import yolo_device, onnx_predictor
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -38,11 +38,13 @@ def _box_record(box, names):
 
 class VehicleDetector:
     def __init__(self, weights, device="cpu", confidence=0.25, imgsz=640,
-                 tracker=ROOT / "botsort_dashcam.yaml", classes=None, class_names=None):
+                 tracker=ROOT / "configs" / "bytetrack_perception.yaml", classes=None, class_names=None,
+                 cuda_conv_search="HEURISTIC"):
         from ultralytics import YOLO
         self.model = YOLO(str(weights), task="detect")
         self.device, self.confidence, self.imgsz = device, confidence, imgsz
         self.device = yolo_device(weights, device)
+        self.predictor_class = onnx_predictor(cuda_conv_search)
         self.tracker = str(tracker)
         self.classes = sorted(VEHICLE_CLASSES) if classes is None else classes
         self.class_names = class_names or {}
@@ -54,7 +56,7 @@ class VehicleDetector:
         result = self.model.track(
             frame, persist=True, tracker=self.tracker,
             classes=self.classes, conf=self.confidence,
-            imgsz=self.imgsz, device=self.device, verbose=False)[0]
+            imgsz=self.imgsz, device=self.device, verbose=False, predictor=self.predictor_class)[0]
         records = [] if result.boxes is None else [
             _box_record(box, result.names) for box in result.boxes]
         for item in records:

@@ -4,12 +4,12 @@ import json
 from pathlib import Path
 
 BACKENDS = {
-    "yolo_vehicle": "model_library.builtin:VehicleModel",
+    "perception_vehicle": "model_library.perception:VehicleModel",
+    "perception_plate": "model_library.perception:PlateModel",
+    "ppocrv6": "model_library.perception:OCRModel",
     "yolo_light": "model_library.builtin:LightModel",
     "mmseg_marking": "model_library.builtin:MarkingModel",
     "onnx_depth": "model_library.depth:DepthModel",
-    "yolo_plate": "model_library.plates:PlateModel",
-    "rapidocr": "model_library.ocr:OCRModel",
 }
 STAGES = ("vehicles", "traffic_lights", "road_markings", "depth", "plates", "ocr")
 
@@ -38,11 +38,16 @@ def load_config(path):
         if not spec.get("backend"):
             raise ValueError(f"{name}: backend is required")
         params = spec.setdefault("params", {})
-        for key in ("weights", "config", "tracker"):
+        for key in ("weights", "config", "tracker", "dict_path"):
             if key in params:
                 value = Path(params[key])
                 value = value if value.is_absolute() else path.parent / value
-                if not value.is_file():
+                is_paddle = key == "weights" and spec["backend"] == "ppocrv6" and value.is_dir()
+                if is_paddle:
+                    for filename in ("inference.json", "inference.pdiparams"):
+                        if not (value / filename).is_file():
+                            raise FileNotFoundError(f"{name}.weights: {value / filename}")
+                elif not value.is_file():
                     raise FileNotFoundError(f"{name}.{key}: {value}")
                 params[key] = str(value.resolve())
     enabled = {n for n, s in config["models"].items() if s.get("enabled", True)}

@@ -2,10 +2,10 @@
   "version": 1,
   "models": {
     "vehicles": {
-      "backend": "yolo_vehicle",
+      "backend": "perception_vehicle",
       "params": {
         "weights": "../models/vehicle/yolo26s.onnx",
-        "tracker": "../botsort_dashcam.yaml"
+        "interval": 2
       }
     },
     "traffic_lights": {
@@ -23,7 +23,7 @@
       }
     },
     "depth": {
-      "enabled": false,
+      "enabled": true,
       "backend": "onnx_depth",
       "params": {
         "weights": "../models/depth/depth_anything_v2_metric_vkitti_vits.onnx",
@@ -31,17 +31,20 @@
       }
     },
     "plates": {
-      "enabled": false,
-      "backend": "yolo_plate",
+      "enabled": true,
+      "backend": "perception_plate",
       "params": {
-        "weights": "../models/plate/license-plate-finetune-v1s.onnx"
+        "weights": "../models/plate/license-plate-finetune-v1s.onnx",
+        "max_distance": 22.0
       }
     },
     "ocr": {
-      "enabled": false,
-      "backend": "rapidocr",
+      "enabled": true,
+      "backend": "ppocrv6",
       "params": {
-        "weights": "../models/ocr/ch_PP-OCRv4_rec_infer.onnx"
+        "weights": "../models/ocr/PP-OCRv6_rec_small.onnx",
+        "min_width": 58,
+        "max_distance": 22.0
       }
     }
   }

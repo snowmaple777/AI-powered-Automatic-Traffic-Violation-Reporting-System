@@ -1,0 +1,45 @@
+{
+  "source": "../perception",
+  "files": [
+    {
+      "path": "models/vehicle/yolo26s.onnx",
+      "bytes": 38832423,
+      "sha256": "f2b02a290c0a654b70d91128a35291d8466f66dc2f095ca6a7085a4fdc2db055"
+    },
+    {
+      "path": "models/plate/license-plate-finetune-v1s.onnx",
+      "bytes": 39271328,
+      "sha256": "fa0aa53e802444b1dc99904060d65f4412bb58591e5b4eb9fef054f9df5cbece"
+    },
+    {
+      "path": "models/depth/depth_anything_v2_metric_vkitti_vits.onnx",
+      "bytes": 98991477,
+      "sha256": "528467b574d0198657f28d8c5d0dc85ad3ce63313015c4145697b1cdf1b0fe11"
+    },
+    {
+      "path": "models/ocr/PP-OCRv6_rec_small.onnx",
+      "bytes": 21234383,
+      "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884"
+    },
+    {
+      "path": "models/ocr/ppocrv6_dict.txt",
+      "bytes": 74947,
+      "sha256": "b5f2bfe2bdd9448429e3e82b51c789775d9b42f2403d082b00662eb77e401c5d"
+    },
+    {
+      "path": "models/ocr/PP-OCRv6_taiwan_infer/inference.json",
+      "bytes": 208004,
+      "sha256": "98ada7422100554f89cff5dc1a4062ef295c3ccbf39cfd91c839670fdd22a1c2"
+    },
+    {
+      "path": "models/ocr/PP-OCRv6_taiwan_infer/inference.pdiparams",
+      "bytes": 21074618,
+      "sha256": "a2403aadb52bad4f623ff9d88c0c8703d14d0077d065ab92d623e39f848b9341"
+    },
+    {
+      "path": "models/ocr/PP-OCRv6_taiwan_infer/inference.yml",
+      "bytes": 150580,
+      "sha256": "965b3350c145a30e07b3febb4b63fe0acf11c5e98ae8b69f715b163fb7a85c13"
+    }
+  ]
+}

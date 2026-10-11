@@ -4,6 +4,10 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 import math
 import copy
+from functools import partial
+import numpy as np
+from double_lines import (validate_rule_settings, line_quality, vehicle_line_position,
+                          project_points, classify_maneuver, resolve_rule_lines)
 from signal_state import TemporalSignalState
 from typing import Iterable
 
@@ -415,8 +419,255 @@ class RedLightStopLineCrossingRule(ViolationRule):
         return events
 
 
+class DoubleLineCrossingRule(ViolationRule):
+    """Complete footprint-proxy crossings, with conservative maneuver inference."""
+
+    def __init__(self, context, *, color, settings=None):
+        if color not in ("yellow", "white"):
+            raise ValueError("Double-line color must be yellow or white")
+        self.context = context
+        self.rule_id = f"double_{color}_line_crossing"
+        self.class_name = f"solid double {color}"
+        self.label = "跨越雙黃線" if color == "yellow" else "跨越雙白線"
+        self.diagnostics = {}
+        self.settings = validate_rule_settings(settings)
+        self.states = {}
+        self.line_memory = {}
+        self.previous_frame = None
+
+    def evaluate(self, observation):
+        frame = observation["frame"]
+        items = observation.get("observations", {})
+        lines = [line for line in items.get("double_lines", [])
+                 if line.get("class_name") == self.class_name]
+        vehicles = items.get("rule_vehicles", items.get("vehicles", []))
+        fresh = [vehicle for vehicle in vehicles
+                 if vehicle.get("source_frame") == frame["index"]]
+        self.diagnostics = {
+            "status": "evaluating", "enabled": True,
+            "geometry_status": "observed" if lines else "geometry_unavailable",
+            "line_track_ids": [line.get("track_id") for line in lines],
+            "vehicle_count": len(vehicles), "fresh_vehicle_count": len(fresh),
+            "cached_or_unknown_vehicle_count": len(vehicles) - len(fresh),
+            "blocked_lines": [], "skipped_vehicles": [], "reset_reason": None,
+            "settings": self.settings,
+        }
+        motion = observation.get("postprocessing", {}).get("road_marking_compensation", {}).get("motion", {})
+        reset = None
+        if self.previous_frame is not None and (
+                frame["index"] != self.previous_frame["index"] + 1 or
+                not 0 < frame["timestamp_sec"] - self.previous_frame["timestamp_sec"] <= self.settings["max_frame_gap_sec"] or
+                any(frame.get(k) != self.previous_frame.get(k) for k in ("width", "height"))):
+            reset = "discontinuous_input"
+        self.previous_frame = dict(frame)
+        try:
+            matrix = np.asarray(motion.get("matrix"), dtype=float)
+            error = float(motion.get("reprojection_error_px", 0))
+            if (not motion.get("valid") or matrix.shape != (3, 3) or not np.isfinite(matrix).all()
+                    or abs(np.linalg.det(matrix)) < 1e-9 or not math.isfinite(error)
+                    or not 0 <= error <= self.settings["max_motion_error_px"]):
+                raise ValueError("Unusable road motion")
+        except (TypeError, ValueError):
+            self.states.clear()
+            self.line_memory.clear()
+            self.diagnostics.update(status="blocked", reset_reason="motion_unavailable")
+            return []
+        if reset:
+            self.states.clear()
+            self.line_memory.clear()
+            self.diagnostics["reset_reason"] = reset
+        lines = resolve_rule_lines(lines, self.line_memory, matrix, frame, self.settings, vehicles)
+        usable = []
+        for line in lines:
+            reason = line_quality(line, self.settings)
+            if line.get("source_frame") != frame["index"] or not line.get("track_id"):
+                reason = "stale_or_untracked_line"
+            if reason:
+                self.diagnostics["blocked_lines"].append({"track_id": line.get("track_id"), "reason": reason})
+            else:
+                usable.append(line)
+        valid_ids = {line["track_id"] for line in usable}
+        vehicle_ids = {v.get("object_id") for v in vehicles}
+        for key, state in list(self.states.items()):
+            if (key[1] not in valid_ids or key[0] not in vehicle_ids or
+                    frame["timestamp_sec"] - state["last_time"] > self.settings["max_observation_gap_sec"]):
+                del self.states[key]
+                continue
+            try:
+                # Bring old ground samples into the current road coordinate system.
+                # Evidence snapshots remain in their original image coordinates.
+                for path in (state["before_path"], state["after_path"]):
+                    if path:
+                        projected = project_points([s["point"] for s in path], matrix)
+                        for sample, point in zip(path, projected):
+                            sample["point"] = point
+                state["last_point"] = project_points([state["last_point"]], matrix)[0]
+                x1, y1, x2, y2 = state["last_box"]
+                box = np.asarray(project_points([[x1, y1], [x2, y2]], matrix))
+                state["last_box"] = [*box.min(axis=0), *box.max(axis=0)]
+            except ValueError:
+                del self.states[key]
+        events = self._evaluate_crossing(frame, fresh, usable, error)
+        self.diagnostics["states"] = [{"object_id": key[0], "line_id": key[1], "phase": s["phase"]}
+                                      for key, s in self.states.items()]
+        return events
+
+    def _snapshot(self, frame, vehicle, line, position):
+        return copy.deepcopy({"frame": frame, "vehicle": vehicle, "double_line": line,
+                              "reference_point": position["point"], "side": position["side"]})
+
+    def _evaluate_crossing(self, frame, vehicles, lines, motion_error=0):
+        events = []
+        now, cfg = frame["timestamp_sec"], self.settings
+        for vehicle in vehicles:
+            object_id = vehicle.get("object_id")
+            if (not object_id or vehicle.get("class_name") not in
+                    {"car", "truck", "bus", "motorcycle", "bicycle"} or
+                    not isinstance(vehicle.get("confidence"), (int, float)) or
+                    not math.isfinite(vehicle["confidence"]) or vehicle["confidence"] < cfg["min_vehicle_confidence"]):
+                for key in [key for key in self.states if key[0] == object_id]:
+                    del self.states[key]
+                self.diagnostics["skipped_vehicles"].append({"object_id": object_id, "reason": "invalid_vehicle"})
+                continue
+            for line in lines:
+                key = (object_id, line["track_id"])
+                position = vehicle_line_position(vehicle, line, cfg, motion_error)
+                if position is None:
+                    self.states.pop(key, None)
+                    continue
+                side, point, box = position["side"], position["point"], position["box"]
+                state = self.states.get(key)
+                if state:
+                    old = state["last_box"]
+                    sizes = [box[2] - box[0], box[3] - box[1]]
+                    old_sizes = [old[2] - old[0], old[3] - old[1]]
+                    ratios = [max(a / max(b, 1e-6), b / a) for a, b in zip(sizes, old_sizes)]
+                    if (max(ratios) > cfg["max_box_scale_ratio"] or
+                            np.linalg.norm(np.asarray(point) - state["last_point"]) >
+                            cfg["max_step_box_ratio"] * max(sizes)):
+                        self.states.pop(key)
+                        self.diagnostics["skipped_vehicles"].append({"object_id": object_id, "reason": "box_jump"})
+                        state = None
+                sample = {"time": now, "point": list(point)}
+                if state is None:
+                    if side == 0:
+                        continue  # Starting on a line cannot establish an origin side.
+                    state = dict(phase="seeding", origin=side, origin_since=now,
+                                 before_path=[], after_path=[], before=None, crossing=None,
+                                 transition=None, destination_since=None, destination_count=0)
+                    self.states[key] = state
+                state.update(last_time=now, last_point=list(point), last_box=list(box))
+                if state["phase"] == "reported":
+                    if side != state["destination"]:
+                        state["rearm_since"] = now
+                    elif now - state["rearm_since"] >= cfg["rearm_seconds"]:
+                        state.update(phase="seeding", origin=side, origin_since=now,
+                                     before_path=[], after_path=[], crossing=None, transition=None)
+                    else:
+                        continue
+                    if state["phase"] == "reported":
+                        continue
+                if state["phase"] == "crossing" and now - state["crossing"]["frame"]["timestamp_sec"] > cfg["max_crossing_seconds"]:
+                    del self.states[key]
+                    continue
+                if side == state["origin"]:
+                    # A touch-and-return cancels the candidate without emitting it.
+                    if state["phase"] == "crossing":
+                        state.update(phase="seeding", origin_since=now, before_path=[],
+                                     after_path=[], crossing=None, transition=None)
+                    path = state["before_path"]
+                    path.append(sample)
+                    path[:] = [s for s in path if now - s["time"] <= max(cfg["heading_window_sec"], cfg["stable_seconds"])]
+                    state["before"] = self._snapshot(frame, vehicle, line, position)
+                    if len(path) >= cfg["stable_observations"] and now - state["origin_since"] >= cfg["stable_seconds"]:
+                        state["phase"] = "armed"
+                    continue
+                if state["phase"] == "seeding":
+                    del self.states[key]
+                    continue
+                if state["phase"] == "armed":
+                    state.update(phase="crossing", crossing=self._snapshot(frame, vehicle, line, position),
+                                 after_path=[], destination_since=None, destination_count=0, transition=None,
+                                 inferred_geometry=(state["before"]["double_line"].get("component_count") != 2 or
+                                                    state["before"]["double_line"].get("partial_support", False)))
+                state["inferred_geometry"] = state.get("inferred_geometry", False) or line.get("partial_support", False) or line.get("component_count") != 2
+                if position["center_in_band"]:
+                    state["transition"] = self._snapshot(frame, vehicle, line, position)
+                if side == 0:
+                    state.update(after_path=[], destination_since=None, destination_count=0)
+                    continue
+                if state["destination_since"] is None:
+                    state["destination_since"] = now
+                state["destination_count"] += 1
+                state["after_path"].append(sample)
+                if (state["destination_count"] < cfg["stable_observations"] or
+                        now - state["destination_since"] < cfg["stable_seconds"]):
+                    continue
+                conditions = dict(stable_origin=True, stable_destination=True, complete_band_crossing=True,
+                                  continuous_tracks=True, geometry_verified=True,
+                                  directly_observed_pair=not state.get("inferred_geometry", False),
+                                  transition_observed=state["transition"] is not None)
+                status = "confirmed" if all(conditions.values()) else "suspected"
+                maneuver, direction = classify_maneuver(state["before_path"], state["after_path"], position["tangent"], cfg)
+                crossing = state["transition"] or state["crossing"]
+                evidence = {"before": state["before"], "transition": state["transition"],
+                            "after": self._snapshot(frame, vehicle, line, position),
+                            "direction": direction, "reference_point_method": "bbox_inset_bottom_edge_proxy",
+                            "parameters": cfg, "maneuver": maneuver}
+                if status == "confirmed" or cfg["emit_suspected"]:
+                    event = self.build_event(crossing["frame"], crossing["vehicle"], crossing["double_line"],
+                                             status=status, conditions=conditions, evidence=evidence)
+                    event.update(behavior=maneuver, confirmation_frame=frame["index"], confirmation_timestamp_sec=now)
+                    if vehicle.get("plate_text"):
+                        event["evidence"]["vehicle"]["plate_text"] = vehicle["plate_text"]
+                    action = {"lane_change": "，軌跡符合變換車道", "u_turn": "，軌跡符合迴轉",
+                              "complete_crossing": "，行為方向未能分類"}[maneuver]
+                    event["description"] = self.label + "：車框內縮底邊代理由雙線帶一側完整移至另一側" + action + (
+                        "；跨線過程有觀測支持。" if status == "confirmed" else
+                        "；雙線語意或遮擋補償證據待覆核。" if not conditions["directly_observed_pair"] else
+                        "；缺少線帶內觀測，待覆核。")
+                    events.append(event)
+                state.update(phase="reported", destination=side, rearm_since=now)
+        return events
+
+    def finalize(self):
+        # Incomplete approaches never become events merely because the video ends.
+        self.states.clear()
+        self.line_memory.clear()
+        self.previous_frame = None
+        return []
+
+    def build_event(self, frame, vehicle, line, *, status, conditions, evidence=None):
+        """Serialize an explicit decision with immutable evidence snapshots."""
+        if status not in ("suspected", "confirmed") or not conditions or any(
+                type(value) is not bool for value in conditions.values()):
+            raise ValueError("Explicit status and boolean conditions are required")
+        if status == "confirmed" and not all(conditions.values()):
+            raise ValueError("Confirmed events require all supplied conditions")
+        if line.get("class_name") != self.class_name:
+            raise ValueError("Line class does not match the rule")
+        return copy.deepcopy({
+            "event_id": f"{self.context.source_id}:{self.rule_id}:{vehicle['object_id']}:"
+                        f"{line['track_id']}:{frame['index']}",
+            "rule_id": self.rule_id, "source_id": self.context.source_id,
+            "status": status, "status_label": "確認違規" if status == "confirmed" else "疑似違規",
+            "confirmation_scope": "configured_rule_conditions", "review_required": True,
+            "behavior": self.rule_id,
+            "description": self.label + ("，符合設定的跨線條件。" if status == "confirmed"
+                                          else "，跨線證據尚待覆核。"),
+            "frame": frame["index"], "timestamp_sec": frame["timestamp_sec"],
+            "object_id": vehicle["object_id"], "vehicle_class": vehicle.get("class_name"),
+            "conditions": conditions,
+            "met_conditions": [key for key, value in conditions.items() if value],
+            "missing_conditions": [key for key, value in conditions.items() if not value],
+            "evidence": {**(evidence or {}), "vehicle": vehicle, "double_line": line},
+        })
+
+
 RULE_FACTORIES = {
     RedLightStopLineCrossingRule.rule_id: RedLightStopLineCrossingRule,
+    "double_yellow_line_crossing": partial(DoubleLineCrossingRule, color="yellow"),
+    "double_white_line_crossing": partial(DoubleLineCrossingRule, color="white"),
 }
 
 

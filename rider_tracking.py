@@ -88,6 +88,7 @@ def attach_riders(record, tracker):
         item = dict(vehicle)
         group = confirmed.get(vehicle.get('object_id'))
         if group:
+            group['plate_text'] = vehicle.get('plate_text')
             item.update(object_id=group['object_id'], source_object_id=group['vehicle_id'],
                         rider_id=group['rider_id'], rider_group=group)
         rule_vehicles.append(item)
@@ -104,6 +105,8 @@ def draw_rider_groups(frame, groups):
         x1,y1,x2,y2 = [int(v) for v in group['bbox_xyxy']]
         cv2.rectangle(frame, (x1,y1), (x2,y2), color, 3)
         label = f"{group['object_id']} {group['status'].upper()}"
+        if group.get("plate_text"):
+            label += " " + group["plate_text"]
         members = f"R:{group['rider_id']} + V:{group['vehicle_id']}"
         for offset, text in enumerate([label, members]):
             size, baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, .5, 1)

@@ -1,6 +1,6 @@
 """Stable data contract between perception models and violation rules."""
 
-SCHEMA_VERSION = "1.2"
+SCHEMA_VERSION = "1.3"
 
 
 def build_frame_observation(frame_index, timestamp_sec, width, height, fps,
@@ -20,6 +20,7 @@ def build_frame_observation(frame_index, timestamp_sec, width, height, fps,
             "vehicles": vehicles,
             "traffic_lights": traffic_lights,
             "road_markings": road_markings,
+            "double_lines": [],
             "depth": depth or [],
             "plates": plates or [],
         },

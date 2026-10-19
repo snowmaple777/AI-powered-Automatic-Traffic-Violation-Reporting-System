@@ -1,20 +1,23 @@
 {
-  "architecture": "YOLO11n",
-  "task": "detect",
-  "source": "runs/detect/train-6/weights/best.pt",
+  "model": "YOLO26s",
   "weights": "traffic_light_best.pt",
-  "sha256": "57b19ed8b7a01b23ac442b61984d90066dd931c3b40cad25935a2cd59c7ac760",
-  "size_bytes": 5491268,
-  "ultralytics_version": "8.4.146",
-  "names": {
-    "2": "yellow",
+  "sha256": "3ff0b2e2a039ed8302a63ee5c12437389cb32760329a57cd8b21537c789d62cb",
+  "bytes": 20473221,
+  "classes": {
     "0": "red",
-    "1": "green"
+    "1": "green",
+    "2": "yellow",
+    "3": "arrow"
   },
-  "training": {
-    "epochs": 30,
-    "batch": 8,
-    "imgsz": 800
+  "ultralytics": "8.4.146",
+  "inference": {
+    "imgsz": 1280,
+    "conf": 0.15,
+    "nms": true,
+    "iou": 0.7,
+    "max_det": 300,
+    "half": false
   },
-  "verification": "Archive metadata and SHA-256 checked; inference not tested in packaging environment"
+  "evaluation": "No formal accuracy claim for this checkpoint. Tracking preview is not accuracy validation.",
+  "updated": "2026-10-20"
 }

@@ -1,2 +1,1 @@
-# Match the version recorded in the trained checkpoint.
 ultralytics==8.4.146

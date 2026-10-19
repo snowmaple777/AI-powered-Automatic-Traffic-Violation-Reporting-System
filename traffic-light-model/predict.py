@@ -12,8 +12,8 @@ def parse_args():
     parser.add_argument("--source", required=True, help="Image, video, directory or webcam index (0)")
     parser.add_argument("--weights", type=Path, default=ROOT / "models" / "traffic_light_best.pt")
     parser.add_argument("--output", type=Path, default=ROOT / "outputs")
-    parser.add_argument("--conf", type=float, default=0.25, help="Confidence threshold (0 to 1)")
-    parser.add_argument("--imgsz", type=int, default=800, help="Inference image size")
+    parser.add_argument("--conf", type=float, default=0.15, help="Confidence threshold (0 to 1)")
+    parser.add_argument("--imgsz", type=int, default=1280, help="Inference image size")
     parser.add_argument("--device", default="cpu", help="cpu, 0 (CUDA GPU), or mps")
     parser.add_argument("--show", action="store_true", help="Display detections in a window")
     args = parser.parse_args()
@@ -42,11 +42,16 @@ def main():
         imgsz=args.imgsz,
         device=args.device,
         stream=True,
+        nms=True,
+        iou=0.7,
+        max_det=300,
+        half=False,
+        agnostic_nms=False,
         save=True,
         save_txt=True,
         save_conf=True,
         show=args.show,
-        project=str(args.output),
+        project=str(args.output.resolve()),
         name="predict",
         exist_ok=False,
     )

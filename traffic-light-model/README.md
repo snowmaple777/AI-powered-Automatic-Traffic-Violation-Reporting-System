@@ -1,163 +1,48 @@
-# 紅綠燈影像辨識模型
+# 紅綠燈偵測：YOLO26s
 
-使用 YOLO11n 訓練出的影像模型，用以辨識：
+2026-10-20 更新。權重為本次 Kaggle 訓練的 best26.pt，發布時沿用 `models/traffic_light_best.pt` 檔名，方便既有呼叫端使用。舊版 YOLO11n 的數據不能當成本模型的指標。
 
-- 🔴 Red
-- 🟢 Green
-- 🟡 Yellow
+## 類別與介面
 
-紅燈與綠燈的辨識效果較佳，但黃燈由於資料較少，辨識能力相對較弱。
+0 red、1 green、2 yellow、**3 arrow**。原本只接受三類的下游程式需要明確忽略或處理 arrow，不可把所有其他類別都當 yellow。
 
-模型使用 BDD100K 資料集進行訓練
+本版採單尺度原圖推論：imgsz=1280、conf=0.15、IoU=0.7、max_det=300、FP32、nms=True。這不是舊研究中的 area_downup / 多尺度 B-H30 流程。本權重使用 NMS 分支，不應宣稱本次推論為 NMS-free。
 
----
+## 安裝與推論
 
-## 使用來源
+Python 3.10，安裝 `python -m pip install -r requirements.txt`。GPU 另需相容的 CUDA PyTorch。以下指令在本資料夾執行；不會啟動訓練。
 
-### 模型
-
-[YOLO11n - Ultralytics](https://docs.ultralytics.com/models/yolo11/)
-
-### 資料集
-
-來源：
-
-[BDD100K - Kaggle](https://www.kaggle.com/datasets/alvaromalfaro/bdd100k)
-
----
-
-## 模型訓練設定
-
-| 設定 | 數值 |
-|---|---|
-| Model | YOLO11n |
-| Image Size | 800 |
-| Batch Size | 8 |
-| Epochs | 30 |
-| Classes | Red / Green / Yellow |
-| Ultralytics | 8.4.146 |
-
-訓練資料中的有效 Traffic Light Annotation：
-
-| Class | 數量 |
-|---|---:|
-| Red | 52,762 |
-| Green | 90,872 |
-| Yellow | 3,928 |
-| **Total** | **147,562** |
-
----
-
-## 模型結果
-
-BDD100K Validation Set：
-
-| Class | Precision | Recall | mAP50 | mAP50-95 |
-|---|---:|---:|---:|---:|
-| All | 0.677 | 0.498 | 0.537 | 0.201 |
-| Red | 0.653 | 0.621 | 0.613 | 0.221 |
-| Green | 0.697 | 0.724 | 0.704 | 0.256 |
-| Yellow | 0.683 | 0.148 | 0.293 | 0.127 |
-
----
-## 安裝
-
-建議使用 Python 3.10。
-
-安裝 Ultralytics：
-
-```bash
-pip install ultralytics==8.4.146
+```powershell
+python predict.py --source "影片完整路徑.mp4" --device 0 --conf 0.15 --output "D:/traffic_output"
 ```
 
-若要使用 NVIDIA GPU，需另外確認安裝的 PyTorch 版本支援 CUDA。
+沒有 GPU 改 `--device cpu`。輸出標框影像/影片與 YOLO txt，分數保持原始值。預設模型相對腳本定位，輸出會轉成絕對路徑。
 
----
+## 位置追蹤預覽
 
-# 使用
+需要 FFmpeg / ffprobe 放在 PATH，或用 `--ffmpeg`、`--ffprobe` 指定執行檔。此程式已獨立，不依賴研究資料夾。
 
-模型權重位於：
-
-```text
-models/traffic_light_best.pt
+```powershell
+python track_preview.py --source "影片完整路徑.mp4" --device 0 --output "D:/traffic_output/track_v1"
 ```
 
-## 圖片辨識
+先檢查可加 `--dry-run`；短測可加 `--max-frames 10`。輸出目錄必須尚未存在，避免覆寫。
 
-假設為 `test.jpg`：
+- `comparison.mp4`：左原始 conf>=0.15，右位置追蹤＋EMA 平滑。
+- `frames.jsonl`：原始框、類別、信心、追蹤 ID、平滑框、時間戳。
+- `summary.json`：模型 SHA256、參數、處理幀數、耗時。
+- `encode.log`：影片編碼日誌。
 
-```bash
-yolo predict model="models/traffic_light_best.pt" source="test.jpg" imgsz=800 conf=0.1 save=True
-```
----
+追蹤不依顏色關聯；新軌跡需要 0.15，既有軌跡可由 0.05 接續。漏抓最多保留 0.2 秒，灰色虛線 unknown，信心為 null。只追 red/green/yellow，arrow 不追蹤。參數集中在 `track_preview.py` 的 SETTINGS。沒有顏色投票、不加分；短暫低分偵測仍顯示當幀模型類別。
 
-## 影片辨識
+影片輸出無音軌，以平均時間長度產生固定幀率；JSONL 保留來源時間戳。長影片逐幀解碼，不保留全部像素於記憶體，但 ffprobe 會預讀所有時間戳。
 
-假設為 `test.mp4`：
+## 已知限制與測試
 
-```bash
-yolo predict model="models/traffic_light_best.pt" source="test.mp4" imgsz=800 conf=0.1 save=True
-```
-結果會輸出到：
+ms03 的 117 幀曾完成 CPU 左右比較；遠燈判 yellow 的問題仍存在。追蹤可以保留短暫消失的框，但不能救回從未被偵測的燈，也不代表準確率提高。尚未提供此 YOLO26s 的正式 test / 28 幀比較指標；不能沿用先前 YOLO11s 的分數。須人工複核，不能單憑框與顏色判定交通違規。
 
+模型使用的資料來源包含自標台灣圖、Roboflow 台灣資料、BDD、TN-TLD 與負樣本。Roboflow 來源曾有無具名作者及 Taiwan Wanderer 浮水印的授權疑慮，需另確認使用條件；本包不包含原圖、標註、測試影片或資料集。Ultralytics 與上游資料的授權仍適用，詳見各來源條款。
 
-```text
-runs/detect/predict/
-```
----
+模型檔案雜湊與類別見 `models/metadata.json`。本包沒有自動訓練或自動下載權重步驟。
 
-## 使用 NVIDIA GPU
-
-如果已安裝支援 CUDA 的 PyTorch，可以指定：
-
-```bash
-device=0
-```
-
-完整指令例如：
-
-```bash
-yolo predict model="models/traffic_light_best.pt" source="test.mp4" imgsz=800 conf=0.15 device=0 save=True
-```
-
-其中：
-
-```text
-device=0
-```
-
-代表使用第一張 NVIDIA GPU。
-
----
-
-## Confidence Threshold
-
-建議使用：
-
-```text
-0.1 ~ 0.20
-```
-
-開始測試。
-
----
-
-## 類別
-
-目前模型有三個類別：
-
-```text
-0 = red
-1 = green
-2 = yellow
-```
-
----
-
-## 專案用途
-
-本模型預計作為闖紅燈辨識以及後續其他檢舉事項判斷的一部分。
-
-此模型僅負責：
-
-看紅綠燈
+本機可能保留舊 `predict_stable.py`、`improve.py` 等研究工具；本次發布的入口是 `predict.py` 與 `track_preview.py`，請勿用舊工具解讀這版的追蹤行為或啟動訓練。

@@ -40,20 +40,74 @@ class ViolationRule(ABC):
 
 
 class ViolationEngine:
-    def __init__(self, rules: Iterable[ViolationRule]):
+    """依序執行規則，並把同一台車的停等區事件併入闖紅燈事件。
+
+    闖紅燈的車必然行經停等區，兩者是同一個違規行為，不分開報告。停等區事件可能早於闖紅燈事件
+    （ms01：2.0 秒 vs 3.4 秒），所以先保留 merge_window_seconds；期間同一台車出現闖紅燈事件時，
+    整筆停等區事件放進該事件的 merged_events，不再單獨輸出。闖紅燈事件在前時，之後窗口內的
+    停等區事件直接略過，記錄在停等區規則當幀的 diagnostics["merged_into"]。
+    未啟用闖紅燈規則時不保留、不合併。
+    """
+    MERGE_INTO = {"car_motorcycle_waiting_area": "red_light_stop_line_crossing"}
+
+    def __init__(self, rules: Iterable[ViolationRule], merge_window_seconds=3.0):
         self.rules = list(rules)
+        enabled = {rule.rule_id for rule in self.rules}
+        self.merge = {source: target for source, target in self.MERGE_INTO.items()
+                      if source in enabled and target in enabled}
+        self.merge_window = merge_window_seconds
+        self.pending = []      # (保留起始時間, 停等區事件)
+        self.reported = {}     # (目標規則, object_id) -> (時間, event_id)
 
     def evaluate(self, observation: dict) -> list[dict]:
         events = []
         for rule in self.rules:
             events.extend(rule.evaluate(observation))
-        return events
+        return self._merge(events, observation["frame"]["timestamp_sec"])
 
     def finalize(self) -> list[dict]:
         events = []
         for rule in self.rules:
             events.extend(rule.finalize())
-        return events
+        return self._merge(events, None)
+
+    def _merge(self, events, now):
+        if not self.merge:
+            return events
+        targets = set(self.merge.values())
+        output = []
+        # 同一幀內先處理停等區事件（進入保留），同幀的闖紅燈事件才能吸收它。
+        for event in sorted(events, key=lambda e: e["rule_id"] not in self.merge):
+            rule_id, identity = event["rule_id"], event.get("object_id")
+            at = now if now is not None else event["timestamp_sec"]
+            if rule_id in targets and identity:
+                absorbed = [e for _, e in self.pending if self.merge[e["rule_id"]] == rule_id and e.get("object_id") == identity]
+                if absorbed:
+                    self.pending = [(t, e) for t, e in self.pending if not any(e is a for a in absorbed)]
+                    event.setdefault("merged_events", []).extend(absorbed)
+                self.reported[(rule_id, identity)] = (at, event.get("event_id"))
+                output.append(event)
+            elif rule_id in self.merge and identity:
+                earlier = self.reported.get((self.merge[rule_id], identity))
+                if earlier and at - earlier[0] <= self.merge_window:
+                    rule = next(r for r in self.rules if r.rule_id == rule_id)
+                    getattr(rule, "diagnostics", {}).setdefault("merged_into", []).append(
+                        dict(event_id=event.get("event_id"), into_event_id=earlier[1]))
+                    continue
+                self.pending.append((at, event))
+            else:
+                output.append(event)
+        released = [(t, e) for t, e in self.pending if now is None or now - t > self.merge_window]
+        self.pending = [(t, e) for t, e in self.pending if not (now is None or now - t > self.merge_window)]
+        for _, event in released:
+            if now is not None:
+                event["released_timestamp_sec"] = now  # 延後輸出；標註影片依此時間顯示
+            output.append(event)
+        if now is not None:
+            self.reported = {k: v for k, v in self.reported.items() if now - v[0] <= self.merge_window}
+        else:
+            self.reported.clear()
+        return output
 
 
 class RedLightStopLineCrossingRule(ViolationRule):

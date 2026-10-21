@@ -174,7 +174,8 @@ def run(args, resources, pipeline=None):
                 if violations_file:
                     frame_events = violation_engine.evaluate(record)
                     recent_events = [event for event in recent_events if
-                                     timestamp-event.get("confirmation_timestamp_sec", event["timestamp_sec"]) <= 1.0]
+                                     timestamp-event.get("released_timestamp_sec", event.get(
+                                         "confirmation_timestamp_sec", event["timestamp_sec"])) <= 1.0]
                     recent_events.extend(frame_events)
                     all_events.extend(frame_events)
                     for event in frame_events:

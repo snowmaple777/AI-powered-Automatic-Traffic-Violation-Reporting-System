@@ -131,7 +131,8 @@ def run_clip(video, max_frames, out_dir):
 
     original = run_pipeline.ModelPipeline
     run_pipeline.ModelPipeline = TimedPipeline
-    argv = [str(ROOT / video), "--output-dir", str(out_dir), "--rules", "all", "--no-violation-clips"]
+    argv = [str(ROOT / video), "--output-dir", str(out_dir), "--rules", "all", "--no-violation-clips",
+            "--save-masks", str(out_dir / "masks")]  # 供離線以真實資料重播後處理
     if max_frames:
         argv += ["--max-frames", str(max_frames)]
     try:
@@ -146,6 +147,14 @@ def run_clip(video, max_frames, out_dir):
     stage_ms = {k: round(1000 * sum(v[warm:]) / max(1, len(v[warm:])), 1) for k, v in timings.items()}
     model_seconds = sum(sum(v) for v in timings.values())
     summary = summarize_outputs(out_dir, Path(video).stem)
+    pipeline_ms = {}
+    timing_file = out_dir / f"{Path(video).stem}_timings.json"
+    if timing_file.is_file():
+        pipeline_ms = json.loads(timing_file.read_text(encoding="utf-8"))["ms_per_frame"]
+        summary["pipeline_ms"] = pipeline_ms
+    # 遮罩存檔只為離線重播，不屬於辨識流程本身，從牆鐘時間與非模型時間中扣除
+    mask_seconds = pipeline_ms.get("save_masks", 0) * frames / 1000
+    wall -= mask_seconds
     summary.update(wall_seconds=round(wall, 1), wall_fps=round(frames / wall, 2) if wall else None,
                    stage_ms_after_warmup=stage_ms,
                    non_model_ms_per_frame=round(1000 * (wall - model_seconds) / max(1, frames), 1))
@@ -187,10 +196,18 @@ def previous_report(label, explicit):
     if explicit:
         path = VERIFY_DIR / explicit / "report.json"
         return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
-    reports = [p for p in VERIFY_DIR.glob("*/report.json") if p.parent.name != label and not p.parent.name.startswith("_")]
-    if not reports:
-        return None
-    return json.loads(max(reports, key=lambda p: p.stat().st_mtime).read_text(encoding="utf-8"))
+    # 只採用驗證報告（含 label 與 clips）；outputs/verify/profile 等其他工具的報告不列入。
+    candidates = []
+    for path in VERIFY_DIR.glob("*/report.json"):
+        if path.parent.name == label or path.parent.name.startswith("_"):
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and data.get("label") and "clips" in data:
+            candidates.append((path.stat().st_mtime, data))
+    return max(candidates, key=lambda item: item[0])[1] if candidates else None
 
 
 def format_report(report, previous):
@@ -219,6 +236,9 @@ def format_report(report, previous):
         lines.append(f"[{name}] {clip['frames']} 幀  {clip['wall_fps']} FPS{delta('wall_fps')}  "
                      f"非模型 {clip['non_model_ms_per_frame']} ms/幀{delta('non_model_ms_per_frame')}")
         lines.append("  模型 ms/幀：" + "  ".join(f"{k} {v}" for k, v in clip["stage_ms_after_warmup"].items()))
+        if clip.get("pipeline_ms"):
+            parts = {k: v for k, v in clip["pipeline_ms"].items() if k != "models"}
+            lines.append("  非模型分段 ms/幀：" + "  ".join(f"{k} {v}" for k, v in parts.items()))
         lines.append(f"  車輛框 {clip['vehicle_boxes']}（新偵測 {clip['fresh_vehicle_boxes']}）{delta('fresh_vehicle_boxes')}  "
                      f"追蹤 {clip['vehicle_tracks']}{delta('vehicle_tracks')}  燈號框 {clip['traffic_light_boxes']}  "
                      f"車牌框 {clip['plate_boxes']}  雙線 {clip['double_lines']}  區域 {clip['traffic_regions']}  "

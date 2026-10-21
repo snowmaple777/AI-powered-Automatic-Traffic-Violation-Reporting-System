@@ -37,6 +37,33 @@ def normalize_plate(text):
     return re.sub(r"[^A-Z0-9]", "", str(text or "").upper()) or None
 
 
+TWO_WHEEL = {"motorcycle", "bicycle", "person"}
+
+
+def edit_distance(a, b):
+    previous = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        current = [i]
+        for j, cb in enumerate(b, 1):
+            current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (ca != cb)))
+        previous = current
+    return previous[-1]
+
+
+def compatible(gt, event):
+    """車牌（雙方都有時，差異字元數不得超過標註車牌長度的一半，容許 OCR 部分誤讀）
+    與車種家族（二輪／四輪）不得矛盾。"""
+    vehicle = (event.get("evidence") or {}).get("vehicle") or {}
+    plate = normalize_plate(vehicle.get("plate_text"))
+    expected = normalize_plate(gt.get("plate"))
+    if expected and plate and edit_distance(expected, plate) > len(expected) / 2:
+        return False
+    if gt.get("vehicle") and event.get("vehicle_class"):
+        if (gt["vehicle"] in TWO_WHEEL) != (event["vehicle_class"] in TWO_WHEEL):
+            return False
+    return True
+
+
 def event_time(event):
     return float(event.get("timestamp_sec", 0.0))
 
@@ -57,7 +84,8 @@ def evaluate(truth, predictions):
         unmatched = list(events)
         for gt in spec.get("events", []):
             candidates = [e for e in unmatched if e.get("rule_id") == gt["rule_id"] and
-                          gt["start_sec"] - tolerance <= event_time(e) <= gt["end_sec"] + tolerance]
+                          gt["start_sec"] - tolerance <= event_time(e) <= gt["end_sec"] + tolerance
+                          and compatible(gt, e)]
             if not candidates:
                 per_rule[gt["rule_id"]]["fn"] += 1
                 continue

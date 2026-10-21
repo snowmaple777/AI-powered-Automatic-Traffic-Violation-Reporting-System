@@ -21,13 +21,37 @@ class RoadMotionEstimator:
     """可替換接口：estimate(prev_gray, gray, prev_mask, mask) -> MotionEstimate。"""
     def __init__(self, config):
         self.config = config
+        # 前一幀縮圖快取：下一幀的 previous 就是這一幀的 current（同一個陣列），不必重新縮放。
+        # 以物件身分比對並保留引用，避免 id 被重用。（OpenCV 的 Python 介面不接受預建光流金字塔。）
+        self._cached_source = None
+        self._cached = None
+
+    def _prepare(self, image, size):
+        if self._cached_source is image and self._cached[0] == size:
+            return self._cached[1]
+        return cv2.resize(image, size)
+
+    def _remember(self, image, size, small):
+        self._cached_source, self._cached = image, (size, small)
+
+    @staticmethod
+    def _median_uint8(values):
+        """uint8 差值的精確中位數（與 np.median 相同結果），以 256 格直方圖取代排序。"""
+        counts = np.bincount(values, minlength=256)
+        cumulative = np.cumsum(counts)
+        n = int(cumulative[-1])
+        low = int(np.searchsorted(cumulative, (n - 1) // 2 + 1))
+        high = int(np.searchsorted(cumulative, n // 2 + 1))
+        return (low + high) / 2.0
 
     def estimate(self, previous, current, previous_mask, current_mask):
         cfg = self.config
         h, w = current.shape
         scale = min(1., cfg.motion_width / w)
         size = (max(1, round(w*scale)), max(1, round(h*scale)))
-        a, b = [cv2.resize(x, size) for x in (previous, current)]
+        a = self._prepare(previous, size)
+        b = self._prepare(current, size)
+        self._remember(current, size, b)
         ma, mb = [cv2.resize(x, size, interpolation=cv2.INTER_NEAREST) for x in (previous_mask, current_mask)]
         points = cv2.goodFeaturesToTrack(a, maxCorners=cfg.motion_max_corners,
                                        qualityLevel=.01, minDistance=cfg.motion_min_distance, mask=ma)
@@ -44,7 +68,9 @@ class RoadMotionEstimator:
         good &= np.isfinite(q).all(axis=1) & (np.linalg.norm(back.reshape(-1,2)-p,axis=1) <= cfg.max_fb_error)
         good &= (q[:,0]>=0)&(q[:,0]<size[0])&(q[:,1]>=0)&(q[:,1]<size[1])
         indices = np.flatnonzero(good)
-        indices = [i for i in indices if mb[int(q[i,1]),int(q[i,0])] != 0]
+        # q 已確認位於縮圖範圍內（非負），astype(int) 與 int() 同為向零截斷。
+        cells_q = q[indices].astype(int)
+        indices = indices[mb[cells_q[:, 1], cells_q[:, 0]] != 0]
         p, q = p[indices], q[indices]
         if len(p) < cfg.min_motion_points:
             return MotionEstimate(False, reason="insufficient_reliable_flow")
@@ -57,7 +83,8 @@ class RoadMotionEstimator:
             return MotionEstimate(False, reason="low_inlier_support", inliers=count, inlier_ratio=ratio)
 
         # 特徵不能只集中在一個小角落，否則外推到停止線位置容易大幅偏移。
-        cells = {(min(2,int(x/size[0]*3)), min(2,int(y/size[1]*3))) for x,y in p[support]}
+        grid = np.minimum(2, (p[support] / np.asarray(size, dtype=p.dtype) * 3).astype(int))
+        cells = np.unique(grid, axis=0)
         span = np.ptp(p[support], axis=0)
         if len(cells) < 4 or span[0] < size[0]*.25 or span[1] < size[1]*.15:
             return MotionEstimate(False, reason="poor_spatial_coverage", inliers=count, inlier_ratio=ratio)
@@ -81,7 +108,7 @@ class RoadMotionEstimator:
         valid_mask = (cv2.warpPerspective(previous_mask,matrix,(w,h),flags=cv2.INTER_NEAREST)>0)&(current_mask>0)
         if valid_mask.sum() < w*h*.05:
             return MotionEstimate(False, reason="insufficient_visible_road")
-        photo = float(np.median(np.abs(aligned.astype(np.float32)-current)[valid_mask]))
+        photo = float(self._median_uint8(cv2.absdiff(aligned, current)[valid_mask]))
         if photo > cfg.max_photometric_error:
             return MotionEstimate(False, reason="photometric_mismatch", photometric_error=photo)
         return MotionEstimate(True,matrix,"accepted",count,ratio,error/scale,photo)

@@ -35,6 +35,8 @@ def parse_args(argv=None):
     parser.add_argument("--tracker", type=Path, default=None,
                         help="追蹤器設定（預設 ByteTrack）")
     parser.add_argument("--max-frames", type=int, default=0)
+    parser.add_argument("--save-masks", type=Path, default=None,
+                        help="除錯用：將每幀標線遮罩存成 PNG（可離線重播完整後處理）")
     parser.add_argument("--save-video", action="store_true",
                         help="生成疊加模型標記的 MP4；預設只輸出資料")
     parser.add_argument("--rules", "--rule", default="",
@@ -83,7 +85,8 @@ def apply_overrides(config, args):
             config["models"][stage].setdefault("params", {})[key] = value
 
 
-def run(args, resources):
+def run(args, resources, pipeline=None):
+    """pipeline：可傳入已載入的 ModelPipeline 供多支影片共用（批次評估）；會先 reset 追蹤狀態。"""
     validate_clip_options(args.clip_before, args.clip_after)
     if not args.input.is_file():
         raise SystemExit(f"找不到影片：{args.input}")
@@ -106,7 +109,10 @@ def run(args, resources):
     jsonl_path = args.output_dir / f"{stem}_detections.jsonl"
     csv_path = args.output_dir / f"{stem}_detections.csv"
 
-    pipeline = resources.enter_context(ModelPipeline(config, device))
+    if pipeline is None:
+        pipeline = resources.enter_context(ModelPipeline(config, device))
+    else:
+        pipeline.reset()
     cap = cv2.VideoCapture(str(args.input))
     resources.callback(cap.release)
     if not cap.isOpened():
@@ -115,6 +121,16 @@ def run(args, resources):
     width, height = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     processor = FrameProcessor(fps, width, height, list(pipeline.models), compensator, area_config,
                                EgoMotionTracker(motion_config))
+    resources.callback(processor.close)
+    pending_motion = {}
+
+    def start_motion_after_vehicles(stage, partial):
+        # 鏡頭運動只需要畫面與車框（road_mask 只讀 bbox_xyxy），車輛偵測完成即可並行估計。
+        if stage == "vehicles":
+            pending_motion["future"] = processor.start_motion(
+                pending_motion["frame"], pending_motion["index"], pending_motion["time"],
+                partial["vehicles"].records)
+    pipeline.stage_callback = start_motion_after_vehicles
     writer = None
     if args.save_video:
         writer = cv2.VideoWriter(str(video_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
@@ -129,19 +145,32 @@ def run(args, resources):
     diagnostics_file = resources.enter_context(diagnostics_path.open("w", encoding="utf-8")) if rule_names else None
     recent_events, all_events = [], []
     detection_csv = DetectionCsv(resources.enter_context(csv_path.open("w", newline="", encoding="utf-8-sig")))
+    timer = processor.timer  # 主迴圈與逐幀後處理共用，輸出到 *_timings.json
     started, frame_index = time.perf_counter(), 0
     window_started = started
     try:
         with jsonl_path.open("w", encoding="utf-8") as jsonl:
             while True:
-                ok, frame = cap.read()
+                with timer.measure("decode"):
+                    ok, frame = cap.read()
                 if not ok or (args.max_frames and frame_index >= args.max_frames):
                     break
                 timestamp = frame_index / fps
-                results = pipeline.infer(frame, FrameContext(frame_index, timestamp))
-                result = processor.process(frame, frame_index, timestamp, results)
+                pending_motion.update(frame=frame, index=frame_index, time=timestamp, future=None)
+                with timer.measure("models"):
+                    results = pipeline.infer(frame, FrameContext(frame_index, timestamp))
+                if args.save_masks is not None:
+                    with timer.measure("save_masks"):
+                        mask = results["road_markings"].artifacts.get("mask")
+                        if mask is not None:
+                            args.save_masks.mkdir(parents=True, exist_ok=True)
+                            cv2.imwrite(str(args.save_masks / f"{frame_index:06d}.png"), mask)
+                result = processor.process(frame, frame_index, timestamp, results,
+                                           motion_future=pending_motion["future"])
                 record = result.record
-                jsonl.write(json.dumps(record, ensure_ascii=False) + "\n")
+                with timer.measure("write_jsonl"):
+                    jsonl.write(json.dumps(record, ensure_ascii=False) + "\n")
+                rules_started = time.perf_counter()
                 if violations_file:
                     frame_events = violation_engine.evaluate(record)
                     recent_events = [event for event in recent_events if
@@ -153,9 +182,12 @@ def run(args, resources):
                     diagnostics_file.write(json.dumps({"frame":frame_index,
                         "rules":{rule.rule_id:getattr(rule,"diagnostics",{}) for rule in violation_engine.rules}},
                         ensure_ascii=False)+"\n")
-                detection_csv.write(frame_index, timestamp, result)
+                timer.seconds["rules"] = timer.seconds.get("rules", 0.0) + time.perf_counter() - rules_started
+                with timer.measure("write_csv"):
+                    detection_csv.write(frame_index, timestamp, result)
                 if writer:
-                    writer.write(annotate_frame(frame, result, recent_events, timestamp, area_config is not None))
+                    with timer.measure("annotate_video"):
+                        writer.write(annotate_frame(frame, result, recent_events, timestamp, area_config is not None))
                 frame_index += 1
                 if frame_index % 10 == 0:
                     now = time.perf_counter()
@@ -170,6 +202,9 @@ def run(args, resources):
                 all_events.append(event)
                 violations_file.write(json.dumps(event, ensure_ascii=False) + "\n")
             violations_file.flush()
+    timings = {"frames": frame_index, "wall_seconds": round(time.perf_counter() - started, 3),
+               "ms_per_frame": timer.summary(frame_index)}
+    (args.output_dir / f"{stem}_timings.json").write_text(json.dumps(timings, indent=2), encoding="utf-8")
     if rule_names and args.violation_clips:
         print("正在剪輯違規片段…", flush=True)
         clips = export_violation_clips(args.input, jsonl_path, all_events,

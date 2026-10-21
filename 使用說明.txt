@@ -70,6 +70,9 @@ plates 需要 vehicles，ocr 需要 plates；停用 depth 後無法依估測距�
 - plates.road_scan：預設 true，可設 false 停用道路區域補漏。
 - ocr.min_width：車牌最小寬度，預設 58 像素。
 - ocr.interval：尚未確認車牌的辨識間隔，預設 4。
+- road_markings.fast_attention：注意力層不回傳未使用的權重矩陣，改用融合注意力核心，預設 true。
+- road_markings.fp16：CUDA 上以半精度推論，預設 true。與 fast_attention 合用時，每幀約 322 → 145 ms，重點類別 IoU ≥ 0.996（見 docs/refactor_log.md）。
+- plates.stable_shapes：車牌裁切固定為方形輸入，路面掃描改用獨立的 ONNX session，預設 true。onnxruntime CUDA 每次輸入形狀改變都有數十到數百毫秒的額外成本，固定形狀後每次推論約 10 ms。
 
 設定檔路徑均相對 JSON 所在目錄；每階段 enabled:false 可停用。
 現行車輛融合需使用 COCO 類別 ID；不能只替換任意模型權重而不調整類別介面。
@@ -105,6 +108,12 @@ plates 需要 vehicles，ocr 需要 plates；停用 depth 後無法依估測距�
 suspected 表示部分證據成立，confirmed 表示目前規則條件成立，仍需人工覆核。
 事件檔為空表示沒有符合條件的事件，不代表執行失敗。
 紅燈越線規則需具備追蹤車輛、合格停止線、線前／線後觀測，以及越線前後一致的紅燈證據。
+confirmed 需要：實際偵測到的停止線、強燈號證據（原本的燈號追蹤）、越線前後一致的紅燈。
+以下放寬條件只會產生 suspected，可在規則設定中關閉：
+- weak_signal_evidence（預設開）：燈號模型信心偏低（0.12–0.30）但 1 秒內持續一致時採用的弱紅燈證據。
+- signal_hold_seconds（預設 3）：紅燈暫時偵測不到、且畫面沒有綠／黃燈時，沿用最近的紅燈。
+- crosswalk_proxy（預設開）：沒有停止線時，以斑馬線近端邊緣代替停止線。
+- require_red_for_suspected（預設關）：開啟時，疑似事件也必須有紅燈證據。
 車框底邊僅為接地位置代理值；融合或漏檢延伸的機車框不等於輪胎偵測。
 
 從原影片與既有 JSONL 重算停止線補償：
@@ -225,6 +234,9 @@ rearm_seconds 後才可重新建立起始側，辨識下一次反向跨越。
 | min_fragment_length_px / fragment_match_distance_px | 45 / 12 | 片段最少長度／匹配法向距離（80 百分位） |
 | max_occluded_gap_sec | 0.5 | 有車框遮擋時完全漏檢的最長保留時間 |
 | footprint_inset_ratio | 0.15 | 底邊左右各內縮比例，允許 0 至小於 0.5 |
+| allow_motion_gaps / max_motion_gap_sec | true / 1.0 | 鏡頭運動估計短暫失敗時以「不動」近似、保留候選的最長時間（事件只能是疑似） |
+| max_extrapolation_ratio | 0.5 | 雙線遠端被車身遮住時，沿端點外插的上限（車框高度比例；0＝停用；事件只能是疑似） |
+| max_line_handoff_px | 25 | 雙線追蹤換編號時，依位置把候選轉移到新編號的距離上限（0＝停用；事件只能是疑似） |
 
 建議先查看診斷的 blocked_lines、skipped_vehicles、reset_reason 與 states，再調整對應門檻。
 若一直無法取得 paired 或追蹤 ID 持續改變，僅降低規則門檻不能補回缺失幾何。

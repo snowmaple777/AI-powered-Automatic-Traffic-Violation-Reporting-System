@@ -1,5 +1,5 @@
 """有界停止線幾何：不把局部線段延伸成橫跨全畫面的直線。"""
-from copy import deepcopy
+from core.fastcopy import clone
 import math
 import cv2
 import numpy as np
@@ -33,7 +33,7 @@ def bounded_component(source, width, height, config):
         if not ok or abs(b[0]-a[0]) < 2:
             return None
         a,b = sorted((a,b))
-        result = deepcopy(source)
+        result = clone(source)
         result.update(area=int(min(area,(right-left)*(bottom-top))),
                       bbox_xywh=[left,top,right-left,bottom-top],
                       line_xyxy=[float(v) for v in (*a,*b)],
@@ -60,7 +60,7 @@ def occlusion_ratio(component, vehicles, width, height):
 
 def merge_fragments(components, vehicles, width, height, config):
     """同類、近共線片段才可合併；較大的間隙還必須有遮擋線索。"""
-    remaining = sorted(deepcopy(components),key=lambda c:c["bbox_xywh"][0])
+    remaining = sorted(clone(components),key=lambda c:c["bbox_xywh"][0])
     merged = []
     for item in remaining:
         combined = False
@@ -107,7 +107,7 @@ def project(component, matrix, width, height, config):
     left,top=transformed[:4].min(axis=0)
     right,bottom=transformed[:4].max(axis=0)
     ratio=abs(cv2.contourArea(transformed[:4]))/max(1.,w*h)
-    result=deepcopy(component)
+    result=clone(component)
     result.update(bbox_xywh=[float(left),float(top),float(right-left),float(bottom-top)],
                   area=max(1,int(component["area"]*ratio)),line_xyxy=transformed[4:].ravel().tolist())
     return bounded_component(result,width,height,config)

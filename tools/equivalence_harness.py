@@ -114,9 +114,14 @@ def run(code, out, video, frames, extra):
         def __exit__(self, *exc):
             return False
 
+        stage_callback = None
+
         def infer(self, frame, context):
             h, w = frame.shape[:2]
-            return scenario(context.index, w, h, list(classes), mask_components, ModelResult, STAGES)
+            results = scenario(context.index, w, h, list(classes), mask_components, ModelResult, STAGES)
+            if self.stage_callback is not None:  # 新版主流程：車輛階段後並行估計鏡頭運動
+                self.stage_callback("vehicles", results)
+            return results
 
     run_pipeline.ModelPipeline = FakePipeline
     argv = [str(video), "--output-dir", str(out), "--model-config", str(ROOT / "configs/default.json"),
@@ -173,7 +178,7 @@ def collect(folder):
     folder = Path(folder)
     files = {}
     for path in sorted(folder.rglob("*")):
-        if path.is_file():
+        if path.is_file() and not path.name.endswith("_timings.json"):  # 計時每次不同
             rel = path.relative_to(folder).as_posix()
             parts = rel.split("/")
             parts = ["run_*" if p.startswith("run_") else p for p in parts]
@@ -212,6 +217,7 @@ def main():
     s.add_argument("--code", type=Path, default=ROOT)
     s.add_argument("--work", type=Path, required=True)
     s.add_argument("--frames", type=int, default=90)
+    s.add_argument("--video", type=Path, default=DEFAULT_VIDEO)
     s.add_argument("--ignore", action="append", default=[])
     s.add_argument("extra", nargs="*")
     args = parser.parse_args()
@@ -225,7 +231,8 @@ def main():
     for name, code in (("reference", args.reference), ("candidate", args.code)):
         out = (args.work / name).resolve()
         subprocess.run([sys.executable, str(Path(__file__).resolve()), "run", "--code", str(code.resolve()),
-                        "--out", str(out), "--frames", str(args.frames), "--", *args.extra],
+                        "--out", str(out), "--frames", str(args.frames),
+                        "--video", str(args.video.resolve()), "--", *args.extra],
                        env=env, check=True, stdout=subprocess.DEVNULL)
     return compare(args.work / "reference", args.work / "candidate")
 

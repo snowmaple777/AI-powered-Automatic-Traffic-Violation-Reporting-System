@@ -8,10 +8,13 @@ def overlay_markings(frame, result, alpha=.35):
     palette = result.artifacts.get("palette")
     if mask is None or palette is None:
         return frame.copy()
-    colors = np.zeros_like(frame)
-    for class_id, rgb in enumerate(palette):
-        colors[mask == class_id] = rgb[::-1]
+    # 以查表一次上色（原本每個類別各做一次全畫面比對）；超出調色盤的類別維持黑色。
+    lut = np.zeros((256, 3), dtype=frame.dtype)
+    for class_id, rgb in enumerate(palette[:256]):
+        lut[class_id] = rgb[::-1]
+    colors = lut[mask]
     output = frame.copy()
     blended = cv2.addWeighted(frame, 1-alpha, colors, alpha, 0)
-    output[mask != 0] = blended[mask != 0]
+    marked = mask != 0
+    output[marked] = blended[marked]
     return output

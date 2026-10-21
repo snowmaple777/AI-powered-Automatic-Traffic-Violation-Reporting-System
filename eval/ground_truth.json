@@ -55,14 +55,16 @@
           "start_sec": 2.0,
           "end_sec": 5.0,
           "plate": "BHX3155",
-          "note": "違規參考.txt：約2~5秒處，汽車"
+          "note": "違規參考.txt：約2~5秒處，汽車",
+          "vehicle": "car"
         },
         {
           "rule_id": "red_light_stop_line_crossing",
           "start_sec": 2.0,
           "end_sec": 5.0,
           "plate": "MSC6626",
-          "note": "違規參考.txt：約2~5秒處，機車"
+          "note": "違規參考.txt：約2~5秒處，機車",
+          "vehicle": "motorcycle"
         }
       ]
     },
@@ -76,7 +78,8 @@
           "start_sec": 1.0,
           "end_sec": 3.0,
           "plate": "CAA8738",
-          "note": "違規參考.txt：約2秒處，貨車"
+          "note": "違規參考.txt：約2秒處，貨車",
+          "vehicle": "car"
         }
       ]
     },
@@ -90,7 +93,8 @@
           "start_sec": 2.0,
           "end_sec": 4.0,
           "plate": "9696L2",
-          "note": "違規參考.txt：約3秒處，汽車"
+          "note": "違規參考.txt：約3秒處，汽車",
+          "vehicle": "car"
         }
       ]
     },
@@ -104,7 +108,8 @@
           "start_sec": 1.0,
           "end_sec": 3.0,
           "plate": "KB1998",
-          "note": "違規參考.txt：約2秒處，機車"
+          "note": "違規參考.txt：約2秒處，機車",
+          "vehicle": "motorcycle"
         }
       ]
     },
@@ -118,7 +123,8 @@
           "start_sec": 3.0,
           "end_sec": 5.0,
           "plate": "EMT9517",
-          "note": "違規參考.txt：約4秒處，機車"
+          "note": "違規參考.txt：約4秒處，機車",
+          "vehicle": "motorcycle"
         }
       ]
     },
@@ -132,7 +138,8 @@
           "start_sec": 3.0,
           "end_sec": 5.0,
           "plate": "9165G9",
-          "note": "違規參考.txt：約4秒處，汽車"
+          "note": "違規參考.txt：約4秒處，汽車",
+          "vehicle": "car"
         }
       ]
     },

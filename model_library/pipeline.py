@@ -14,6 +14,10 @@ class ModelPipeline:
             self.close()
             raise
 
+    # 可選：每個階段完成後呼叫 stage_callback(name, results)，讓呼叫端提早啟動只依賴
+    # 該階段結果的 CPU 工作（例如車輛偵測後的鏡頭運動估計），與後續 GPU 推論並行。
+    stage_callback = None
+
     def infer(self, frame, context):
         results = {name: ModelResult() for name in STAGES}
         for name, model in self.models.items():
@@ -21,6 +25,8 @@ class ModelPipeline:
             if not isinstance(result, ModelResult):
                 raise TypeError(f"{name}.infer must return ModelResult")
             results[name] = result
+            if self.stage_callback is not None:
+                self.stage_callback(name, results)
         return results
 
     def reset(self):

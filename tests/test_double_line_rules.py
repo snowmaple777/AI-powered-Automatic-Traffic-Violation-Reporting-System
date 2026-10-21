@@ -134,7 +134,7 @@ class DoubleLineRuleTests(unittest.TestCase):
         self.assertEqual(run_records(records), [])
 
     def test_identity_motion_gap_and_low_quality_break_candidates(self):
-        for mode in ("vehicle_id", "motion", "missing_line", "frame_gap", "low_confidence",
+        for mode in ("vehicle_id", "missing_line", "frame_gap", "low_confidence",
                      "box_jump", "pair_missing", "stale_line", "long_missing_vehicle"):
             records = sequence(LANE_CHANGE)
             item = records[4]
@@ -163,6 +163,32 @@ class DoubleLineRuleTests(unittest.TestCase):
                     record["observations"]["vehicles"] = []
             with self.subTest(mode=mode):
                 self.assertEqual(run_records(records), [])
+
+    def test_brief_motion_failure_is_tolerated_as_suspected(self):
+        # 鏡頭運動估計短暫失敗：以「鏡頭不動」近似，保留候選但只能是疑似；關閉或超過時限則不輸出。
+        def broken(frames):
+            records = sequence(LANE_CHANGE)
+            for record in records[frames]:
+                record["postprocessing"]["road_marking_compensation"]["motion"]["valid"] = False
+            return records
+        events = run_records(broken(slice(4, 5)))
+        self.assertEqual([e["status"] for e in events], ["suspected"])
+        self.assertIn("camera_motion_compensated", events[0]["missing_conditions"])
+        self.assertEqual(run_records(broken(slice(4, 5)), settings={"allow_motion_gaps": False}), [])
+        self.assertEqual(run_records(broken(slice(4, 9)), settings={"max_motion_gap_sec": .2}), [])
+
+    def test_far_endpoint_occluded_by_vehicle_is_extrapolated_as_suspected(self):
+        # 雙線遠端被車身遮住（可見線段止於車底下方），沿端點方向外插判斷，事件只能是疑似。
+        records = sequence(LANE_CHANGE)
+        for record, (x, y) in zip(records, LANE_CHANGE):
+            line = record["observations"]["double_lines"][0]
+            for part in [line] + line["members"]:
+                for key in ("centerline", "left_boundary", "right_boundary"):
+                    part[key] = [p for p in part[key] if p[1] >= y + 4] or part[key][-2:]
+        events = run_records(records)
+        self.assertEqual([e["status"] for e in events], ["suspected"])
+        self.assertIn("line_observed_at_footprint", events[0]["missing_conditions"])
+        self.assertEqual(run_records(records, settings={"max_extrapolation_ratio": 0}), [])
 
     def test_brief_missed_detection_keeps_candidate_as_suspected(self):
         # 偵測器漏掉一幀，與「參考點暫時不可用」同樣處理：保留候選但只能是疑似。

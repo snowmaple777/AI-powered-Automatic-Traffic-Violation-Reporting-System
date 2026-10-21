@@ -3,7 +3,6 @@
 Plain dictionaries are the persisted contract and the in-memory tracker state.
 No crossing decisions or inferred/occluded line extensions belong in this layer.
 """
-import copy
 import json
 import math
 from pathlib import Path
@@ -14,6 +13,7 @@ import numpy as np
 from core.continuity import is_continuous
 from core.geometry import project_points  # noqa: F401  舊模組仍由此匯入
 from core.motion import homography, road_motion
+from core.fastcopy import clone
 
 
 DOUBLE_LINE_CLASSES = {"solid double yellow", "solid double white"}
@@ -31,7 +31,11 @@ RULE_DEFAULTS = dict(
     min_uturn_angle_deg=140.0, min_longitudinal_alignment=.7, emit_suspected=True,
     allow_semantic_band=True, max_partial_support_seconds=3.0,
     min_fragment_length_px=45.0, fragment_match_distance_px=12.0, max_occluded_gap_sec=.5,
-    footprint_inset_ratio=.15)
+    footprint_inset_ratio=.15,
+    # 以下放寬條件只讓事件成為「疑似」：
+    allow_motion_gaps=True, max_motion_gap_sec=1.0,  # 鏡頭運動短暫失敗時以「不動」近似，不清除候選
+    max_extrapolation_ratio=.5,
+    max_line_handoff_px=25.0)  # 雙線追蹤換編號時，依位置把候選轉移到新編號的距離上限（0＝停用）  # 車底超出雙線可見端點時，可沿端點方向外插（上限為車框高度的比例）
 
 
 def validate_rule_settings(overrides=None):
@@ -40,10 +44,10 @@ def validate_rule_settings(overrides=None):
         raise ValueError("Unknown double-line rule settings")
     settings = {**RULE_DEFAULTS, **overrides}
     for key, value in settings.items():
-        if key in ("emit_suspected", "allow_semantic_band"):
+        if key in ("emit_suspected", "allow_semantic_band", "allow_motion_gaps"):
             if type(value) is not bool:
                 raise ValueError(f"{key} must be boolean")
-        elif type(value) not in (int, float) or not math.isfinite(value) or (value < 0 if key == "footprint_inset_ratio" else value <= 0):
+        elif type(value) not in (int, float) or not math.isfinite(value) or (value < 0 if key in ("footprint_inset_ratio", "max_extrapolation_ratio", "max_line_handoff_px") else value <= 0):
             raise ValueError(f"{key} must be finite and positive")
     for key in ("min_line_observations", "stable_observations"):
         if type(settings[key]) is not int or settings[key] < 2:
@@ -190,6 +194,31 @@ def finite_line_position(point, centerline):
             "endpoint_distance_px": min(progress, float(lengths.sum()) - progress)}
 
 
+def row_line_position(point, centerline):
+    """以「同一影像列」量測點到可見線段的位置（垂足落在端點外時的後備）。
+
+    透視下雙線常是大斜率的斜線，車底點若離線較遠，垂直投影會越過端點，即使車底所在的
+    影像列明明有可見的雙線。此時改取該列上的線位置作為投影點，帶號距離仍沿局部法向量量測，
+    與兩側邊界的計算方式（同列內插）一致。點的列不在線段範圍內時回傳 None。
+    """
+    points = np.asarray(centerline, dtype=float)
+    x, y = (float(v) for v in point)
+    if len(points) < 2 or not points[0, 1] < y < points[-1, 1] or np.any(np.diff(points[:, 1]) <= 0):
+        return None
+    index = int(np.clip(np.searchsorted(points[:, 1], y) - 1, 0, len(points) - 2))
+    vector = points[index + 1] - points[index]
+    length = float(np.hypot(*vector))
+    if length == 0:
+        return None
+    foot = points[index] + vector * (y - points[index, 1]) / vector[1]
+    offset = np.array([x, y]) - foot
+    lengths = np.hypot(*np.diff(points, axis=0).T)
+    progress = float(lengths[:index].sum() + np.hypot(*(foot - points[index])))
+    return {"signed_distance_px": float((vector[0] * offset[1] - vector[1] * offset[0]) / length),
+            "segment_index": index, "projection": foot.tolist(), "tangent": (vector / length).tolist(),
+            "endpoint_distance_px": min(progress, float(lengths.sum()) - progress), "row_projection": True}
+
+
 def line_quality(line, settings):
     """Recheck persisted geometry so replay thresholds apply to old observations."""
     semantic = line.get("component_count") == 1 and settings["allow_semantic_band"]
@@ -243,10 +272,10 @@ def resolve_rule_lines(lines, memory, matrix, frame, settings, vehicles=()):
     overlap with a detected vehicle. Motion failure clears memory in the rule.
     """
     now = frame["timestamp_sec"]
-    current = [copy.deepcopy(line) for line in lines if line.get("source_frame") == frame["index"]]
+    current = [clone(line) for line in lines if line.get("source_frame") == frame["index"]]
     anchors = []
     for old in memory.values():
-        anchor = copy.deepcopy(old)
+        anchor = clone(old)
         try:
             for part in [anchor] + anchor.get("members", []):
                 for key in ("centerline", "left_boundary", "right_boundary"):
@@ -318,7 +347,7 @@ def resolve_rule_lines(lines, memory, matrix, frame, settings, vehicles=()):
         i, best, length = max(matches, key=lambda item: item[2])
         old_length = np.linalg.norm(np.diff(np.asarray(anchor["centerline"]), axis=0), axis=1).sum()
         if length >= .75 * old_length:
-            result = copy.deepcopy(best)
+            result = clone(best)
             result["support_since"] = now
         elif now - anchor["support_since"] <= settings["max_partial_support_seconds"]:
             result = anchor
@@ -357,12 +386,39 @@ def resolve_rule_lines(lines, memory, matrix, frame, settings, vehicles=()):
     for line in output:
         points = np.asarray(line["left_boundary"] + line["right_boundary"])
         line["bbox_xyxy"] = [*points.min(axis=0).tolist(), *points.max(axis=0).tolist()]
-    memory.update({line["track_id"]: copy.deepcopy(line) for line in output})
+    memory.update({line["track_id"]: clone(line) for line in output})
     return output
 
 
+def _extend_line(line, y_target, max_extension):
+    """沿可見端點的方向，把中心線與兩側邊界線性外插到 y_target（只用於遠端）。
+
+    超出 max_extension 像素、或端點附近不足以估計方向時回傳 None。只用於車身遮擋雙線的情況。
+    """
+    paths = {key: np.asarray(line[key], dtype=float) for key in ("centerline", "left_boundary", "right_boundary")}
+    top, bottom = paths["centerline"][0, 1], paths["centerline"][-1, 1]
+    beyond = y_target - bottom if y_target > bottom else top - y_target
+    if beyond <= 0:
+        return line
+    if beyond > max_extension:
+        return None
+    extended = dict(line)
+    for key, path in paths.items():
+        tail = path[-5:] if y_target > bottom else path[:5]
+        if len(tail) < 2 or np.ptp(tail[:, 1]) < 1:
+            return None
+        slope, intercept = np.polyfit(tail[:, 1], tail[:, 0], 1)
+        point = [[slope * y_target + intercept, y_target]]
+        extended[key] = (np.vstack([path, point]) if y_target > bottom else np.vstack([point, path])).tolist()
+    return extended
+
+
 def vehicle_line_position(vehicle, line, settings, motion_error=0):
-    """Inset bottom-edge proxy must clear the entire band; not tire localization."""
+    """Inset bottom-edge proxy must clear the entire band; not tire localization.
+
+    車底超出雙線遠端可見端點、且該端點被車身遮住時，若設定允許，沿端點方向外插後再判斷，
+    回傳值的 extrapolated 會標示為 True（事件因此只能是疑似）。
+    """
     try:
         box = np.asarray(vehicle.get("bbox_xyxy", []), dtype=float)
     except (TypeError, ValueError):
@@ -370,11 +426,30 @@ def vehicle_line_position(vehicle, line, settings, motion_error=0):
     if box.shape != (4,) or not np.isfinite(box).all() or box[2] <= box[0] or box[3] <= box[1]:
         return None
     x1, y1, x2, y2 = box
+    extrapolated = False
+    ratio = settings.get("max_extrapolation_ratio", 0)
+    if ratio > 0:
+        center = np.asarray(line.get("centerline", []), dtype=float)
+        if center.ndim == 2 and len(center) >= 2:
+            # 只外插遠端（影像上方）端點，且該端點必須落在車框內：前車遮住其後方的雙線時，
+            # 可見線段止於車身下緣附近。近端（影像下方）端點之外沒有遮擋者，代表雙線本來就從
+            # 車輛前方才開始，不外插。
+            margin = settings["endpoint_margin_px"] + 1
+            top_x, top_y = center[0]
+            width = x2 - x1  # 透視下車身側面也會遮住鄰近的雙線，水平方向放寬一個車寬
+            occluded_by_vehicle = x1 - width <= top_x <= x2 + width and y1 <= top_y <= y2 + margin
+            if occluded_by_vehicle and y2 < top_y + margin:
+                target = y2 - margin
+                extended = _extend_line(line, target, ratio * (y2 - y1) + margin)
+                if extended is not None and extended is not line:
+                    line, extrapolated = extended, True
     inset = (x2 - x1) * settings["footprint_inset_ratio"]
     points = [[x1 + inset, y2], [(x1 + x2) / 2, y2], [x2 - inset, y2]]
     sides, measurements = [], []
     for point in points:
         position = finite_line_position(point, line["centerline"])
+        if position is None or position["endpoint_distance_px"] < settings["endpoint_margin_px"]:
+            position = row_line_position(point, line["centerline"])
         if position is None or position["endpoint_distance_px"] < settings["endpoint_margin_px"]:
             return None
         foot = np.asarray(position["projection"])
@@ -392,7 +467,7 @@ def vehicle_line_position(vehicle, line, settings, motion_error=0):
         measurements.append({**position, "in_band": low <= distance <= high})
     return {"side": sides[0] if sides[0] == sides[1] == sides[2] else 0,
             "point": points[1], "center_in_band": measurements[1]["in_band"],
-            "tangent": measurements[1]["tangent"], "box": box.tolist()}
+            "tangent": measurements[1]["tangent"], "box": box.tolist(), "extrapolated": extrapolated}
 
 
 
@@ -433,17 +508,18 @@ def attach_double_lines(record, mask, state):
     motion = road_motion(record)
     reset_reason = None
     matrix = None
+    motion_fallback = None
     if state.get("frame") is None:
         reset_reason = "first_frame"
     elif not is_continuous({"index": state["frame"], "timestamp_sec": state["time"],
                             "width": state["size"][0], "height": state["size"][1]}, frame, .2):
         reset_reason = "discontinuous_input"
-    elif not motion.get("valid"):
-        reset_reason = "motion_unavailable"
     else:
-        matrix = homography(motion)
+        matrix = homography(motion) if motion.get("valid") else None
         if matrix is None:
-            reset_reason = "invalid_motion"
+            # 鏡頭運動估計失敗時不重設追蹤：以「鏡頭不動」配對，容許距離放寬（見下方）。
+            # 雙線在相鄰幀間位移很小，用位置延續編號，比每次失敗都換新編號更能保留規則候選。
+            motion_fallback = "motion_unavailable" if not motion.get("valid") else "invalid_motion"
     if mask is not None and np.asarray(mask).shape != (frame["height"], frame["width"]):
         mask, reset_reason = None, "mask_shape_mismatch"
     lines = extract_double_lines(mask, observations.get("road_markings_raw",
@@ -452,17 +528,35 @@ def attach_double_lines(record, mask, state):
     projected = []
     for track in previous:
         points = np.asarray(track["centerline"], dtype=float)
-        homogeneous = np.column_stack((points, np.ones(len(points)))) @ matrix.T
-        if np.any(np.abs(homogeneous[:, 2]) < 1e-6):
-            continue
-        points = homogeneous[:, :2] / homogeneous[:, 2:]
+        if matrix is not None:
+            homogeneous = np.column_stack((points, np.ones(len(points)))) @ matrix.T
+            if np.any(np.abs(homogeneous[:, 2]) < 1e-6):
+                continue
+            points = homogeneous[:, :2] / homogeneous[:, 2:]
         if np.isfinite(points).all() and np.all(np.diff(points[:, 1]) > 0):
             projected.append((track, points))
+    # 有運動補償時容許 1% 畫面寬；沒有時（鏡頭不動近似）容許 2.5%。
+    tolerance = max(3, frame["width"] * (.01 if matrix is not None else .025))
     matches = [[j for j, (track, points) in enumerate(projected)
                 if track["class_name"] == line["class_name"] and
                 track["component_count"] == line["component_count"] and
-                _distance(points, line["centerline"]) <= max(3, frame["width"] * .01)]
+                _distance(points, line["centerline"]) <= tolerance]
                for line in lines]
+    if matrix is not None and previous and not all(matches):
+        # 運動估計「有效」但尺度抖動時，近處的線可能投影偏離而配不上；對沒有配對的線，
+        # 再以未補償的位置（2.5% 畫面寬）嘗試，命中時同樣標記為未經運動補償。
+        raw_tracks = [(track, np.asarray(track["centerline"], dtype=float)) for track in previous]
+        index = {id(track): j for j, (track, _) in enumerate(projected)}
+        for i, line in enumerate(lines):
+            if matches[i]:
+                continue
+            found = [index[id(track)] for track, points in raw_tracks
+                     if id(track) in index and track["class_name"] == line["class_name"] and
+                     track["component_count"] == line["component_count"] and
+                     _distance(points, line["centerline"]) <= max(3, frame["width"] * .025)]
+            if found:
+                matches[i] = found
+                line["_uncompensated_match"] = True
     for line, choices in zip(lines, matches):
         unique = len(choices) == 1 and sum(choices[0] in others for others in matches) == 1
         if unique:
@@ -471,17 +565,19 @@ def attach_double_lines(record, mask, state):
         else:
             state["next_id"] = state.get("next_id", 0) + 1
             line.update(track_id=f"double-line-{state['next_id']}", observed_frames=1)
-        line.update(source_frame=frame["index"], tracking_status="matched" if unique else "new")
+        uncompensated = motion_fallback or line.pop("_uncompensated_match", False)
+        line.update(source_frame=frame["index"], tracking_status=(
+            ("matched_without_motion" if uncompensated else "matched") if unique else "new"))
         line["rule_eligible"] = line_quality(line, RULE_DEFAULTS) is None
     observations["double_lines"] = lines
     diagnostics["double_lines"] = {
         "version": 1, "status": "observed" if lines else
         ("geometry_unavailable" if mask is None else "no_double_lines"),
-        "reset_reason": reset_reason, "observed_count": len(lines),
+        "reset_reason": reset_reason, "motion_fallback": motion_fallback, "observed_count": len(lines),
         "eligibility": "evaluated_by_rule",
         "motion_source": "ego_motion" if "ego_motion" in diagnostics else "road_marking_compensation"}
     state.update(frame=frame["index"], time=frame["timestamp_sec"],
-                 size=[frame["width"], frame["height"]], tracks=copy.deepcopy(lines))
+                 size=[frame["width"], frame["height"]], tracks=clone(lines))
 
 
 def draw_double_lines(frame, lines):

@@ -1,5 +1,5 @@
 """Perception algorithms adapted to traffic_ai's staged observation contract."""
-from copy import deepcopy
+from core.fastcopy import clone
 from pathlib import Path
 
 import numpy as np
@@ -65,7 +65,8 @@ class VehicleModel(PerceptionModel):
             self.first_seen = {k:v for k,v in self.first_seen.items() if k in self.seen or k in self.riders.values()}
             self.cached = ModelResult(records, {"track_mappings":mappings})
             self.source_frame = context.index
-        result = deepcopy(self.cached)  # downstream annotations must not mutate cached detections
+        # downstream annotations must not mutate cached detections
+        result = ModelResult(clone(self.cached.records), clone(self.cached.artifacts))
         for r in result.records:
             r["source_frame"] = self.source_frame
             r["track_age_frames"] += context.index-self.source_frame if r["track_id"] is not None else 0
@@ -79,7 +80,14 @@ class VehicleModel(PerceptionModel):
 class PlateModel(PerceptionModel):
     def __init__(self, weights, device="cpu", confidence=.30, imgsz=320,
                  padding=.08, min_vehicle_size=50, max_distance=22.,
-                 smooth_alpha=.65, hold_frames=2, road_scan=True, cuda_conv_search="HEURISTIC"):
+                 smooth_alpha=.65, hold_frames=2, road_scan=True, cuda_conv_search="HEURISTIC",
+                 batch_crops=False, fixed_input=False, stable_shapes=False):
+        """batch_crops：同一幀所有車輛裁切合成一批推論（固定輸入尺寸），失敗時自動退回逐張。
+        fixed_input：關閉 ultralytics 依長寬比的最小填補（rect），每次都以固定方形尺寸推論，
+        避免 CUDA 每遇新形狀就重新選擇卷積演算法。
+        stable_shapes：裁切固定為 imgsz 方形（同 fixed_input），路面掃描改用第二個 ONNX session。
+        實測 onnxruntime CUDA 每次輸入形狀改變都有數十到數百毫秒的額外成本（固定形狀約 10 ms），
+        讓每個 session 只看到單一形狀即可避免。以上皆為效能選項，預設維持原行為。"""
         from ultralytics import YOLO
         if not 0 <= smooth_alpha <= 1 or hold_frames < 0:
             raise ValueError("Invalid plate smoothing options")
@@ -89,14 +97,41 @@ class PlateModel(PerceptionModel):
         self.confidence, self.imgsz = confidence, imgsz
         self.padding, self.min_size, self.max_distance = padding, min_vehicle_size, max_distance
         self.alpha, self.hold_frames, self.road_scan = smooth_alpha, hold_frames, road_scan
+        self.batch_crops = bool(batch_crops)
+        self.predict_options = {"rect": False} if (fixed_input or stable_shapes) else {}
+        # 路面掃描的輸入形狀由畫面尺寸決定，整支影片固定；獨立 session 才不會與裁切交替形狀。
+        self.scan_model = YOLO(str(weights), task="detect") if stable_shapes else None
         self.reset()
 
     def reset(self):
         self.history = {}
 
-    def _detect(self, crop, left, top, size):
-        result = self.model.predict(crop, conf=self.confidence, imgsz=size,
-                                    device=self.device, verbose=False, predictor=self.predictor_class)[0]
+    def _detect(self, crop, left, top, size, scan=False):
+        if scan and self.scan_model is not None:
+            model, options = self.scan_model, {}
+        else:
+            model, options = self.model, self.predict_options
+        result = model.predict(crop, conf=self.confidence, imgsz=size, device=self.device,
+                               verbose=False, predictor=self.predictor_class, **options)[0]
+        return self._plate_boxes(result, left, top)
+
+    def _detect_crops(self, jobs):
+        """jobs：[(裁切影像, left, top)]，依序回傳所有車牌候選框。"""
+        if self.batch_crops and len(jobs) > 1:
+            try:
+                results = self.model.predict([crop for crop, _, _ in jobs], conf=self.confidence,
+                                             imgsz=self.imgsz, device=self.device, verbose=False,
+                                             predictor=self.predictor_class, **self.predict_options)
+                return [box for (_, left, top), result in zip(jobs, results)
+                        for box in self._plate_boxes(result, left, top)]
+            except Exception as exc:  # 例如模型匯出為固定批次 1
+                import warnings
+                warnings.warn(f"車牌批次推論失敗，改為逐張：{exc}")
+                self.batch_crops = False
+        return [box for crop, left, top in jobs for box in self._detect(crop, left, top, self.imgsz)]
+
+    @staticmethod
+    def _plate_boxes(result, left, top):
         boxes = []
         for b in ([] if result.boxes is None else result.boxes):
             x1,y1,x2,y2 = b.xyxy[0].cpu().tolist()
@@ -116,7 +151,7 @@ class PlateModel(PerceptionModel):
             if r["class_id"] == PERSON and (b[3] <= h*.4 or b[2]-b[0] < 35 or b[3]-b[1] < 60):
                 continue
             vehicles.append(b+[r["confidence"],r["class_id"],r["track_id"],distances.get(r.get("object_id"))])
-        candidates = []
+        candidates, jobs = [], []
         for v in vehicles:
             x1,y1,x2,y2 = v[:4]
             vw,vh = x2-x1,y2-y1
@@ -130,10 +165,11 @@ class PlateModel(PerceptionModel):
                 px,py,pd = vw*self.padding,vh*self.padding,vh*self.padding
             left,top,right,bottom = max(0,int(x1-px)),max(0,int(y1-py)),min(w,int(x2+px)),min(h,int(y2+pd))
             if right-left >= 10 and bottom-top >= 10:
-                candidates.extend(self._detect(frame[top:bottom,left:right],left,top,self.imgsz))
+                jobs.append((frame[top:bottom,left:right],left,top))
+        candidates.extend(self._detect_crops(jobs))
         if self.road_scan:
             top = int(h*.35)
-            candidates.extend(self._detect(frame[top:,:],0,top,640))
+            candidates.extend(self._detect(frame[top:,:],0,top,640,scan=True))
         records, matched = [], set()
         for b in filter_duplicate_boxes(candidates,.45):
             v = match_plate_to_vehicle(b,vehicles)
@@ -182,7 +218,7 @@ class PlateModel(PerceptionModel):
             distance_m=vehicle[7] if vehicle is not None else None,held=held)
 
     def close(self):
-        self.model = None
+        self.model = self.scan_model = None
         self.reset()
 
 

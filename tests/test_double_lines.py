@@ -85,15 +85,22 @@ class DoubleLineTests(unittest.TestCase):
         self.assertNotEqual(state["tracks"][0]["centerline"][0][0], -100)
         json.dumps(second, allow_nan=False)
 
-    def test_invalid_motion_gap_and_missing_mask_break_identity(self):
+    def test_invalid_motion_matches_only_nearby_lines_without_compensation(self):
+        # 運動失敗時以「鏡頭不動」配對：位置幾乎不變的線延續編號（標記未補償），位移過大則換新編號。
         for motion in ({"valid": False}, {"valid": True, "matrix": [[0]]},
                        {"valid": True, "matrix": np.zeros((3, 3)).tolist()}):
-            state = {}
-            first, second = observation(0), observation(1, motion)
-            attach_double_lines(first, line_mask(), state)
-            attach_double_lines(second, line_mask(), state)
-            self.assertNotEqual(first["observations"]["double_lines"][0]["track_id"],
-                                second["observations"]["double_lines"][0]["track_id"])
+            for shift, same in ((0, True), (20, False)):
+                state = {}
+                first, second = observation(0), observation(1, motion)
+                attach_double_lines(first, line_mask(), state)
+                attach_double_lines(second, line_mask(shift), state)
+                a, b = first["observations"]["double_lines"][0], second["observations"]["double_lines"][0]
+                with self.subTest(motion=motion, shift=shift):
+                    self.assertEqual(a["track_id"] == b["track_id"], same)
+                    self.assertEqual(b["tracking_status"], "matched_without_motion" if same else "new")
+                    self.assertIsNotNone(second["postprocessing"]["double_lines"]["motion_fallback"])
+
+    def test_gap_and_missing_mask_break_identity(self):
         state = {}
         for index, mask in ((0, line_mask()), (1, None), (2, line_mask()), (5, line_mask())):
             record = observation(index)

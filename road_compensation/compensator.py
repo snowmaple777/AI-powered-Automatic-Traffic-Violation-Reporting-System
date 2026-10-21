@@ -1,5 +1,5 @@
 """停止線：背景運動補償 → 片段合併 → 配對／平滑 → 遮擋記憶 → 品質閘門。"""
-from copy import deepcopy
+from core.fastcopy import clone
 from dataclasses import asdict, dataclass
 import math
 import cv2
@@ -52,7 +52,7 @@ class RoadMarkingCompensator:
             raise ValueError("frame_index and timestamp_sec must be nonnegative")
         cfg=self.config
         h,w=frame.shape[:2]
-        raw=deepcopy(road_markings)
+        raw=clone(road_markings)
         gray=mask=None
         if external_motion is None:
             gray=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
@@ -160,14 +160,14 @@ class RoadMarkingCompensator:
             track.uncertainty+=motion.reprojection_error_px+max(.5,h*.0005)
             outputs.append(self._annotate(track,"predicted_occluded" if occluded else "predicted_missing",timestamp_sec,vehicles,w,h))
 
-        compensated=[deepcopy(m) for m in raw if m["class_name"]!=cfg.target_class]
+        compensated=[clone(m) for m in raw if m["class_name"]!=cfg.target_class]
         for class_id in sorted({c[0] for c in outputs}):
             components=[c for cid,c in outputs if cid==class_id]
             compensated.append({"class_id":class_id,"class_name":cfg.target_class,
                                 "pixels":sum(c["area"] for c in components),"components":components})
         rule_markings=[]
         for marking in compensated:
-            item=deepcopy(marking)
+            item=clone(marking)
             if item["class_name"]==cfg.target_class:
                 item["components"]=[c for c in item["components"] if c["compensation"]["rule_eligible"]]
                 item["pixels"]=sum(c["area"] for c in item["components"])
@@ -187,7 +187,7 @@ class RoadMarkingCompensator:
     def _annotate(self,track,source,timestamp,vehicles,width,height):
         age=max(0.,timestamp-track.last_observed_time)
         score=track.support*math.exp(-math.log(2)*age/self.config.confidence_half_life)
-        component=deepcopy(track.component)
+        component=clone(track.component)
         component["compensation"]={
             "id":track.identity,"source":source,"support_score":round(score,5),
             "uncertainty_px":round(track.uncertainty,3),"observed_frames":track.observations,

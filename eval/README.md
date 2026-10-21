@@ -12,6 +12,8 @@
    ```
 
    `start_sec`／`end_sec` 是違規發生的時間區間（例如車頭越過停止線的前後）。`plate` 看不清楚就填 `null`。
+   可另填 `"vehicle": "car"` 或 `"motorcycle"`。配對時車種家族（二輪／四輪）不得矛盾；雙方都有車牌時，差異字元數不得超過標註車牌長度的一半（容許 OCR 部分誤讀）。
+   影片中所有違規車輛都要標註，未標註的真實違規會被算成誤報。
 3. 整支影片核對完成後設 `"reviewed": true`。沒有違規的影片也要設 true，`events` 保持空陣列，這樣系統在該片的輸出才會被計為假陽性。
 
 規則 ID：`red_light_stop_line_crossing`、`double_yellow_line_crossing`、`double_white_line_crossing`、`car_motorcycle_waiting_area`、`crosswalk_stopping`。

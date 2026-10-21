@@ -3,7 +3,6 @@
 Estimated ground geometry is explicitly labelled; it is not a measured footprint.
 Image-space lane calibration is only supported for an explicitly fixed camera.
 """
-import copy
 import json
 import math
 from collections import Counter
@@ -15,6 +14,7 @@ import numpy as np
 from core.continuity import is_continuous
 from core.geometry import project_points
 from core.motion import homography, road_motion
+from core.fastcopy import clone
 
 
 AREA_RULES = {
@@ -63,7 +63,7 @@ def geometry_options(data=None):
         data = {}
     if not isinstance(data, dict) or set(data) - GEOMETRY_DEFAULTS.keys():
         raise ValueError("Unknown area geometry settings")
-    cfg = copy.deepcopy({**GEOMETRY_DEFAULTS, **(data or {})})
+    cfg = clone({**GEOMETRY_DEFAULTS, **(data or {})})
     for key, default in GEOMETRY_DEFAULTS.items():
         if isinstance(default, (int, float)) and not isinstance(default, bool):
             value = cfg[key]
@@ -194,7 +194,7 @@ def attach_area_geometry(record, mask, state, cfg):
         for region in state.get("regions", []):
             if now-region["last_seen_sec"] <= cfg["region_ttl_sec"]:
                 try:
-                    item = copy.deepcopy(region)
+                    item = clone(region)
                     item["polygon"] = polygon(project_points(item["polygon"], matrix)).tolist()
                     old.append(item)
                 except (ValueError, cv2.error):
@@ -220,7 +220,7 @@ def attach_area_geometry(record, mask, state, cfg):
             region.update(source_frame=index, predicted=True, method="road_motion_propagated")
             current.append(region)
     lanes = _associate_area_lanes(current, obs, state, cfg, frame)
-    state["regions"] = copy.deepcopy(current)
+    state["regions"] = clone(current)
     vehicles, excluded = _prepare_area_vehicles(obs, state, cfg, frame, matrix, valid_motion, lanes)
     obs["traffic_regions"], obs["area_vehicles"] = current, vehicles
     post["area_geometry"] = dict(enabled=True, motion=motion, mask_available=mask_ok,
@@ -279,7 +279,7 @@ def _prepare_area_vehicles(obs, state, cfg, frame, matrix, valid_motion, lanes):
     for original in sorted(raw, key=lambda v: v.get("confidence", 0), reverse=True):
         if original.get("class_name") not in {"car", "truck", "bus", "motorcycle", "bicycle"}:
             continue
-        vehicle = copy.deepcopy(original)
+        vehicle = clone(original)
         box = vehicle["bbox_xyxy"]
         if not np.isfinite(box).all() or box[2] <= box[0] or box[3] <= box[1]:
             excluded.append(dict(object_id=vehicle.get("object_id"), reason="invalid_box"))
@@ -503,7 +503,7 @@ class AreaOccupancyRule:
                         point, duration = footprint.mean(axis=0).tolist(), cfg["stationary_seconds"]
                         if state and np.linalg.norm(np.asarray(point) - state["anchor"]) > cfg["stationary_radius_px"]:
                             state = None
-                    snapshot = copy.deepcopy(dict(frame=frame, vehicle=vehicle, region=region, measurement=measured))
+                    snapshot = clone(dict(frame=frame, vehicle=vehicle, region=region, measurement=measured))
                     if state is None:
                         state = dict(since=now, count=0, anchor=point, before=snapshot, reported=False)
                     state.update(last_time=now, count=state["count"] + 1)
@@ -525,7 +525,7 @@ class AreaOccupancyRule:
                     event["conditions"]["predicted_region"] = bool(region.get("predicted"))
                     if geometry.get("estimated"):
                         event["description"] = self.label + "；依車輛接地近似符合設定門檻，待人工覆核。"
-                    events.append(copy.deepcopy(event))
+                    events.append(clone(event))
                     state["reported"] = True
                 except (ValueError, TypeError, KeyError, cv2.error) as exc:
                     self.diagnostics["blocked"].append(dict(object_id=identity, region_id=region_id, reason=str(exc)))

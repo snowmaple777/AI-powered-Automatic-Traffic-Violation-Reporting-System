@@ -95,7 +95,14 @@ class TrafficLightDetector:
 
 class RoadMarkingSegmenter:
     def __init__(self, config, weights, device="cpu", min_pixels=100, sha256=ROAD_MODEL_SHA256,
-                 classes=None, palette=None):
+                 classes=None, palette=None, inference_scale=None, fp16=False, roi_top=0.0,
+                 fast_attention=False):
+        """inference_scale：[寬, 高]，取代設定檔 test_pipeline 的 Resize（預設 1920x1080，保持長寬比）。
+        fp16：CUDA 上以半精度 autocast 推論。
+        roi_top：只分割畫面高度此比例以下的道路區域（以原解析度推論，上方遮罩為背景）。
+        fast_attention：注意力層以 need_weights=False 呼叫 PyTorch，使用融合注意力核心，
+        不再產生並回傳完全沒用到的注意力權重矩陣（1080p 第一層約 13 萬 x 2 千）。
+        以上皆為效能選項，預設維持原行為。"""
         import torch
         from mmseg.apis import init_model
         weights = Path(weights)
@@ -118,12 +125,71 @@ class RoadMarkingSegmenter:
         if len(self.palette) != len(self.classes):
             raise ValueError("Road marking classes and palette must have equal length")
         self.min_pixels = min_pixels
+        if inference_scale is not None:
+            if (not isinstance(inference_scale, (list, tuple)) or len(inference_scale) != 2
+                    or not all(isinstance(v, int) and v >= 64 for v in inference_scale)):
+                raise ValueError("inference_scale must be [width, height] integers >= 64")
+            resizes = [step for step in self.model.cfg.test_pipeline if step.get("type") == "Resize"]
+            if len(resizes) != 1:
+                raise ValueError("Road marking config must contain exactly one Resize step")
+            resizes[0]["scale"] = tuple(inference_scale)
+        self.inference_scale = inference_scale
+        self.fp16 = bool(fp16) and str(device).startswith("cuda")
+        if not isinstance(roi_top, (int, float)) or not 0 <= roi_top < .9:
+            raise ValueError("roi_top must be in [0, 0.9)")
+        self.roi_top = float(roi_top)
+        self.fast_attention = bool(fast_attention)
+        if self.fast_attention:
+            enable_fast_attention(self.model)
 
     def infer(self, frame):
+        import torch
         from mmseg.apis import inference_model
-        result = inference_model(self.model, frame)
+        top = int(frame.shape[0] * self.roi_top)
+        source = frame[top:] if top else frame
+        if self.fp16:
+            with torch.autocast("cuda", dtype=torch.float16):
+                result = inference_model(self.model, source)
+        else:
+            result = inference_model(self.model, source)
         mask = result.pred_sem_seg.data.squeeze().cpu().numpy().astype(np.uint8)
+        if top:
+            full = np.zeros(frame.shape[:2], dtype=np.uint8)
+            full[top:] = mask
+            mask = full
         return mask, mask_components(mask, self.classes, self.min_pixels)
+
+
+def _fast_attention_forward(self, x, hw_shape, identity=None):
+    """與 mmseg EfficientMultiheadAttention.forward 相同，只是不要求回傳注意力權重。"""
+    from mmseg.models.utils import nchw_to_nlc, nlc_to_nchw
+    x_q = x
+    if self.sr_ratio > 1:
+        x_kv = self.norm(nchw_to_nlc(self.sr(nlc_to_nchw(x, hw_shape))))
+    else:
+        x_kv = x
+    if identity is None:
+        identity = x_q
+    if self.batch_first:
+        x_q, x_kv = x_q.transpose(0, 1), x_kv.transpose(0, 1)
+    out = self.attn(query=x_q, key=x_kv, value=x_kv, need_weights=False)[0]
+    if self.batch_first:
+        out = out.transpose(0, 1)
+    return identity + self.dropout_layer(self.proj_drop(out))
+
+
+def enable_fast_attention(model):
+    """將 SegFormer 的注意力層切換為不回傳權重的版本；回傳替換的層數。"""
+    import types
+    from mmseg.models.backbones.mit import EfficientMultiheadAttention
+    count = 0
+    for module in model.modules():
+        if isinstance(module, EfficientMultiheadAttention):
+            module.forward = types.MethodType(_fast_attention_forward, module)
+            count += 1
+    if not count:
+        raise RuntimeError("找不到 SegFormer 注意力層，無法啟用 fast_attention")
+    return count
 
 
 def mask_components(mask, classes, min_pixels):

@@ -19,7 +19,9 @@
       "params": {
         "weights": "../models/road_marking/segformer_b2_rlmd.pth",
         "config": "../road_marking_config.py",
-        "sha256": "5c8da1343ab2848b480db84431dfdceb27a9e58c1139e7aaeed3bb0d8c2379df"
+        "sha256": "5c8da1343ab2848b480db84431dfdceb27a9e58c1139e7aaeed3bb0d8c2379df",
+        "fast_attention": true,
+        "fp16": true
       }
     },
     "depth": {
@@ -35,7 +37,8 @@
       "backend": "perception_plate",
       "params": {
         "weights": "../models/plate/license-plate-finetune-v1s.onnx",
-        "max_distance": 22.0
+        "max_distance": 22.0,
+        "stable_shapes": true
       }
     },
     "ocr": {

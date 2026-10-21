@@ -9,6 +9,7 @@ import numpy as np
 from double_lines import (validate_rule_settings, line_quality, vehicle_line_position,
                           project_points, classify_maneuver, resolve_rule_lines)
 from signal_state import TemporalSignalState
+from area_rules import AreaOccupancyRule
 from typing import Iterable
 
 
@@ -533,7 +534,17 @@ class DoubleLineCrossingRule(ViolationRule):
                 key = (object_id, line["track_id"])
                 position = vehicle_line_position(vehicle, line, cfg, motion_error)
                 if position is None:
-                    self.states.pop(key, None)
+                    state = self.states.get(key)
+                    # The observation-gap timeout still expires this state.
+                    # Never refresh last_time or invent a missing ground sample.
+                    if state and state["phase"] in ("armed", "crossing"):
+                        state["position_gap"] = True
+                        state.update(after_path=[], destination_since=None, destination_count=0)
+                    else:
+                        self.states.pop(key, None)
+                    self.diagnostics["skipped_vehicles"].append({
+                        "object_id": object_id, "line_id": line["track_id"],
+                        "reason": "unsupported_footprint_or_invalid_box"})
                     continue
                 side, point, box = position["side"], position["point"], position["box"]
                 state = self.states.get(key)
@@ -562,7 +573,7 @@ class DoubleLineCrossingRule(ViolationRule):
                         state["rearm_since"] = now
                     elif now - state["rearm_since"] >= cfg["rearm_seconds"]:
                         state.update(phase="seeding", origin=side, origin_since=now,
-                                     before_path=[], after_path=[], crossing=None, transition=None)
+                                     before_path=[], after_path=[], crossing=None, transition=None, position_gap=False)
                     else:
                         continue
                     if state["phase"] == "reported":
@@ -574,7 +585,7 @@ class DoubleLineCrossingRule(ViolationRule):
                     # A touch-and-return cancels the candidate without emitting it.
                     if state["phase"] == "crossing":
                         state.update(phase="seeding", origin_since=now, before_path=[],
-                                     after_path=[], crossing=None, transition=None)
+                                     after_path=[], crossing=None, transition=None, position_gap=False)
                     path = state["before_path"]
                     path.append(sample)
                     path[:] = [s for s in path if now - s["time"] <= max(cfg["heading_window_sec"], cfg["stable_seconds"])]
@@ -605,6 +616,7 @@ class DoubleLineCrossingRule(ViolationRule):
                     continue
                 conditions = dict(stable_origin=True, stable_destination=True, complete_band_crossing=True,
                                   continuous_tracks=True, geometry_verified=True,
+                                  uninterrupted_positions=not state.get("position_gap", False),
                                   directly_observed_pair=not state.get("inferred_geometry", False),
                                   transition_observed=state["transition"] is not None)
                 status = "confirmed" if all(conditions.values()) else "suspected"
@@ -624,6 +636,7 @@ class DoubleLineCrossingRule(ViolationRule):
                               "complete_crossing": "，行為方向未能分類"}[maneuver]
                     event["description"] = self.label + "：車框內縮底邊代理由雙線帶一側完整移至另一側" + action + (
                         "；跨線過程有觀測支持。" if status == "confirmed" else
+                        "；短暫缺少有效車輛參考點，待覆核。" if not conditions["uninterrupted_positions"] else
                         "；雙線語意或遮擋補償證據待覆核。" if not conditions["directly_observed_pair"] else
                         "；缺少線帶內觀測，待覆核。")
                     events.append(event)
@@ -668,6 +681,8 @@ RULE_FACTORIES = {
     RedLightStopLineCrossingRule.rule_id: RedLightStopLineCrossingRule,
     "double_yellow_line_crossing": partial(DoubleLineCrossingRule, color="yellow"),
     "double_white_line_crossing": partial(DoubleLineCrossingRule, color="white"),
+    "car_motorcycle_waiting_area": partial(AreaOccupancyRule, rule_id="car_motorcycle_waiting_area"),
+    "crosswalk_stopping": partial(AreaOccupancyRule, rule_id="crosswalk_stopping"),
 }
 
 

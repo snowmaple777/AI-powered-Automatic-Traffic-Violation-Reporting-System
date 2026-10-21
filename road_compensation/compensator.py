@@ -50,7 +50,7 @@ class RoadMarkingCompensator:
         h,w=frame.shape[:2]
         raw=deepcopy(road_markings)
         gray=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
-        mask=road_mask(frame.shape,vehicles,cfg.roi_top)
+        mask=road_mask(frame.shape,vehicles,cfg.roi_top,cfg.roi_bottom)
         reset_reason=None
         if self.previous_gray is not None and (
                 self.previous_gray.shape!=gray.shape or frame_index!=self.previous_index+1

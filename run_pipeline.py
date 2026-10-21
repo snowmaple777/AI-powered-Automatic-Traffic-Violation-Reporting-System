@@ -19,10 +19,14 @@ from road_compensation import CompensationConfig, RoadMarkingCompensator, attach
 from road_compensation.render import draw_compensation
 from rider_tracking import RiderTracker, attach_riders, draw_rider_groups
 from double_lines import attach_double_lines, draw_double_lines, double_line_rule_options
+from area_rules import (AREA_RULES, area_rule_options, area_geometry_options,
+                        attach_area_geometry, draw_area_geometry)
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="可替換模型的交通影像辨識")
+    parser.add_argument("--area-rule-config", type=Path, default=ROOT / "configs/area_rules.json",
+                        help="停等區與行人穿越道候選規則參數")
     parser.add_argument("input", type=Path, help="輸入影片")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "outputs")
     parser.add_argument("--device", default="auto", help="auto、cpu 或 cuda:0")
@@ -63,6 +67,10 @@ def run(args, resources):
     rule_names = [name.strip() for name in args.rules.split(",") if name.strip()]
     rule_options = {"red_light_stop_line_crossing": {
         "crossing_direction": getattr(args, "crossing_direction", "away")}}
+    area_config = None
+    if "all" in rule_names or any(name in AREA_RULES for name in rule_names):
+        rule_options.update(area_rule_options(getattr(args, "area_rule_config", ROOT / "configs/area_rules.json")))
+        area_config = area_geometry_options(args.area_rule_config)
     if any(name == "all" or name.startswith("double_") for name in rule_names):
         rule_options.update(double_line_rule_options(args.double_line_config))
     # 補償層獨立於模型工廠：更換標線模型不需更改此接口；停用時完全旁路。
@@ -91,6 +99,7 @@ def run(args, resources):
     width, height = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     rider_tracker = RiderTracker(fps)
     double_line_state = {}
+    area_state = {}
     writer = None
     if args.save_video:
         writer = cv2.VideoWriter(str(video_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
@@ -147,6 +156,9 @@ def run(args, resources):
                 attach_riders(record, rider_tracker)
                 attach_double_lines(record, results["road_markings"].artifacts.get("mask"),
                                     double_line_state)
+                if area_config is not None:
+                    attach_area_geometry(record, results["road_markings"].artifacts.get("mask"),
+                                         area_state, area_config)
                 jsonl.write(json.dumps(record, ensure_ascii=False) + "\n")
                 if violations_file:
                     frame_events = violation_engine.evaluate(record)
@@ -202,7 +214,10 @@ def run(args, resources):
                         draw_compensation(annotated, compensation)
                     draw_rider_groups(annotated, record['observations']['rider_groups'])
                     draw_double_lines(annotated, record['observations']['double_lines'])
-                    draw_violation_candidates(annotated, record['observations']['rule_vehicles'], recent_events, timestamp)
+                    if area_config is not None:
+                        draw_area_geometry(annotated, record)
+                    draw_violation_candidates(annotated, record['observations']['rule_vehicles'], recent_events, timestamp,
+                                              area_vehicles=record['observations'].get('area_vehicles'))
                     writer.write(annotated)
                 frame_index += 1
                 if frame_index % 10 == 0:

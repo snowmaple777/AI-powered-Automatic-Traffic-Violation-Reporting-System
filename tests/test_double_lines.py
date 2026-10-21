@@ -151,7 +151,7 @@ class DoubleLineTests(unittest.TestCase):
         record["observations"].pop("double_lines")
         self.assertEqual(engine.evaluate(record), [])
         state = {}
-        double_rules = rules[1:]
+        double_rules = [rule for rule in rules if rule.rule_id.startswith("double_")]
         for index in range(4):
             record = observation(index)
             record["observations"]["vehicles"] = [

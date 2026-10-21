@@ -288,7 +288,156 @@ vehicle-000010 的語意線帶與遮擋跨線路徑納入回歸驗證；不是�
 無參數時開啟 GUI。操作見 reporting/autoForm/README.md。
 目前未驗證外部網站填表／送出，也未建立辨識輸出到填表案件的自動轉換。
 
+## 停等區與斑馬線候選規則
+
+新增 car_motorcycle_waiting_area（紅燈時汽車侵入機車停等區）與
+crosswalk_stopping（車輛停留於行人穿越道），--rules all 亦包含兩者。
+共用 configs/area_rules.json；辨識與規則重算均支援 --area-rule-config。
+啟用兩項規則之一時，主流程會直接使用現有標線模型的遮罩建立封閉區域，
+合併鄰近條紋與間隙，再以既有道路運動追蹤短暫消失的區域；不載入新模型。
+車輛下部梯形近似提供斑馬線重疊計算，事件仍為待覆核候選。
+停等區的車頭方向與車道號誌須有明確校準，目前支援固定鏡頭配置；
+行車記錄器尚無可靠自動車道／號誌配對，因此該規則仍可能受阻。
+沒有有效區域時會回報 region_geometry_unavailable。原有規則的車輛輸入不受影響。
+
+~~~powershell
+.\.venv\Scripts\python.exe run_pipeline.py "input/停止在斑馬線上/soc03.mp4" --rules car_motorcycle_waiting_area,crosswalk_stopping --area-rule-config configs/area_rules.json --output-dir outputs/soc03_area --save-video
+~~~
+
+~~~powershell
+.\.venv\Scripts\python.exe evaluate_violations.py outputs/影片_detections.jsonl --rules car_motorcycle_waiting_area,crosswalk_stopping --area-rule-config configs/area_rules.json --output outputs/影片_area_events.jsonl --diagnostics outputs/影片_area_diagnostics.jsonl
+~~~
+
+schema_version 1.5 保存 observations.traffic_regions、area_vehicles 及 postprocessing.area_geometry；
+area_vehicles 只供兩項區域規則使用，原始 vehicles／rule_vehicles 保留。舊版 JSONL 仍可讀取。
+evaluate_violations.py 重用已保存幾何；調整 geometry 參數須重新執行辨識流程，單純重算不會重建區域。
+後續辨識／標註轉接層應在每幀進入違規引擎前提供以下資料；均使用當幀原圖像素座標。
+人工標註固定區域只適用固定鏡頭；移動鏡頭須重新辨識或投影，不能直接重用舊座標。
+
+~~~json
+{
+  "region_id": "waiting-1",
+  "kind": "motorcycle_waiting_area",
+  "source_frame": 20,
+  "confidence": 0.95,
+  "polygon": [[100, 200], [300, 200], [300, 300], [100, 300]],
+  "lane_id": "lane-1",
+  "signal": {"state": "red", "lane_id": "lane-1", "source_frame": 20, "confidence": 0.95}
+}
+~~~
+
+斑馬線使用 kind=crosswalk，不要求 lane_id 或 signal；polygon 必須涵蓋條紋之間的空隙，
+不是只包含白色油漆。目前僅接受非退化凸多邊形；凹形或多區域融合留待後續擴充。
+同幀 region_id、object_id 必須唯一，重複身分會回報 ambiguous_identity。
+車輛資料除既有 object_id、source_frame、confidence、class_name 外，應由轉接層增加：
+
+~~~json
+{
+  "lane_id": "lane-1",
+  "road_geometry": {
+    "source_frame": 20,
+    "confidence": 0.95,
+    "method": "manual_annotation",
+    "front_edge": [[150, 250], [200, 250]],
+    "footprint": [[150, 250], [200, 250], [200, 350], [150, 350]]
+  }
+}
+~~~
+
+使用 rule_vehicles 時，新增欄位必須保留在 rule_vehicles，不能只放在 vehicles。
+停等區規則只需 front_edge 與 lane_id，斑馬線規則只需 footprint。
+front_edge 是車頭前緣在道路上的估計線段，footprint 是車輛地面占用多邊形，均不可直接以整個車框替代。
+method 記錄來源方法；信心不足、資料過期或缺少來源會中止該候選的累積。
+
+預設停等區條件：汽車／貨車／公車，配對到同車道的當幀紅燈，車頭侵入線段長度至少
+2 像素，至少 3 次新觀測且持續 0.15 秒。這是侵入候選，不要求整車進入，也不宣稱已確認停留。
+預設斑馬線條件：交集面積／車輛地面占用面積至少 50%，至少 3 次新觀測且持續 1 秒。
+其地面占用頂點平均位置相對起始位置的偏移，在逐幀道路運動補償後不得超過 4 像素；
+超過即重新累積。這是可替換的靜止近似方法，不是真實車速量測，透視與配準誤差仍會影響結果。
+只有 geometry.fixed_camera=true 才明確使用固定鏡頭的 identity motion；一般影片仍需有效道路運動。
+
+參數含 min_confidence、min_observations、intrusion_seconds、min_intrusion_length_px、
+overlap_ratio、stationary_seconds、stationary_radius_px、max_observation_gap_sec、max_frame_gap_sec。
+預設觀測間隔上限 0.3 秒、連續影片幀時間間隔上限 0.2 秒。快取車框不增加證據次數；
+未能可靠銜接的 ID 變化、缺區域、失去條件、來源不連續或運動失敗會清除或重新累積，影片結束不補發未完成事件。
+同一次連續成立只輸出一個事件，離開後重新符合可再次產生事件。
+初版全部為 suspected，沿用事件 JSONL、中文摘要及剪輯流程，包含車牌、前後快照、區域、
+重疊量／侵入量、持續時間及實際參數，供人工覆核。門檻是工程篩選設定，不代表法定標準。
+
+### 不更換模型的幾何與追蹤設定
+
+configs/area_rules.json 的 geometry 區塊控制前處理；未列出的欄位使用 area_rules.py 的 GEOMETRY_DEFAULTS。
+
+- close_gap_ratio：標線碎片合併距離，預設短邊的 2.5%；過大可能合併不同穿越道。
+- min_region_pixels、min_region_side_px、min_fill_ratio、max_region_frame_ratio：排除過小、線狀、過稀疏或過大區域。
+- region_ttl_sec：最後直接觀測後最多沿道路運動保留 0.4 秒；失去有效運動立即失效。
+- footprint_height_ratio／footprint_width_ratio：車框下部梯形的高度及頂邊寬度比例，預設 0.22／0.85。
+  這是明確標記 estimated=true 的影像近似，不是車身完整投影或實際輪胎接地量測；側面、遮擋與透視會影響結果。
+  畫面邊緣裁切車輛不產生近似；既有當幀 road_geometry 優先保留。
+- estimated_quality：預設 0.6，僅為幾何品質門檻分數，不是模型預測機率。
+- duplicate_iou：同類群（汽車／貨車／公車為一群）車框重疊達 0.85 時保留較高信心者。
+- plate_link_seconds／plate_link_confidence：僅在唯一相同車牌、文字信心至少 0.9、有效道路投影、
+  車框 IoU 至少 0.5 且間隔不超過 0.3 秒時銜接編號；保留 source_object_id 供查核。不靠位置猜測不同車輛是同一輛。
+- ego_polygons：拍攝車輛固定出現區域，座標使用 0–1 比例；車框底部中心落入時排除。
+  預設空陣列，須依實際鏡頭設定，避免排除真正道路車輛。
+
+固定鏡頭可在 geometry 中設定下例；座標只是格式示例，必須依畫面校準，不適用會移動或轉向的行車記錄器：
+
+~~~json
+{
+  "fixed_camera": true,
+  "lanes": [{
+    "lane_id": "lane-1",
+    "polygon": [[0.3, 0.3], [0.7, 0.3], [0.9, 0.95], [0.1, 0.95]],
+    "signal_roi": [[0.4, 0.05], [0.5, 0.05], [0.5, 0.2], [0.4, 0.2]],
+    "heading": [0, -1]
+  }],
+  "ego_polygons": []
+}
+~~~
+
+polygon 是車道範圍；signal_roi 是該車道對應號誌；heading 是畫面上的車頭方向，
+[0,-1] 表示向上，只適用該車道車輛方向一致的視角，不可用於正在迴轉的車輛。
+號誌需當幀信心至少 0.5、範圍內顏色一致，且連續 signal_confirm_seconds（預設 0.15 秒）；
+缺失、低信心或紅綠衝突立即中斷。車道配對歧義時不產生配對。
+
+輸出影片會畫出區域輪廓（藍色為觀測、橘色為預測）、新觀測車輛的接地近似與已校準車頭前緣。
+JSONL 保存區域多邊形、最後直接觀測幀、預測標記與參數，後續不需再載入模型即可重算規則。
+診斷 measurements 提供重疊／侵入量及門檻；blocked 說明缺少區域、車輛幾何、方向或對應紅燈等條件。
+輸出仍需覆核：50% 只代表所用近似多邊形的比例，不能當作真實車身面積已準確量測。
+
 ## 常見問題
+
+### 行車記錄器背景取樣與短暫遮擋
+
+背景光流預設最多取 1500 個角點、間距 5 像素（縮圖座標），可透過
+motion_max_corners、motion_min_distance 調整；較多角點會增加運算量。
+roi_top 與 roi_bottom 限制背景取樣的垂直範圍，值為影像高度比例，
+必須符合 0 < roi_top < roi_bottom <= 1。預設仍保留完整下方區域。
+
+若引擎蓋／儀表板佔據畫面底部，可使用行車記錄器設定（上界 0.30、下界 0.73）：
+
+~~~powershell
+.\.venv\Scripts\python.exe run_pipeline.py input/cdy05.mp4 --rules double_yellow_line_crossing --marking-compensation-config configs/marking_compensation_dashcam.json --output-dir outputs/cdy05_dashcam --save-video
+~~~
+
+取樣範圍需依鏡頭位置調整，這組設定不是所有影片的通用裁切值。
+也可沿用模型輸出，只重算背景運動及補償，再重跑規則：
+
+~~~powershell
+.\.venv\Scripts\python.exe compensate_recording.py input/cdy05.mp4 outputs/cdy05_detections.jsonl --config configs/marking_compensation_dashcam.json --output outputs/cdy05_improved/cdy05_detections.jsonl
+.\.venv\Scripts\python.exe evaluate_violations.py outputs/cdy05_improved/cdy05_detections.jsonl --rules double_yellow_line_crossing --output outputs/cdy05_improved/cdy05_violations.jsonl --diagnostics outputs/cdy05_improved/cdy05_rule_diagnostics.jsonl
+~~~
+
+補償重算沿用既有車框與雙線分割幾何，不重新推論模型或重新產生原始雙線追蹤 ID。
+違規引擎會用新的背景運動重新配對有限線段。
+已有穩定起始側的車輛，若參考點短暫無法落在有效線段範圍內，
+會在 max_observation_gap_sec（預設 0.3 秒）內保留狀態，但不新增推估座標、
+不累計目的側穩定時間；恢復有效觀測後須重新累積目的側證據。
+經過這類缺口的事件只能輸出疑似違規，uninterrupted_positions 為 false。
+相機運動失敗、線段配對失敗或超時仍會清除狀態。
+診斷原因 unsupported_footprint_or_invalid_box 表示車框或有限線段支持不足。
+若跨越前從未建立有效起始側，仍不會產生事件；不會無限延長標線以強制判違規。
 
 - 找不到環境或套件：執行「安裝環境.cmd」，確認使用專案 .venv 的 Python。
 - 找不到權重／字典：依 weights、dict_path 檢查，路徑相對 JSON 所在目錄。

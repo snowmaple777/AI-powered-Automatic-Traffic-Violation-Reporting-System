@@ -37,6 +37,7 @@ default 與 full 均啟用完整六階段；違規判定需另外加上
 | configs/ | 模型設定、ByteTrack 設定、標線補償參數 |
 | model_library/、road_compensation/ | 執行所需的辨識與後處理程式 |
 | double_lines.py | 雙線有限幾何、運動補償追蹤與影片標記 |
+| area_rules.py | 停等區／斑馬線區域建立、道路追蹤、車輛接地近似、固定鏡頭車道號誌配對與候選規則 |
 | tests/ | 車牌持續顯示、事件剪輯與雙線框架的回歸測試 |
 | third_party/ | 道路模型所需的 MMSegmentation 程式及授權 |
 | models/ | 現行權重、OCR 字典與模型檔案資訊 |

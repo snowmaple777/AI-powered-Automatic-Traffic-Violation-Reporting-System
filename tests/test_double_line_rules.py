@@ -59,6 +59,31 @@ def run_records(records, color="yellow", settings=None):
 
 
 class DoubleLineRuleTests(unittest.TestCase):
+    def test_brief_unsupported_position_requires_review_and_expires(self):
+        original_position = __import__("violation_engine").vehicle_line_position
+        records = sequence(LANE_CHANGE)
+
+        def missing_position(vehicle, line, settings, error=0):
+            if vehicle["source_frame"] == 4:
+                return None
+            return original_position(vehicle, line, settings, error)
+
+        with patch("violation_engine.vehicle_line_position", side_effect=missing_position):
+            events = run_records(records)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["status"], "suspected")
+        self.assertFalse(events[0]["conditions"]["uninterrupted_positions"])
+        with patch("violation_engine.vehicle_line_position", side_effect=missing_position):
+            self.assertEqual(run_records(records, settings={"emit_suspected": False}), [])
+
+        def long_gap(vehicle, line, settings, error=0):
+            if 3 <= vehicle["source_frame"] <= 6:
+                return None
+            return original_position(vehicle, line, settings, error)
+
+        with patch("violation_engine.vehicle_line_position", side_effect=long_gap):
+            self.assertEqual(run_records(records), [])
+
     def test_complete_crossing_both_colors_directions_and_maneuvers(self):
         for color in ("yellow", "white"):
             for path, behavior in ((LANE_CHANGE, "lane_change"), (U_TURN, "u_turn")):

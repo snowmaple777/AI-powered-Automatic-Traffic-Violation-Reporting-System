@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "min_confidence": 0.5,
+  "min_observations": 3,
+  "intrusion_seconds": 0.15,
+  "min_intrusion_length_px": 2.0,
+  "overlap_ratio": 0.5,
+  "stationary_seconds": 1.0,
+  "stationary_radius_px": 4.0,
+  "max_observation_gap_sec": 0.3,
+  "max_frame_gap_sec": 0.2,
+  "geometry": {
+    "close_gap_ratio": 0.025,
+    "min_region_pixels": 120,
+    "region_ttl_sec": 0.4,
+    "footprint_height_ratio": 0.22,
+    "footprint_width_ratio": 0.85,
+    "duplicate_iou": 0.85,
+    "fixed_camera": false,
+    "lanes": [],
+    "ego_polygons": []
+  }
+}

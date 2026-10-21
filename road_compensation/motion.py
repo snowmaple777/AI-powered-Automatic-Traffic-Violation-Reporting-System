@@ -4,10 +4,10 @@ import numpy as np
 from .contracts import MotionEstimate
 
 
-def road_mask(shape, vehicles, roi_top):
+def road_mask(shape, vehicles, roi_top, roi_bottom=1.0):
     h, w = shape[:2]
     mask = np.zeros((h, w), np.uint8)
-    mask[int(h * roi_top):] = 255
+    mask[int(h * roi_top):int(h * roi_bottom)] = 255
     for vehicle in vehicles:
         x1, y1, x2, y2 = vehicle["bbox_xyxy"]
         dx, dy = (x2-x1)*.05, (y2-y1)*.05
@@ -29,7 +29,8 @@ class RoadMotionEstimator:
         size = (max(1, round(w*scale)), max(1, round(h*scale)))
         a, b = [cv2.resize(x, size) for x in (previous, current)]
         ma, mb = [cv2.resize(x, size, interpolation=cv2.INTER_NEAREST) for x in (previous_mask, current_mask)]
-        points = cv2.goodFeaturesToTrack(a, maxCorners=600, qualityLevel=.01, minDistance=8, mask=ma)
+        points = cv2.goodFeaturesToTrack(a, maxCorners=cfg.motion_max_corners,
+                                       qualityLevel=.01, minDistance=cfg.motion_min_distance, mask=ma)
         if points is None or len(points) < cfg.min_motion_points:
             return MotionEstimate(False, reason="insufficient_background_features")
         moved, status, _ = cv2.calcOpticalFlowPyrLK(a, b, points, None, winSize=(21,21), maxLevel=3)
@@ -66,7 +67,8 @@ class RoadMotionEstimator:
             return MotionEstimate(False, reason="high_reprojection_error")
         scaling = np.diag([size[0]/w, size[1]/h, 1.])
         matrix = np.linalg.inv(scaling) @ matrix @ scaling
-        corners = np.float32([[0,h*cfg.roi_top],[w-1,h*cfg.roi_top],[w-1,h-1],[0,h-1]])
+        bottom = min(h - 1, h * cfg.roi_bottom)
+        corners = np.float32([[0,h*cfg.roi_top],[w-1,h*cfg.roi_top],[w-1,bottom],[0,bottom]])
         warped = cv2.perspectiveTransform(corners[None],matrix)[0]
         area_ratio = abs(cv2.contourArea(warped)) / max(1.,cv2.contourArea(corners))
         if (not np.isfinite(warped).all() or not cv2.isContourConvex(warped)

@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "roi_top": 0.3,
+  "roi_bottom": 0.73,
+  "motion_max_corners": 1500,
+  "motion_min_distance": 5.0
+}

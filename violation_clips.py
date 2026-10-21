@@ -105,7 +105,8 @@ def export_violation_clips(video_path, observations_path, events, output_dir,
                         raise RuntimeError(f'無法建立違規片段：{job["path"]}')
                     job['writer'] = writer
                 annotated = draw_violation_candidates(frame.copy(), vehicles, [job['event']], index / fps,
-                                                       hold_seconds=None, frame_index=index)
+                                                       hold_seconds=None, frame_index=index,
+                                                       area_vehicles=obs.get('area_vehicles'))
                 job['writer'].write(annotated)
                 job['frames'] += 1
                 if index == job['end']:

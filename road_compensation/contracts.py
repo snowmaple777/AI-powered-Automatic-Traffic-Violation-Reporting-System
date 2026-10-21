@@ -10,6 +10,9 @@ from typing import Any
 class CompensationConfig:
     target_class: str = "stop line"
     roi_top: float = 0.40
+    roi_bottom: float = 1.0
+    motion_max_corners: int = 1500
+    motion_min_distance: float = 5.0
     motion_width: int = 960
     min_motion_points: int = 20
     min_inlier_ratio: float = 0.60
@@ -40,7 +43,7 @@ class CompensationConfig:
                     raise ValueError("target_class must be a nonempty string")
             elif isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{key} must be finite and positive")
-        for key in ("motion_width", "min_motion_points", "min_observations", "min_component_area"):
+        for key in ("motion_width", "motion_max_corners", "min_motion_points", "min_observations", "min_component_area"):
             if not isinstance(getattr(self, key), int):
                 raise ValueError(f"{key} must be an integer")
         for key in ("roi_top", "min_inlier_ratio", "smoothing_alpha", "min_occlusion_ratio", "min_rule_support"):
@@ -48,6 +51,10 @@ class CompensationConfig:
                 raise ValueError(f"{key} must lie strictly between 0 and 1")
         if self.min_motion_points < 4:
             raise ValueError("min_motion_points must be at least 4")
+        if not self.roi_top < self.roi_bottom <= 1:
+            raise ValueError("roi_bottom must be greater than roi_top and <= 1")
+        if self.motion_max_corners < self.min_motion_points:
+            raise ValueError("motion_max_corners must cover min_motion_points")
 
     @classmethod
     def from_json(cls, path):

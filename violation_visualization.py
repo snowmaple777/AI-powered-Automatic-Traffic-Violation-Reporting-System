@@ -9,7 +9,9 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 STATUS_COLORS = {"suspected": (0, 165, 255), "confirmed": (0, 0, 255)}
-RULE_LABELS = {"red_light_stop_line_crossing": "紅燈越過停止線",
+RULE_LABELS = {"car_motorcycle_waiting_area": "紅燈時汽車侵入機車停等區",
+               "crosswalk_stopping": "車輛停留於行人穿越道",
+               "red_light_stop_line_crossing": "紅燈越過停止線",
                "double_yellow_line_crossing": "跨越雙黃線",
                "double_white_line_crossing": "跨越雙白線"}
 
@@ -81,7 +83,7 @@ def _wrap(text, font, width, max_lines=3):
 
 
 def draw_violation_candidates(frame, vehicles, events, timestamp_sec, hold_seconds=1.0,
-                              frame_index=None):
+                              frame_index=None, area_vehicles=None):
     """Draw bounded, stacked cards; lost tracks never reuse stale evidence boxes."""
     active = [e for e in events if hold_seconds is None or
               0 <= timestamp_sec-e.get("confirmation_timestamp_sec", e["timestamp_sec"]) <= hold_seconds]
@@ -97,7 +99,9 @@ def draw_violation_candidates(frame, vehicles, events, timestamp_sec, hold_secon
     for event in active:
         status = "confirmed" if event.get("status") == "confirmed" else "suspected"
         color = STATUS_COLORS[status]
-        vehicle = find_event_vehicle(vehicles, event)
+        candidates = area_vehicles if area_vehicles is not None and event.get("rule_id") in {
+            "car_motorcycle_waiting_area", "crosswalk_stopping"} else vehicles
+        vehicle = find_event_vehicle(candidates, event)
         if vehicle is None and frame_index == event.get("frame"):
             vehicle = event.get("evidence", {}).get("vehicle")
         if vehicle and vehicle.get("bbox_xyxy"):

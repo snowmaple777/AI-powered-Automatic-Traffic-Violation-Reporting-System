@@ -9,10 +9,14 @@ from contextlib import ExitStack
 from violation_engine import RuleContext, ViolationEngine, create_rules
 from violation_clips import add_clip_arguments, validate_clip_options, export_violation_clips
 from double_lines import double_line_rule_options
+from area_rules import AREA_RULES, area_rule_options
 
 
 def main():
     parser = argparse.ArgumentParser(description="從模型 JSONL 輸出執行違規規則")
+    parser.add_argument("--area-rule-config", type=Path,
+                        default=Path(__file__).resolve().parent / "configs/area_rules.json",
+                        help="停等區與行人穿越道候選規則參數")
     parser.add_argument("input", type=Path, help="*_detections.jsonl")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--rules", "--rule", default="red_light_stop_line_crossing",
@@ -41,6 +45,8 @@ def main():
         parser.error("輸入、事件輸出與診斷檔必須是不同路徑")
     names = [name.strip() for name in args.rules.split(",") if name.strip()]
     rule_options = {"red_light_stop_line_crossing": {"crossing_direction": args.crossing_direction}}
+    if "all" in names or any(name in AREA_RULES for name in names):
+        rule_options.update(area_rule_options(args.area_rule_config))
     if any(name == "all" or name.startswith("double_") for name in names):
         rule_options.update(double_line_rule_options(args.double_line_config))
     all_events = []

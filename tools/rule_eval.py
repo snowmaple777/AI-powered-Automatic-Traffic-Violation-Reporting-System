@@ -5,6 +5,7 @@
 """
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -22,6 +23,17 @@ def rule_options():
     options.update(area_rule_options(ROOT / "configs/area_rules.json"))
     options.update(double_line_rule_options(ROOT / "configs/double_line_rules.json"))
     return options
+
+
+def git_state():
+    """目前的 commit 與是否有未提交的修改，讓每次實驗都能對回程式版本。"""
+    def git(*args):
+        try:
+            return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
+        except (OSError, subprocess.CalledProcessError):
+            return None
+    status = git("status", "--porcelain", "--untracked-files=no")
+    return {"commit": git("rev-parse", "HEAD"), "dirty": None if status is None else bool(status)}
 
 
 def run_rules(jsonl, out_dir, name, rules=("all",)):
@@ -56,6 +68,10 @@ def main(argv=None):
     parser.add_argument("--only", nargs="*")
     args = parser.parse_args(argv)
     out = ROOT / "outputs/eval" / args.label
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "rule_options.json").write_text(json.dumps(
+        {"source": str(args.source), "only": args.only, "git": git_state(), "options": rule_options()},
+        ensure_ascii=False, indent=2), encoding="utf-8")
     changed = []
     for folder in sorted(p for p in args.source.iterdir() if (p / f"{p.name}_detections.jsonl").is_file()):
         name = folder.name

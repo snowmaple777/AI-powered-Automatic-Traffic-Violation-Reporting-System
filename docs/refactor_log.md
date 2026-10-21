@@ -1,7 +1,7 @@
 # 分階段重構紀錄
 
 每個階段完成後執行 `驗證階段.cmd <階段名稱>`，確認可以運行後才進行下一階段。
-重構前的程式碼完整備份在 `_backup_pre_refactor/`。
+各階段的程式碼以 git tag 保存：`refactor-pre`（重構前）、`refactor-stage1`、`refactor-stage2`、`refactor-stage4b`（階段 3 至 4b）。原本的 `_backup_*` 資料夾內容已逐檔確認與對應 tag 相同，可以刪除；需要舊版程式時以 `git worktree add ..\stage1 refactor-stage1` 取出。
 
 ## 驗證工具（階段 0）
 
@@ -167,3 +167,20 @@ stage3f 與 stage3e 的輸出三支影片逐幀相同；鏡頭運動等待時間
   - cdy07：AV1 編碼，VM 無法解碼，未逐片檢查。
   試過「首次觀測即在線上、之後穩定離開」的疑似判定：遠處車輛多半落在邊界容許帶內，無法與對向車道貼線行駛的車分開，會產生誤報，已撤回。
 - 下一步需要感知層：雙線分割在彎道的穩定性、遠處小車的接地位置、以及鏡頭運動估計本身（每幀縮放抖動 2–6%）。
+
+### 4a／4b 期間的規則實驗（`outputs/eval/_rules_*`、`_replay_v3`）
+這些是 2026-10-21 17:24–17:49 以 `tools/rule_eval.py`／`tools/real_replay.py` 跑的中間版本。當時沒有保存每個版本的程式或參數，以下是事後從輸出（摘要、事件、阻擋原因）比對整理；標「推斷」的項目無法從輸出確認。
+
+| 標籤 | 來源 | 內容 | 結果 | 處置 |
+| --- | --- | --- | --- | --- |
+| `_rules_base` | baseline JSONL | 以當時規則重算 | 與 baseline 相同 | 確認重算工具 0 差異 |
+| `_rules_v1` | baseline | 4a 闖紅燈 | 紅燈 4/13 → 7/13，TP 5 FP 2 FN 2 | 採用 |
+| `_rules_v2` | baseline | 闖紅燈變體。mm01、s01、s05 的阻擋原因出現 `proxy_stop_line`，推斷是把代理停止線當成硬性阻擋，而不是降為 suspected | 紅燈 7/13 → 4/13，TP 3 FN 4；s01、s05、mm01 漏報 | 撤回，維持 v1 的「代理停止線只能 suspected」 |
+| `_rules_v3` | baseline | v1 紅燈 ＋ 4b 雙線規則（仍是舊的雙線後處理） | 紅燈同 v1；雙線 1/7。cdy02、cdy04 阻擋原因轉為 `phase:armed`（候選保留得較久） | 規則部分採用 |
+| `_replay_v3` | 逐幀遮罩重播 | 4b 雙線後處理（`attach_double_lines` 不重設追蹤）重跑 cdy01–06（cdy07 在 VM 無法解碼） | 雙線 1/6，事件不變 | 作為 v3b／v3c 的來源 |
+| `_rules_v3b` | `_replay_v3` | 雙線規則變體。cdy05 的 `motion_unavailable` 102 次（v3c 為 223），推斷是運動失敗的容忍時間較長 | 事件不變 | 未採用 |
+| `_rules_v3c` | `_replay_v3` | 雙線規則，阻擋統計與最終 stage4 完全相同 | 事件不變 | 採用（即 stage4 設定） |
+| `_rules_v3c_40`／`_60`／`_80` | `_replay_v3` | 某一參數取 40／60／80 的掃描，參數名稱未保存；80 與 v3c 相同，40／60 在 cdy02、cdy04、cdy05 多出 `phase:armed`／`seeding` 次數 | 事件不變 | 未採用 |
+
+結論：v3 系列的所有雙線變體輸出的事件完全相同（只有 cdy01 5.4 秒的疑似），與 4b 的判斷一致，瓶頸在感知層而不是規則門檻。
+改進：`tools/rule_eval.py` 改為在輸出資料夾寫入 `rule_options.json`（實際使用的規則參數、來源資料夾、git commit 與是否有未提交修改），之後的實驗都可以追溯。

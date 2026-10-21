@@ -4,7 +4,8 @@
 紅綠燈切換、一次單幀漏偵測），影像使用真實影片，所以鏡頭運動估計、補償、雙線、
 區域、規則、CSV、標註影片與違規剪輯都會實際執行。不需要 torch 或模型權重。
 
-  python tools/equivalence_harness.py run --code _backup_stage1 --out /tmp/a
+  git worktree add ../stage1 refactor-stage1      # 以 tag 取出舊版程式
+  python tools/equivalence_harness.py run --code ../stage1 --out /tmp/a
   python tools/equivalence_harness.py run --code . --out /tmp/b
   python tools/equivalence_harness.py compare /tmp/a /tmp/b
 """

@@ -19,6 +19,10 @@ class CompensationConfig:
     max_fb_error: float = 1.5  # 縮圖像素；其餘幾何門檻皆以原圖像素或比例表示。
     max_reprojection_error: float = 2.5
     max_photometric_error: float = 35.0
+    # 背景光流中位數 <= 一半且至少 min_inlier_ratio 的點 <= 此值（原圖像素）時判為靜止。
+    stationary_flow_px: float = 1.0
+    # 道路區域中心的位移上限，為背景光流 p90（至少 stationary_flow_px）的倍數。
+    max_flow_extrapolation: float = 2.0
     min_observations: int = 3
     min_component_area: int = 100
     min_aspect: float = 2.0

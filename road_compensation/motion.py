@@ -44,6 +44,15 @@ class RoadMotionEstimator:
         high = int(np.searchsorted(cumulative, n // 2 + 1))
         return (low + high) / 2.0
 
+    @staticmethod
+    def _covers(points, size):
+        """點至少落在 3x3 格中的 4 格，且橫跨 25% 寬、15% 高。"""
+        if not len(points):
+            return False
+        grid = np.minimum(2, (points / np.asarray(size, dtype=points.dtype) * 3).astype(int))
+        span = np.ptp(points, axis=0)
+        return len(np.unique(grid, axis=0)) >= 4 and span[0] >= size[0]*.25 and span[1] >= size[1]*.15
+
     def estimate(self, previous, current, previous_mask, current_mask):
         cfg = self.config
         h, w = current.shape
@@ -74,6 +83,19 @@ class RoadMotionEstimator:
         p, q = p[indices], q[indices]
         if len(p) < cfg.min_motion_points:
             return MotionEstimate(False, reason="insufficient_reliable_flow")
+        # 靜止判定：背景光流幾乎為零時，單應矩陣只會擬合到雜訊（全片評估中光流 < 0.5 px 的幀，
+        # 道路中心仍被推移達 8 px），直接採用單位矩陣。靜止點須與一般估計相同地分佈在道路區域，
+        # 否則行車中只有消失點附近的特徵也會看似不動。仍做亮度檢查，避免把切鏡當成靜止。
+        flow = np.linalg.norm(q - p, axis=1) / scale
+        still = flow <= cfg.stationary_flow_px
+        if (np.median(flow) <= cfg.stationary_flow_px * .5 and still.mean() >= cfg.min_inlier_ratio
+                and self._covers(p[still], size)):
+            identity = np.eye(3)
+            photo = float(self._median_uint8(cv2.absdiff(previous, current)[(previous_mask > 0) & (current_mask > 0)]))
+            if photo > cfg.max_photometric_error:
+                return MotionEstimate(False, reason="photometric_mismatch", photometric_error=photo)
+            return MotionEstimate(True, identity, "stationary", int(still.sum()), float(still.mean()),
+                                  float(np.median(flow)), photo)
         matrix, support = cv2.findHomography(p, q, cv2.RANSAC, 3.0)
         if matrix is None or support is None or not np.isfinite(matrix).all():
             return MotionEstimate(False, reason="homography_failed")
@@ -83,10 +105,7 @@ class RoadMotionEstimator:
             return MotionEstimate(False, reason="low_inlier_support", inliers=count, inlier_ratio=ratio)
 
         # 特徵不能只集中在一個小角落，否則外推到停止線位置容易大幅偏移。
-        grid = np.minimum(2, (p[support] / np.asarray(size, dtype=p.dtype) * 3).astype(int))
-        cells = np.unique(grid, axis=0)
-        span = np.ptp(p[support], axis=0)
-        if len(cells) < 4 or span[0] < size[0]*.25 or span[1] < size[1]*.15:
+        if not self._covers(p[support], size):
             return MotionEstimate(False, reason="poor_spatial_coverage", inliers=count, inlier_ratio=ratio)
         predicted = cv2.perspectiveTransform(p[support,None,:],matrix).reshape(-1,2)
         error = float(np.median(np.linalg.norm(predicted-q[support],axis=1)))
@@ -102,6 +121,12 @@ class RoadMotionEstimator:
                 or not .65 <= area_ratio <= 1.5
                 or np.max(np.linalg.norm(warped-corners,axis=1)) > np.hypot(w,h)*.2):
             return MotionEstimate(False, reason="implausible_camera_motion")
+        # 抖動閘門：道路中心的位移不能遠大於實際量到的光流，否則是雜訊撐出的縮放／透視。
+        # 全片評估 31 支影片的移動幀中，此比值 p99 為 1.09。
+        center = np.float32([[[w/2, h*(cfg.roi_top+bottom/h)/2]]])
+        shift = float(np.linalg.norm(cv2.perspectiveTransform(center, matrix)[0, 0] - center[0, 0]))
+        if shift > cfg.max_flow_extrapolation * max(float(np.percentile(flow, 90)), cfg.stationary_flow_px):
+            return MotionEstimate(False, reason="inconsistent_with_flow", inliers=count, inlier_ratio=ratio)
 
         # 配準後亮度差用來拒絕切鏡／嚴重失配；不能只相信 RANSAC 的少數內點。
         aligned = cv2.warpPerspective(previous,matrix,(w,h))

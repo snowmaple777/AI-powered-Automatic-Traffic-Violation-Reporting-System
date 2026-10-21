@@ -190,6 +190,74 @@ class AreaRuleTests(unittest.TestCase):
                 if change == "stale_signal": signal["source_frame"] = -1
             self.assertEqual(evaluate(modified), [])
 
+    def test_waiting_area_without_lane_calibration_uses_frame_signal(self):
+        # 行車紀錄器：沒有車道、沒有逐車道燈號、沒有車頭方向；改用畫面燈號與接地梯形遠端邊。
+        def uncalibrated(color, confidence=.9):
+            rows = records("motorcycle_waiting_area", count=8)
+            for row in rows:
+                v, region = row["observations"]["vehicles"][0], row["observations"]["traffic_regions"][0]
+                v.pop("lane_id"), v["road_geometry"].pop("front_edge")
+                region.pop("lane_id"), region.pop("signal")
+                v["road_geometry"]["footprint"] = [[45, 30], [65, 30], [65, 70], [45, 70]]  # 遠端邊 y=30
+                region["polygon"] = [[50, 20], [100, 20], [100, 40], [50, 40]]
+                row["observations"]["traffic_lights"] = [dict(class_name=color, confidence=confidence,
+                                                              bbox_xyxy=[300, 10, 310, 30], source_frame=row["frame"]["index"])]
+            return rows
+        events = evaluate(uncalibrated("red"))
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["status"], "suspected")
+        conditions = events[0]["conditions"]
+        self.assertFalse(conditions["lane_matched"])
+        self.assertFalse(conditions["front_edge_from_lane"])
+        self.assertTrue(conditions["strong_signal_evidence"])
+        self.assertEqual(events[0]["evidence"]["signal"]["state"], "red")
+        # 弱證據（信心 0.2）仍可產生疑似，但標記為非強證據。
+        weak = evaluate(uncalibrated("red", .2))
+        self.assertEqual(len(weak), 1)
+        self.assertFalse(weak[0]["conditions"]["strong_signal_evidence"])
+        self.assertEqual(evaluate(uncalibrated("green")), [])
+        no_lights = uncalibrated("red")
+        for row in no_lights:
+            row["observations"]["traffic_lights"] = []
+        self.assertEqual(evaluate(no_lights), [])
+        # 貼著畫面左緣的車（側面看到的並行車）不使用車頭方向假設。
+        edge = uncalibrated("red")
+        for row in edge:
+            row["observations"]["vehicles"][0]["bbox_xyxy"][0] = 3
+        self.assertEqual(evaluate(edge), [])
+
+    def test_same_vehicle_is_reported_once_across_region_switches_and_flicker(self):
+        rows = records("motorcycle_waiting_area", count=30)
+        for i, row in enumerate(rows):
+            row["observations"]["vehicles"][0]["road_geometry"].pop("footprint")
+            region = row["observations"]["traffic_regions"][0]
+            if i >= 10:
+                region["region_id"] = "r2"  # 區域追蹤換號
+            if i == 15:
+                row["observations"]["vehicles"][0]["road_geometry"]["front_edge"] = [[0, 0], [5, 0]]  # 短暫量不到
+        self.assertEqual(len(evaluate(rows)), 1)
+        # 離開超過 rearm_seconds 後再次侵入，視為新的事件。
+        for row in rows[10:]:
+            row["observations"]["traffic_regions"][0]["region_id"] = "r1"
+        for row in rows[8:20]:
+            row["observations"]["vehicles"][0]["road_geometry"]["front_edge"] = [[0, 0], [5, 0]]
+        self.assertEqual(len(evaluate(rows, {"rearm_seconds": .5})), 2)
+
+    def test_matched_lane_signal_is_not_overridden_by_frame_signal(self):
+        rows = records("motorcycle_waiting_area", count=8)
+        for row in rows:
+            row["observations"]["vehicles"][0]["road_geometry"].pop("footprint")
+            row["observations"]["traffic_regions"][0]["signal"]["state"] = "green"
+            row["observations"]["traffic_lights"] = [dict(class_name="red", confidence=.9,
+                                                          bbox_xyxy=[300, 10, 310, 30], source_frame=row["frame"]["index"])]
+        self.assertEqual(evaluate(rows), [])
+        for row in rows:
+            row["observations"]["traffic_regions"][0]["signal"]["state"] = "red"
+        events = evaluate(rows)
+        self.assertEqual(len(events), 1)
+        self.assertTrue(events[0]["conditions"]["lane_matched"])
+        self.assertTrue(events[0]["conditions"]["front_edge_from_lane"])
+
     def test_missing_geometry_motion_staleness_and_id_switch(self):
         for change in ("geometry", "motion", "cached", "stale_region", "identity"):
             rows = records()

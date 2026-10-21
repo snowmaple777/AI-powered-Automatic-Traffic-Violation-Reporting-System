@@ -15,6 +15,7 @@ from core.continuity import is_continuous
 from core.geometry import project_points
 from core.motion import homography, road_motion
 from core.fastcopy import clone
+from signal_state import CombinedSignalState
 
 
 AREA_RULES = {
@@ -24,7 +25,7 @@ AREA_RULES = {
 DEFAULTS = dict(min_confidence=.5, min_observations=3, intrusion_seconds=.15,
                 overlap_ratio=.5, stationary_seconds=1., stationary_radius_px=4.,
                 min_intrusion_length_px=2., max_observation_gap_sec=.3,
-                max_frame_gap_sec=.2)
+                max_frame_gap_sec=.2, rearm_seconds=2., side_margin_ratio=.02)
 
 
 def settings_for(overrides=None):
@@ -36,7 +37,7 @@ def settings_for(overrides=None):
             raise ValueError(f"{key} must be finite and positive")
     if type(settings["min_observations"]) is not int or settings["min_observations"] < 2:
         raise ValueError("min_observations must be an integer >= 2")
-    if max(settings["overlap_ratio"], settings["min_confidence"]) > 1:
+    if max(settings["overlap_ratio"], settings["min_confidence"], settings["side_margin_ratio"]) > 1:
         raise ValueError("Ratios must be <= 1")
     return settings
 
@@ -412,11 +413,39 @@ class AreaOccupancyRule:
         self.kind, self.label = AREA_RULES[rule_id]
         self.settings = settings_for(settings)
         self.states, self.previous_frame, self.diagnostics = {}, None, {}
+        # 已報告的車輛 → 最後一次仍在區域內的時間。區域編號換號或量測短暫低於門檻時，
+        # 同一台車在 rearm_seconds 內持續侵入只報告一次。
+        self.reported = {}
+        # 沒有車道標定（行車紀錄器）時改用整個畫面的燈號；與闖紅燈規則相同的強／弱／延續證據。
+        self.signal = CombinedSignalState(context.fps) if self.kind == "motorcycle_waiting_area" else None
+
+    def _red_signal(self, region, vehicle, index, cfg, frame_signal):
+        """回傳 (lane_matched, strong)；沒有可用紅燈時拋出 ValueError。
+
+        車道標定能配對時沿用原本的逐車道判定；配對不到才退回整個畫面的燈號，事件記為 lane_matched=False。
+        車道已配對但該車道不是紅燈時不退回，避免以其他車道的紅燈判定。
+        """
+        lane_id = region.get("lane_id")
+        if lane_id and vehicle.get("lane_id") == lane_id:
+            signal = region.get("signal", {})
+            if (signal.get("lane_id") != lane_id or signal.get("source_frame") != index or signal.get("state") != "red" or
+                    not cfg["min_confidence"] <= float(signal.get("confidence", 0)) <= 1):
+                raise ValueError("associated_red_signal_unavailable")
+            return True, True
+        state, strength = frame_signal
+        if state != "red":
+            raise ValueError("lane_unmatched_no_red_signal" if state is None else "lane_unmatched_signal_not_red")
+        return False, strength == "strong"
 
     def evaluate(self, observation):
         frame, items, cfg = observation["frame"], observation.get("observations", {}), self.settings
         index, now = frame["index"], frame["timestamp_sec"]
         self.diagnostics = dict(status="evaluating", blocked=[], states=[], measurements=[])
+        frame_signal = (None, None)
+        if self.signal is not None:
+            # 每幀都要更新，燈號的時間窗口才連續（包括沒有區域的幀）。
+            frame_signal = (self.signal.update(items.get("traffic_lights", []), index), self.signal.strength)
+            self.diagnostics["signal"] = dict(self.signal.evidence)
         if not is_continuous(self.previous_frame, frame, cfg["max_frame_gap_sec"]):
             self.states.clear()
             self.diagnostics["reset_reason"] = "discontinuous_input"
@@ -467,12 +496,7 @@ class AreaOccupancyRule:
                     if state and now - state["last_time"] > cfg["max_observation_gap_sec"]:
                         state = None
                     if self.kind == "motorcycle_waiting_area":
-                        signal = region.get("signal", {})
-                        if (not region.get("lane_id") or vehicle.get("lane_id") != region["lane_id"] or
-                                signal.get("lane_id") != region["lane_id"] or
-                                signal.get("source_frame") != index or signal.get("state") != "red" or
-                                not cfg["min_confidence"] <= float(signal.get("confidence", 0)) <= 1):
-                            raise ValueError("associated_red_signal_unavailable")
+                        lane_matched, strong_signal = self._red_signal(region, vehicle, index, cfg, frame_signal)
                     if vehicle.get("source_frame") != index:
                         if state:
                             retained.add(key)
@@ -484,9 +508,19 @@ class AreaOccupancyRule:
                     if not isinstance(confidence, (float, int)) or not math.isfinite(confidence) or not cfg["min_confidence"] <= confidence <= 1:
                         raise ValueError("low_geometry_confidence")
                     if self.kind == "motorcycle_waiting_area":
-                        if "front_edge" not in geometry:
-                            raise ValueError("front_direction_unavailable")
-                        measured = front_overlap(geometry.get("front_edge"), area)
+                        front_edge, front_assumed = geometry.get("front_edge"), False
+                        if front_edge is None:
+                            # 沒有車道方向時，假設車頭朝遠離鏡頭的方向（行車紀錄器看到的多半是車尾），
+                            # 取接地梯形的遠端邊；只在車道配對不到時使用。
+                            # 貼著畫面左右邊緣的車多半是從側面看到的並行車，遠端邊不是車頭，不使用此假設。
+                            footprint = geometry.get("footprint")
+                            box, margin = vehicle["bbox_xyxy"], frame["width"] * cfg["side_margin_ratio"]
+                            if lane_matched or not footprint or box[0] <= margin or box[2] >= frame["width"] - margin:
+                                raise ValueError("front_direction_unavailable")
+                            front_edge, front_assumed = min(
+                                ((footprint[n], footprint[(n+1) % len(footprint)]) for n in range(len(footprint))),
+                                key=lambda edge: edge[0][1] + edge[1][1]), True
+                        measured = front_overlap(front_edge, area)
                         self.diagnostics["measurements"].append(dict(object_id=identity, region_id=region_id,
                             measurement=measured, threshold=cfg["min_intrusion_length_px"], name="front_overlap_px"))
                         if measured < cfg["min_intrusion_length_px"]:
@@ -509,8 +543,13 @@ class AreaOccupancyRule:
                     state.update(last_time=now, count=state["count"] + 1)
                     self.states[key] = state
                     retained.add(key)
-                    if state["reported"] or state["count"] < cfg["min_observations"] or now - state["since"] + 1e-6 < duration:
+                    if state["reported"] or (identity in self.reported and now - self.reported[identity] <= cfg["rearm_seconds"]):
+                        self.reported[identity] = now
+                        state["reported"] = True
                         continue
+                    if state["count"] < cfg["min_observations"] or now - state["since"] + 1e-6 < duration:
+                        continue
+                    self.reported[identity] = now
                     event = dict(event_id=f"{self.context.source_id}:{self.rule_id}:{identity}:{region_id}:{index}",
                                  rule_id=self.rule_id, source_id=self.context.source_id, status="suspected",
                                  status_label="疑似違規", review_required=True, behavior=self.rule_id,
@@ -523,6 +562,13 @@ class AreaOccupancyRule:
                                                measurement_name="front_overlap_px" if point is None else "footprint_overlap_ratio"))
                     event["conditions"]["estimated_vehicle_geometry"] = bool(geometry.get("estimated"))
                     event["conditions"]["predicted_region"] = bool(region.get("predicted"))
+                    if self.kind == "motorcycle_waiting_area":
+                        event["conditions"].update(lane_matched=lane_matched, strong_signal_evidence=strong_signal,
+                                                   front_edge_from_lane=not front_assumed)
+                        event["evidence"]["signal"] = (region.get("signal") if lane_matched
+                                                       else self.diagnostics.get("signal"))
+                        if not lane_matched:
+                            event["description"] = self.label + "；未配對車道，依畫面燈號與車頭方向假設符合門檻，待人工覆核。"
                     if geometry.get("estimated"):
                         event["description"] = self.label + "；依車輛接地近似符合設定門檻，待人工覆核。"
                     events.append(clone(event))
@@ -533,11 +579,13 @@ class AreaOccupancyRule:
         # 車輛仍在但已離開區域或條件不符者照舊清除。
         self.states = {key: state for key, state in self.states.items() if key in retained or (
             key[0] not in vehicle_ids and now - state["last_time"] <= cfg["max_observation_gap_sec"])}
+        self.reported = {k: t for k, t in self.reported.items() if now - t <= cfg["rearm_seconds"]}
         self.diagnostics["states"] = [dict(object_id=k[0], region_id=k[1], count=s["count"], reported=s["reported"])
                                       for k, s in self.states.items()]
         return events
 
     def finalize(self):
         self.states.clear()
+        self.reported.clear()
         self.previous_frame = None
         return []

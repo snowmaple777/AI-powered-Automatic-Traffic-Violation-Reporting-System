@@ -308,8 +308,11 @@ crosswalk_stopping（車輛停留於行人穿越道），--rules all 亦包含�
 啟用兩項規則之一時，主流程會直接使用現有標線模型的遮罩建立封閉區域，
 合併鄰近條紋與間隙，再以既有道路運動追蹤短暫消失的區域；不載入新模型。
 車輛下部梯形近似提供斑馬線重疊計算，事件仍為待覆核候選。
-停等區的車頭方向與車道號誌須有明確校準，目前支援固定鏡頭配置；
-行車記錄器尚無可靠自動車道／號誌配對，因此該規則仍可能受阻。
+停等區：固定鏡頭有車道校準時，沿用逐車道號誌與車頭方向。配對不到車道時（行車記錄器），
+改用整個畫面的燈號（與闖紅燈規則相同的強／弱／延續證據），並假設車頭朝遠離鏡頭的方向
+（車輛接地梯形的遠端邊）；貼著畫面左右邊緣 side_margin_ratio（預設 2%）的車不使用此假設。
+這類事件的 conditions 會標記 lane_matched=false、front_edge_from_lane=false，
+以及 strong_signal_evidence（燈號是否為強證據）。
 沒有有效區域時會回報 region_geometry_unavailable。原有規則的車輛輸入不受影響。
 
 ~~~powershell
@@ -369,10 +372,12 @@ method 記錄來源方法；信心不足、資料過期或缺少來源會中止�
 只有 geometry.fixed_camera=true 才明確使用固定鏡頭的 identity motion；一般影片仍需有效道路運動。
 
 參數含 min_confidence、min_observations、intrusion_seconds、min_intrusion_length_px、
-overlap_ratio、stationary_seconds、stationary_radius_px、max_observation_gap_sec、max_frame_gap_sec。
+overlap_ratio、stationary_seconds、stationary_radius_px、max_observation_gap_sec、max_frame_gap_sec、
+rearm_seconds、side_margin_ratio。
 預設觀測間隔上限 0.3 秒、連續影片幀時間間隔上限 0.2 秒。快取車框不增加證據次數；
 未能可靠銜接的 ID 變化、缺區域、失去條件、來源不連續或運動失敗會清除或重新累積，影片結束不補發未完成事件。
-同一次連續成立只輸出一個事件，離開後重新符合可再次產生事件。
+同一次連續成立只輸出一個事件；同一台車在 rearm_seconds（預設 2 秒）內持續侵入，
+即使區域編號改變或量測短暫低於門檻也不重複輸出，離開超過該時間後重新符合才產生新事件。
 初版全部為 suspected，沿用事件 JSONL、中文摘要及剪輯流程，包含車牌、前後快照、區域、
 重疊量／侵入量、持續時間及實際參數，供人工覆核。門檻是工程篩選設定，不代表法定標準。
 

@@ -198,3 +198,18 @@ stage3f 與 stage3e 的輸出三支影片逐幀相同；鏡頭運動等待時間
 
 結果（`outputs/eval/_motion_gate2`，以 `tools/real_replay.py --recompute-motion` 重播）：3,117 幀判為靜止、1 幀被抖動閘門拒絕，各片有效率與 stage4 相同（±0.01）。全部影片的事件、影片層級與事件層級指標與 stage4 完全相同；阻擋原因只有 cdy03、ctm01、ctm03、ctm05 的次數有小幅變動。
 結論：在目前這批影片上，鏡頭運動雜訊不是雙線／區域漏報的主因，靜止幀的雜訊本來就很小。這次修改保證靜止時補償結果精確不動、移除少數數 px 的推移，但不會改變偵測結果。雙線漏報仍以 4b 列出的感知層問題為主。
+
+### 4d：機車停等區規則改用畫面燈號
+根因：ctm 六支都是行車紀錄器，`configs/area_rules.json` 沒有車道標定，所以每一組「車 × 區域」都卡在逐車道紅燈（`associated_red_signal_unavailable`）。即使換掉燈號來源，下一步也會卡在 `front_direction_unavailable`：車頭方向只來自標定車道的 heading。
+修改（`area_rules.py`，原則同 4a：放寬只產生 suspected，這條規則本來就全部是 suspected）：
+- 燈號：每幀以 `CombinedSignalState` 追蹤整個畫面的燈號（與闖紅燈相同的強／弱／延續）。車道能配對時沿用原本的逐車道判定；車道已配對但該車道不是紅燈時不退回。配對不到車道才使用畫面燈號。新阻擋原因 `lane_unmatched_no_red_signal`、`lane_unmatched_signal_not_red`。
+- 車頭方向：配對不到車道時，取接地梯形的遠端邊作為車頭（行車紀錄器看到的多半是車尾）。貼著畫面左右邊緣 `side_margin_ratio`（2%）的車不使用此假設；ctm06、ms01 都有側面並行車因此誤報。
+- 去重：同一台車在 `rearm_seconds`（2 秒）內持續侵入只報告一次。區域追蹤換號、量測單幀低於門檻都曾讓同一台車重複報告，ctm02 的一台車原本有 5 次。
+- 事件 conditions 新增 `lane_matched`、`strong_signal_evidence`、`front_edge_from_lane`，evidence 新增 `signal`。
+- 測試：無標定時使用畫面燈號（強／弱／綠燈／無燈號）、畫面邊緣的車、已配對車道不被畫面燈號覆蓋、換號與閃爍時只報告一次。
+
+結果（`outputs/eval/_waiting_v2`，`tools/rule_eval.py` 以 stage4 重算）：
+- 影片層級停等區 0/6 → 3/6（ctm02、ctm05、ctm06）。其他規則的事件與指標完全不變。
+- 逐張檢查事件畫面：ctm02 8.4 秒（黑色休旅車停在停等區，紅燈）與 ctm06 7.8 秒（紅色轎車由左側駛入停等區）看起來是真實違規；ctm05 12.1 秒（紅色轎車）可能是；ctm05 1.5 秒是遠處很小的車框，存疑。ctm 影片還沒有事件標註，無法計算精確率。
+- ms01 多一個事件（2.0 秒，闖紅燈的貨車行經停等區），在事件層級算成 1 個誤報。是否與闖紅燈事件合併，需要先決定標註規範。
+- ctm01、ctm03、ctm04 仍未命中，主要阻擋是 `region_geometry_unavailable` 與 `low_confidence`（區域或車輛信心 < 0.5），屬於區域分割與信心門檻，不在本次範圍。

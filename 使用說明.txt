@@ -279,7 +279,10 @@ crosswalk_stopping（車輛停留於行人穿越道），--rules all 亦包含�
 共用 configs/area_rules.json；辨識與規則重算均支援 --area-rule-config。
 啟用兩項規則之一時，會使用現有標線遮罩合併鄰近碎片、建立封閉區域，並沿道路運動短暫追蹤。
 車輛下部梯形提供明確標記的接地近似；不是實際完整車身占地量測。裁切車輛不產生近似。
-固定鏡頭可配置車道、對應號誌範圍及車頭方向；行車記錄器尚無可靠自動車道／號誌配對。
+固定鏡頭可配置車道、對應號誌範圍及車頭方向。配對不到車道時（行車記錄器），停等區改用整個畫面的
+燈號（與闖紅燈規則相同的強／弱／延續證據），並假設車頭朝遠離鏡頭的方向（接地梯形的遠端邊）；
+貼著畫面左右邊緣 2% 的車不使用此假設。事件 conditions 標記 lane_matched=false、
+front_edge_from_lane=false 與 strong_signal_evidence。
 沒有有效區域仍回報 region_geometry_unavailable；缺少配對紅燈時停等區規則不產生事件。
 
 .\.venv\Scripts\python.exe evaluate_violations.py outputs/影片_detections.jsonl --rules car_motorcycle_waiting_area,crosswalk_stopping --area-rule-config configs/area_rules.json --output outputs/影片_area_events.jsonl --diagnostics outputs/影片_area_diagnostics.jsonl
@@ -329,10 +332,12 @@ method 記錄來源方法；信心不足、資料過期或缺少來源會中止�
 只有 geometry.fixed_camera=true 才明確使用固定鏡頭 identity motion；其他影片需要有效道路運動。
 
 參數含 min_confidence、min_observations、intrusion_seconds、min_intrusion_length_px、
-overlap_ratio、stationary_seconds、stationary_radius_px、max_observation_gap_sec、max_frame_gap_sec。
+overlap_ratio、stationary_seconds、stationary_radius_px、max_observation_gap_sec、max_frame_gap_sec、
+rearm_seconds、side_margin_ratio。
 預設觀測間隔上限 0.3 秒、連續影片幀時間間隔上限 0.2 秒。快取車框不增加證據次數；
 無法可靠銜接的換 ID、缺區域、失去條件、來源不連續或運動失敗會清除或重新累積，影片結束不補發未完成事件。
-同一次連續成立只輸出一個事件，離開後重新符合可再次產生事件。
+同一次連續成立只輸出一個事件；同一台車在 rearm_seconds（預設 2 秒）內持續侵入，
+即使區域編號改變或量測短暫低於門檻也不重複輸出，離開超過該時間後重新符合才產生新事件。
 初版全部為 suspected，沿用事件 JSONL、中文摘要及剪輯流程，包含車牌、前後快照、區域、
 重疊量／侵入量、持續時間及實際參數，供人工覆核。門檻是工程篩選設定，不代表法定標準。
 

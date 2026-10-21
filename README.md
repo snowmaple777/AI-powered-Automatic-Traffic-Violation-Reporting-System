@@ -47,7 +47,7 @@ default 與 full 均啟用完整六階段；違規判定需另外加上
 | .venv/ | 現有執行環境 |
 
 歷史文件及舊辨識後端已移除；現行測試與效能量測工具保留供維護。
-model_library/legacy.py 雖保留原檔名，仍包含現行車輛、燈號與標線所需的底層實作。
+車輛、燈號與標線偵測器位於 model_library/detectors.py（model_library/legacy.py 只保留舊匯入路徑的相容轉出口）。
 版本控制資料 .git 保留，不影響一般使用。
 
 預設 OCR 使用 CPU Paddle；ONNX 沒有 CUDA provider 時改用 CPU。

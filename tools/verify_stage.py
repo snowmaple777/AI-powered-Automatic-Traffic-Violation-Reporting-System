@@ -152,6 +152,37 @@ def run_clip(video, max_frames, out_dir):
     return summary
 
 
+# 結構重構時預期會改變的欄位；逐幀比對會先移除這些欄位。
+EXPECTED_CHANGES = ("schema_version", "postprocessing.ego_motion", "postprocessing.double_lines.motion_source")
+MODEL_KEYS = ("vehicles", "traffic_lights", "road_markings_raw", "depth", "plates")
+
+
+def _drop(item, dotted):
+    head, _, rest = dotted.partition(".")
+    if isinstance(item, dict) and head in item:
+        if rest:
+            _drop(item[head], rest)
+        else:
+            del item[head]
+
+
+def compare_detections(previous_path, current_path):
+    """回傳 {frames, model_same, record_same}：模型輸出與完整紀錄（忽略預期變更欄位）相同的幀數。"""
+    if not previous_path.is_file() or not current_path.is_file():
+        return None
+    result = {"frames": 0, "model_same": 0, "record_same": 0}
+    with previous_path.open(encoding="utf-8") as old, current_path.open(encoding="utf-8") as new:
+        for a, b in zip(old, new):
+            a, b = json.loads(a), json.loads(b)
+            result["frames"] += 1
+            result["model_same"] += all(a["observations"].get(k) == b["observations"].get(k) for k in MODEL_KEYS)
+            for key in EXPECTED_CHANGES:
+                _drop(a, key)
+                _drop(b, key)
+            result["record_same"] += a == b
+    return result
+
+
 def previous_report(label, explicit):
     if explicit:
         path = VERIFY_DIR / explicit / "report.json"
@@ -192,6 +223,10 @@ def format_report(report, previous):
                      f"追蹤 {clip['vehicle_tracks']}{delta('vehicle_tracks')}  燈號框 {clip['traffic_light_boxes']}  "
                      f"車牌框 {clip['plate_boxes']}  雙線 {clip['double_lines']}  區域 {clip['traffic_regions']}  "
                      f"運動有效 {clip['motion_valid']}/{clip['frames']}")
+        same = clip.get("output_vs_previous")
+        if same:
+            lines.append(f"  與前次逐幀比對：模型輸出相同 {same['model_same']}/{same['frames']} 幀，"
+                         f"完整紀錄相同 {same['record_same']}/{same['frames']} 幀")
         lines.append(f"  車牌：{clip['plates'] or '無'}")
         if old and old.get("plates") != clip["plates"]:
             lines.append(f"  （前次車牌：{old.get('plates') or '無'}）")
@@ -240,6 +275,11 @@ def main(argv=None):
         report["metrics"] = {"video_hits": [[r[0], r[2]] for r in rows], "event_level": per_rule,
                              "plate": [plate_correct, plate_total]}
     previous = previous_report(args.label, args.compare_to)
+    if previous:
+        for name in report["clips"]:
+            report["clips"][name]["output_vs_previous"] = compare_detections(
+                VERIFY_DIR / previous["label"] / name / f"{name}_detections.jsonl",
+                out / name / f"{name}_detections.jsonl")
     (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     text = format_report(report, previous)
     (out / "summary.txt").write_text(text, encoding="utf-8-sig")

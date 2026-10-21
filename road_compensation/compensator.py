@@ -36,12 +36,16 @@ class RoadMarkingCompensator:
         self.previous_mask=None
         self.previous_index=None
         self.previous_time=None
+        self.previous_shape=None
 
-    def process(self, frame, *, frame_index, timestamp_sec, road_markings, vehicles):
+    def process(self, frame, *, frame_index, timestamp_sec, road_markings, vehicles, motion=None):
         """輸入：原圖 BGR、索引／秒、原始標線與車框；回傳獨立 CompensationResult。
 
+        motion 為 EgoMotionTracker 對同一幀的估計；提供時直接使用，不重複估計
+        （兩者重置條件相同，結果與自行估計完全一致）。
         不載入模型，不執行違規規則，不修改傳入 frame、road_markings 或 vehicles。
         """
+        external_motion = motion
         if frame.ndim!=3 or frame.shape[2]!=3 or frame.dtype!=np.uint8:
             raise ValueError("frame must be uint8 BGR HxWx3")
         if frame_index<0 or not math.isfinite(timestamp_sec) or timestamp_sec<0:
@@ -49,21 +53,26 @@ class RoadMarkingCompensator:
         cfg=self.config
         h,w=frame.shape[:2]
         raw=deepcopy(road_markings)
-        gray=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
-        mask=road_mask(frame.shape,vehicles,cfg.roi_top,cfg.roi_bottom)
+        gray=mask=None
+        if external_motion is None:
+            gray=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
+            mask=road_mask(frame.shape,vehicles,cfg.roi_top,cfg.roi_bottom)
         reset_reason=None
-        if self.previous_gray is not None and (
-                self.previous_gray.shape!=gray.shape or frame_index!=self.previous_index+1
+        if self.previous_index is not None and (
+                self.previous_shape!=frame.shape[:2] or frame_index!=self.previous_index+1
                 or not 0<timestamp_sec-self.previous_time<=cfg.max_frame_gap_seconds):
             self.reset()
             reset_reason="discontinuous_input"
         motion=MotionEstimate(False,reason="first_frame")
         expired=[]
-        if self.previous_gray is not None:
-            try:
-                motion=self.motion_estimator.estimate(self.previous_gray,gray,self.previous_mask,mask)
-            except cv2.error:
-                motion=MotionEstimate(False,reason="opencv_motion_error")
+        if self.previous_index is not None:
+            if external_motion is not None:
+                motion=external_motion
+            else:
+                try:
+                    motion=self.motion_estimator.estimate(self.previous_gray,gray,self.previous_mask,mask)
+                except cv2.error:
+                    motion=MotionEstimate(False,reason="opencv_motion_error")
             # 鏡頭配準失敗時不使用 identity transform 猜位置，也不延續舊可信度。
             if not motion.valid:
                 expired=[{"id":t.identity,"reason":motion.reason} for t in self.tracks.values()]
@@ -172,6 +181,7 @@ class RoadMarkingCompensator:
                      "reset_reason":reset_reason,"config":asdict(cfg)}
         self.previous_gray,self.previous_mask=gray,mask
         self.previous_index,self.previous_time=frame_index,timestamp_sec
+        self.previous_shape=frame.shape[:2]
         return CompensationResult(raw,compensated,rule_markings,diagnostics)
 
     def _annotate(self,track,source,timestamp,vehicles,width,height):

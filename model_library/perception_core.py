@@ -5,6 +5,21 @@ from collections import Counter
 import cv2
 import numpy as np
 
+# COCO 類別編號（車輛模型輸出）。本檔也會被 Paddle worker 以獨立行程載入，
+# 因此常數定義在這裡，而不放在專案根目錄的套件。
+PERSON, BICYCLE, CAR, MOTORCYCLE, BUS, TRUCK = 0, 1, 2, 3, 5, 7
+VEHICLE_CLASSES = frozenset({PERSON, BICYCLE, CAR, MOTORCYCLE, BUS, TRUCK})
+PLATE_CARRIER_CLASSES = (PERSON, CAR, MOTORCYCLE, BUS, TRUCK)  # 騎士框代表其機車
+RIDER_OR_MOTORCYCLE = (PERSON, MOTORCYCLE)
+TWO_WHEEL_FAMILY = (PERSON, BICYCLE, MOTORCYCLE)  # 車牌快取以此區分二輪與四輪
+
+
+def same_vehicle_family(first, second):
+    """二輪（含騎士）與四輪車不得共用車牌紀錄；任一方未知時視為相容。"""
+    if first is None or second is None:
+        return True
+    return (first in TWO_WHEEL_FAMILY) == (second in TWO_WHEEL_FAMILY)
+
 def filter_duplicate_boxes(boxes, iou_thresh=0.5):
     """
     對同一個影格內的車牌進行簡易 IoU 去重，避免相鄰重疊車輛重複檢測同一車牌。
@@ -66,15 +81,15 @@ def match_plate_to_vehicle(plate_box, vehicle_boxes):
         # 1. 空間包含約束：
         # 水平方向：車牌中心必須在車輛寬度範圍內 (允許容差)
         # 機車騎士身軀窄且後座外送箱 (UberEats/Foodpanda)/貨架常向兩側外凸，放寬至 0.65 車寬
-        tol_w = 0.65 * vw if vcls in (0, 3) else 0.08 * vw
+        tol_w = 0.65 * vw if vcls in RIDER_OR_MOTORCYCLE else 0.08 * vw
         if not (vx1 - tol_w <= pcx <= vx2 + tol_w):
             continue
 
         # 垂直方向：車牌必須位於車身合理的下部/中下部 (排除車頂與擋風玻璃)
         # 對於機車/騎乘者 (cls in [0, 3])：車牌位於下部 (y1 + 0.25 * vh 到 y2 + 0.35 * vh)
         # 對於汽車/公車/卡車 (cls in [2, 5, 7])：y1 + 0.20 * vh 到 y2 + 0.15 * vh
-        min_y_ratio = 0.25 if vcls in (0, 3) else 0.20
-        max_y_ratio = 0.35 if vcls in (0, 3) else 0.15
+        min_y_ratio = 0.25 if vcls in RIDER_OR_MOTORCYCLE else 0.20
+        max_y_ratio = 0.35 if vcls in RIDER_OR_MOTORCYCLE else 0.15
         if not (vy1 + min_y_ratio * vh <= pcy <= vy2 + max_y_ratio * vh):
             continue
 
@@ -89,12 +104,12 @@ def match_plate_to_vehicle(plate_box, vehicle_boxes):
         # - 形態學與類別先驗：
         # 台灣機車牌偏方正 (aspect 通常 < 2.1)，汽車牌偏長 (aspect 通常 >= 2.1)
         if aspect < 2.0:
-            if vcls in (0, 3):  # 機車或機車騎士
+            if vcls in RIDER_OR_MOTORCYCLE:  # 機車或機車騎士
                 score *= 0.15   # 大幅優先匹配機車
             else:
                 score *= 3.0
         elif aspect >= 2.3:
-            if vcls in (0, 3):
+            if vcls in RIDER_OR_MOTORCYCLE:
                 score *= 5.0    # 長條汽車牌極不可能屬於機車
             else:
                 score *= 0.5
@@ -127,9 +142,9 @@ def fuse_rider_and_motorcycles(vehicle_boxes, rider_to_bike_history=None):
 
     for idx, vb in enumerate(vehicle_boxes):
         cls = int(vb[5]) if len(vb) > 5 else 2
-        if cls == 0:
+        if cls == PERSON:
             persons.append((idx, vb))
-        elif cls == 3:
+        elif cls == MOTORCYCLE:
             motorcycles.append((idx, vb))
         else:
             others.append(vb)
@@ -205,7 +220,7 @@ def fuse_rider_and_motorcycles(vehicle_boxes, rider_to_bike_history=None):
 
             if target_tid is not None:
                 matched_m_tids.add(target_tid)
-            fused_motorcycles.append([fx1, fy1, fx2, fy2, fconf, 3, target_tid, fdist])
+            fused_motorcycles.append([fx1, fy1, fx2, fy2, fconf, MOTORCYCLE, target_tid, fdist])
         else:
             if mtid is not None:
                 matched_m_tids.add(mtid)
@@ -226,7 +241,7 @@ def fuse_rider_and_motorcycles(vehicle_boxes, rider_to_bike_history=None):
                     pdist = p_box[7] if len(p_box) > 7 else 0.0
                     ph = py2 - py1
                     # 向下延伸 25% 邊距涵蓋機車下盤
-                    fused_motorcycles.append([px1, py1, px2, py2 + 0.25 * ph, pconf, 3, assigned_mtid, pdist])
+                    fused_motorcycles.append([px1, py1, px2, py2 + 0.25 * ph, pconf, MOTORCYCLE, assigned_mtid, pdist])
                     matched_m_tids.add(assigned_mtid)
 
     # 3. 真正未騎乘機車的獨立行人 (如路旁行走行人) 保留原始 person 類別
@@ -654,10 +669,9 @@ class PlateOCRTracker:
             return raw_clean, conf
 
         rec = self.records.get(track_id)
-        if rec and rec.get("veh_cls") is not None and veh_cls is not None:
-            if (rec["veh_cls"] in (0, 1, 3)) != (veh_cls in (0, 1, 3)):
-                self.records.pop(track_id)
-                rec = None
+        if rec and not same_vehicle_family(rec.get("veh_cls"), veh_cls):
+            self.records.pop(track_id)
+            rec = None
         if rec is None:
             rec = self.records[track_id] = {
                 "raw_history": [], "compensated_history": [], "confirmed": False,
@@ -706,10 +720,8 @@ class PlateOCRTracker:
         """取得原始未補償的車牌文字 (供影片畫面標註繪製)"""
         if track_id is not None and track_id in self.records:
             rec = self.records[track_id]
-            rec_cls = rec.get("veh_cls")
-            if rec_cls is not None and veh_cls is not None:
-                if (rec_cls in (0, 1, 3)) != (veh_cls in (0, 1, 3)):
-                    return None, 0.0
+            if not same_vehicle_family(rec.get("veh_cls"), veh_cls):
+                return None, 0.0
             return rec["best_raw_text"], rec["best_conf"]
         return None, 0.0
 
@@ -717,10 +729,8 @@ class PlateOCRTracker:
         """取得經由台灣法規補償與消歧義修復後的車牌文字 (供外出資料/下游組員/API使用)"""
         if track_id is not None and track_id in self.records:
             rec = self.records[track_id]
-            rec_cls = rec.get("veh_cls")
-            if rec_cls is not None and veh_cls is not None:
-                if (rec_cls in (0, 1, 3)) != (veh_cls in (0, 1, 3)):
-                    return None, 0.0
+            if not same_vehicle_family(rec.get("veh_cls"), veh_cls):
+                return None, 0.0
             if rec.get("voted_text"):
                 return rec["voted_text"], rec["voted_conf"]
             return rec["best_compensated_text"], rec["best_conf"]
@@ -747,12 +757,12 @@ class PlateOCRTracker:
         from_rec = self.records[from_tid]
         if to_tid not in self.records:
             self.records[to_tid] = from_rec
-            self.records[to_tid]["veh_cls"] = 3
+            self.records[to_tid]["veh_cls"] = MOTORCYCLE
             del self.records[from_tid]
             return
 
         to_rec = self.records[to_tid]
-        to_rec["veh_cls"] = 3
+        to_rec["veh_cls"] = MOTORCYCLE
 
         # Transfer the complete winning observation, never a score alone.
         if from_rec["best_conf"] > to_rec["best_conf"]:

@@ -9,6 +9,8 @@ import numpy as np
 from double_lines import (validate_rule_settings, line_quality, vehicle_line_position,
                           project_points, classify_maneuver, resolve_rule_lines)
 from signal_state import TemporalSignalState
+from core.continuity import is_continuous
+from core.motion import homography, road_motion
 from area_rules import AreaOccupancyRule
 from typing import Iterable
 
@@ -104,7 +106,7 @@ class RedLightStopLineCrossingRule(ViolationRule):
     def _project_line_tracks(self, observation):
         """重用補償層提供的鏡頭變換，讓規則內的舊線也位於當幀座標。"""
         meta=observation.get("postprocessing", {}).get("road_marking_compensation", {})
-        motion=meta.get("motion", {})
+        motion=road_motion(observation)
         if meta.get("reset_reason"):
             self.line_tracks.clear()
             self.crossing_states.clear()
@@ -468,26 +470,18 @@ class DoubleLineCrossingRule(ViolationRule):
             "blocked_lines": [], "skipped_vehicles": [], "reset_reason": None,
             "settings": self.settings,
         }
-        motion = observation.get("postprocessing", {}).get("road_marking_compensation", {}).get("motion", {})
+        motion = road_motion(observation)
         reset = None
-        if self.previous_frame is not None and (
-                frame["index"] != self.previous_frame["index"] + 1 or
-                not 0 < frame["timestamp_sec"] - self.previous_frame["timestamp_sec"] <= self.settings["max_frame_gap_sec"] or
-                any(frame.get(k) != self.previous_frame.get(k) for k in ("width", "height"))):
+        if not is_continuous(self.previous_frame, frame, self.settings["max_frame_gap_sec"]):
             reset = "discontinuous_input"
         self.previous_frame = dict(frame)
-        try:
-            matrix = np.asarray(motion.get("matrix"), dtype=float)
-            error = float(motion.get("reprojection_error_px", 0))
-            if (not motion.get("valid") or matrix.shape != (3, 3) or not np.isfinite(matrix).all()
-                    or abs(np.linalg.det(matrix)) < 1e-9 or not math.isfinite(error)
-                    or not 0 <= error <= self.settings["max_motion_error_px"]):
-                raise ValueError("Unusable road motion")
-        except (TypeError, ValueError):
+        matrix = homography(motion, self.settings["max_motion_error_px"])
+        if matrix is None:
             self.states.clear()
             self.line_memory.clear()
             self.diagnostics.update(status="blocked", reset_reason="motion_unavailable")
             return []
+        error = float(motion.get("reprojection_error_px", 0))  # 已由 homography() 驗證
         if reset:
             self.states.clear()
             self.line_memory.clear()

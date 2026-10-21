@@ -52,3 +52,26 @@ stage1 驗證中 cdy01 的雙黃線事件消失。原因是車輛改為每幀推
 
 ### 已知仍未解決（後續階段）
 ms01 的真實違規約在 2 秒處，目前仍未偵測到；燈號與車道對應屬於階段 4 的範圍。
+
+## 階段 2：抽出共用核心（不改變行為）
+
+### 驗證方式
+- `tools/equivalence_harness.py`：以確定性的假模型輸出（車輛跨越雙線與停止線、騎士與自行車、停在斑馬線上的貨車、紅綠燈切換、一次單幀漏偵測）搭配真實影片畫面，執行完整主流程。與第 1 階段快照 `_backup_stage1/` 比較 JSONL、CSV、規則診斷、事件、標註影片與違規剪輯，9 個輸出檔逐位元一致（只忽略新增的 `schema_version`、`postprocessing.ego_motion`、`postprocessing.double_lines.motion_source`）。不需要 torch，每一步重構後都會執行。
+- perception 與 perception_core（騎士融合、車牌配對、車牌追蹤、OCR 包裝層）：6,600 組隨機序列在新舊程式上的輸出逐位元相同。
+- 規則重算基準：19 個 JSONL 一致；單元測試 78 項全部通過（含原本需要 torch 的主流程測試）。
+
+### 修改
+- **確定性修正**：停止線補償層走訪字串集合，順序隨 Python 雜湊種子改變，同樣輸入每次輸出不同（stage1 與 stage1b 的 ms01 有 16 幀不同）。改為排序走訪，新增 `tests/test_determinism.py`（以三個雜湊種子比較；舊寫法會失敗）。
+- **主流程拆分**：`run_pipeline.run` 拆為 `frame_processing.FrameProcessor`（模型輸出 → 觀測紀錄，不載入模型也不寫檔）、`pipeline_outputs`（CSV 與標註畫面），`run` 只負責串接。torch 只在 `--device auto` 時才載入；未安裝時退回 CPU。
+- **鏡頭運動獨立**：新增 `road_compensation.EgoMotionTracker`，每幀估計一次並寫入 `postprocessing.ego_motion`；停止線補償器改為接收這份估計（重置條件相同，結果與自行估計一致，見 `tests/test_ego_motion.py`）。下游一律以 `core.motion.road_motion()` 讀取，舊 JSONL 自動退回原位置。
+  **刻意的行為改變**：`--no-marking-compensation` 時雙線與斑馬線規則原本 100% 因 `motion_unavailable` 被擋，現在可以正常運作（只有第一幀無前幀可比對）。
+- **共用工具 `core/`**：單應矩陣驗證（`core.motion.homography`，原本 4 份）、影格連續性（`core.continuity.is_continuous`，原本 4 份）、`core.geometry.project_points`（`double_lines` 保留轉出口）。
+- **類別常數**：COCO 類別編號改用 `perception_core` 的具名常數與 `same_vehicle_family()`（原本 `(0, 1, 3)` 等硬寫數字散落各處）。常數放在 `perception_core`，因為 Paddle worker 以獨立行程載入該檔。
+- **命名與死碼**：`model_library/legacy.py` → `detectors.py`（舊路徑保留轉出口）；移除已無呼叫端的 `_fit_line`（移入測試作為參考實作）與重複的 `overlay`。
+- **資料契約**：`observation_schema.py` 列出每個欄位的寫入者與讀取方式，新增 `validate_observation()` 與測試（含抽查本機既有輸出）。schema 版本 1.5 → 1.6。
+- 驗證腳本新增「與前次逐幀比對」：模型輸出與完整紀錄（忽略預期變更欄位）相同的幀數。
+
+### 未納入本階段
+- 騎士配對：`RiderTracker` 對機車已無作用（感知層已融合），但仍處理「人＋自行車」，不能直接移除；需要先把自行車納入感知層的融合，屬於行為改變。
+- 紅燈規則的 `_project_line_tracks` 投影判斷條件與 `project_points` 不同（`|w|<1e-8` 與 `w<=1e-6`），保留原樣以免改變行為。
+- 事件 ID 格式統一（`rlsl-000001` 與 `來源:規則:...`）會改變輸出，留待之後處理。

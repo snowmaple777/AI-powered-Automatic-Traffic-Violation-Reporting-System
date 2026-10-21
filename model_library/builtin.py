@@ -1,5 +1,5 @@
 from .base import ModelResult, PerceptionModel
-from .legacy import TrafficLightDetector, RoadMarkingSegmenter
+from .detectors import TrafficLightDetector, RoadMarkingSegmenter
 
 
 class LightModel(PerceptionModel):

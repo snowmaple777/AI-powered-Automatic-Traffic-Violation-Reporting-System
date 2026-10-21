@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 
 from area_rules import extract_traffic_regions, geometry_options
-from model_library.legacy import RoadMarkingSegmenter, mask_components
+from model_library.detectors import mask_components
 from road_marking_config import classes
 
 
@@ -26,6 +26,21 @@ def synthetic_mask(seed, h=360, w=640):
     return mask
 
 
+def reference_fit_line(xs, ys, width, height):
+    """舊版逐區塊 cv2.fitLine 實作（作為向量化版本的參考答案）。"""
+    if len(xs) < 2:
+        return None
+    vx, vy, x0, y0 = [float(v) for v in cv2.fitLine(np.column_stack((xs, ys)).astype(np.float32),
+                                                     cv2.DIST_L2, 0, 0.01, 0.01).ravel()]
+    if abs(vx) >= abs(vy):
+        x1, x2 = 0.0, float(width - 1)
+        y1, y2 = y0 + (x1 - x0) * vy / vx, y0 + (x2 - x0) * vy / vx
+    else:
+        y1, y2 = 0.0, float(height - 1)
+        x1, x2 = x0 + (y1 - y0) * vx / vy, x0 + (y2 - y0) * vx / vy
+    return [round(x1, 2), round(y1, 2), round(x2, 2), round(y2, 2)]
+
+
 def reference_components(mask, min_pixels):
     records = []
     for class_id in [int(c) for c in np.unique(mask) if c]:
@@ -39,7 +54,7 @@ def reference_components(mask, min_pixels):
             components.append({"bbox_xywh": [int(v) for v in stats[label, :4]],
                                "area": int(stats[label, cv2.CC_STAT_AREA]),
                                "centroid": centroids[label].tolist(),
-                               "line_xyxy": RoadMarkingSegmenter._fit_line(xs, ys, mask.shape[1], mask.shape[0])})
+                               "line_xyxy": reference_fit_line(xs, ys, mask.shape[1], mask.shape[0])})
         if components:
             records.append((class_id, int(binary.sum()), components))
     return records

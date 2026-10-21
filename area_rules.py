@@ -12,7 +12,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from double_lines import project_points
+from core.continuity import is_continuous
+from core.geometry import project_points
+from core.motion import homography, road_motion
 
 
 AREA_RULES = {
@@ -178,18 +180,15 @@ def attach_area_geometry(record, mask, state, cfg):
     frame, obs = record["frame"], record["observations"]
     index, now = frame["index"], frame["timestamp_sec"]
     size = (frame["width"], frame["height"])
-    previous = state.get("frame")
-    if previous and (index != previous["index"] + 1 or not 0 < now-previous["timestamp_sec"] <= .2 or
-                     any(previous[k] != frame[k] for k in ("width", "height"))):
+    if not is_continuous(state.get("frame"), frame, .2):
         state.clear()
     state["frame"] = dict(frame)
     post = record.setdefault("postprocessing", {})
-    motion = post.get("road_marking_compensation", {}).get("motion", {})
+    motion = road_motion(record)
     if cfg["fixed_camera"]:
         motion = dict(valid=True, matrix=np.eye(3).tolist(), method="configured_fixed_camera")
-    matrix = np.asarray(motion.get("matrix"), dtype=float)
-    valid_motion = bool(motion.get("valid") and matrix.shape == (3, 3) and
-                        np.isfinite(matrix).all() and abs(np.linalg.det(matrix)) > 1e-9)
+    matrix = homography(motion)
+    valid_motion = matrix is not None
     old = []
     if valid_motion:
         for region in state.get("regions", []):
@@ -418,10 +417,7 @@ class AreaOccupancyRule:
         frame, items, cfg = observation["frame"], observation.get("observations", {}), self.settings
         index, now = frame["index"], frame["timestamp_sec"]
         self.diagnostics = dict(status="evaluating", blocked=[], states=[], measurements=[])
-        previous = self.previous_frame
-        if previous and (index != previous["index"] + 1 or
-                         not 0 < now - previous["timestamp_sec"] <= cfg["max_frame_gap_sec"] or
-                         any(frame[k] != previous[k] for k in ("width", "height"))):
+        if not is_continuous(self.previous_frame, frame, cfg["max_frame_gap_sec"]):
             self.states.clear()
             self.diagnostics["reset_reason"] = "discontinuous_input"
         self.previous_frame = dict(frame)
@@ -433,12 +429,10 @@ class AreaOccupancyRule:
         matrix = None
         if self.kind == "crosswalk":
             post = observation.get("postprocessing", {})
-            motion = post.get("area_geometry", {}).get("motion",
-                post.get("road_marking_compensation", {}).get("motion", {}))
+            motion = post.get("area_geometry", {}).get("motion", road_motion(observation))
             try:
-                matrix = np.asarray(motion.get("matrix"), dtype=float)
-                if (not motion.get("valid") or matrix.shape != (3, 3) or
-                        not np.isfinite(matrix).all() or abs(np.linalg.det(matrix)) < 1e-9):
+                matrix = homography(motion)
+                if matrix is None:
                     raise ValueError("motion_unavailable")
                 for state in self.states.values():
                     state["anchor"] = project_points([state["anchor"]], matrix)[0]

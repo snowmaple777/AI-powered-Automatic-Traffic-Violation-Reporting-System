@@ -2,6 +2,7 @@
 from .contracts import CompensationConfig, CompensationResult, MotionEstimate
 from .compensator import RoadMarkingCompensator
 from .adapter import attach_compensation
+from .ego_motion import EgoMotionTracker
 
 __all__ = ["CompensationConfig", "CompensationResult", "MotionEstimate",
-           "RoadMarkingCompensator", "attach_compensation"]
+           "RoadMarkingCompensator", "attach_compensation", "EgoMotionTracker"]

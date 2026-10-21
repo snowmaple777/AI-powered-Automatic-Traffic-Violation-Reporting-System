@@ -11,6 +11,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from core.continuity import is_continuous
+from core.geometry import project_points  # noqa: F401  舊模組仍由此匯入
+from core.motion import homography, road_motion
+
 
 DOUBLE_LINE_CLASSES = {"solid double yellow", "solid double white"}
 
@@ -391,12 +395,6 @@ def vehicle_line_position(vehicle, line, settings, motion_error=0):
             "tangent": measurements[1]["tangent"], "box": box.tolist()}
 
 
-def project_points(points, matrix):
-    homogeneous = np.column_stack((points, np.ones(len(points)))) @ matrix.T
-    if not np.isfinite(homogeneous).all() or np.any(homogeneous[:, 2] <= 1e-6):
-        raise ValueError("Unstable ground projection")
-    return (homogeneous[:, :2] / homogeneous[:, 2:]).tolist()
-
 
 def classify_maneuver(before, after, tangent, settings):
     """Infer maneuver from camera-compensated ground trajectories, not box heading."""
@@ -432,25 +430,20 @@ def attach_double_lines(record, mask, state):
     frame = record["frame"]
     observations = record["observations"]
     diagnostics = record.setdefault("postprocessing", {})
-    motion = diagnostics.get("road_marking_compensation", {}).get("motion", {})
+    motion = road_motion(record)
     reset_reason = None
     matrix = None
     if state.get("frame") is None:
         reset_reason = "first_frame"
-    elif (frame["index"] != state["frame"] + 1 or
-          not 0 < frame["timestamp_sec"] - state["time"] <= .2 or
-          state["size"] != [frame["width"], frame["height"]]):
+    elif not is_continuous({"index": state["frame"], "timestamp_sec": state["time"],
+                            "width": state["size"][0], "height": state["size"][1]}, frame, .2):
         reset_reason = "discontinuous_input"
     elif not motion.get("valid"):
         reset_reason = "motion_unavailable"
     else:
-        try:
-            matrix = np.asarray(motion.get("matrix"), dtype=float)
-            if (matrix.shape != (3, 3) or not np.isfinite(matrix).all() or
-                    abs(np.linalg.det(matrix)) < 1e-9):
-                raise ValueError("Invalid homography")
-        except (ValueError, TypeError):
-            matrix, reset_reason = None, "invalid_motion"
+        matrix = homography(motion)
+        if matrix is None:
+            reset_reason = "invalid_motion"
     if mask is not None and np.asarray(mask).shape != (frame["height"], frame["width"]):
         mask, reset_reason = None, "mask_shape_mismatch"
     lines = extract_double_lines(mask, observations.get("road_markings_raw",
@@ -485,7 +478,8 @@ def attach_double_lines(record, mask, state):
         "version": 1, "status": "observed" if lines else
         ("geometry_unavailable" if mask is None else "no_double_lines"),
         "reset_reason": reset_reason, "observed_count": len(lines),
-        "eligibility": "evaluated_by_rule", "motion_source": "road_marking_compensation"}
+        "eligibility": "evaluated_by_rule",
+        "motion_source": "ego_motion" if "ego_motion" in diagnostics else "road_marking_compensation"}
     state.update(frame=frame["index"], time=frame["timestamp_sec"],
                  size=[frame["width"], frame["height"]], tracks=copy.deepcopy(lines))
 

@@ -5,10 +5,11 @@ from pathlib import Path
 import numpy as np
 
 from .base import ModelResult, PerceptionModel
-from .legacy import VehicleDetector
+from .detectors import VehicleDetector
 from .perception_core import (fuse_rider_and_motorcycles, filter_duplicate_boxes,
                               match_plate_to_vehicle, PlateOCRTracker,
-                              TaiwanPlateValidator, ONNXPPOCRv6Recognizer)
+                              TaiwanPlateValidator, ONNXPPOCRv6Recognizer,
+                              PERSON, MOTORCYCLE, PLATE_CARRIER_CLASSES, same_vehicle_family)
 from .runtime import yolo_device, onnx_predictor
 
 
@@ -50,7 +51,7 @@ class VehicleModel(PerceptionModel):
             fused, mappings = fuse_rider_and_motorcycles(boxes, self.riders)
             records = []
             names = {r["class_id"]:r["class_name"] for r in raw}
-            names[3] = "motorcycle"
+            names[MOTORCYCLE] = "motorcycle"
             h,w = frame.shape[:2]
             for b in fused:
                 tid = b[6]
@@ -109,10 +110,10 @@ class PlateModel(PerceptionModel):
         distances = {r["object_id"]:r["distance_m"] for r in upstream["depth"].records if r.get("object_id")}
         vehicles = []
         for r in upstream["vehicles"].records:
-            if r["class_id"] not in (0,2,3,5,7):
+            if r["class_id"] not in PLATE_CARRIER_CLASSES:
                 continue
             b = r["bbox_xyxy"]
-            if r["class_id"] == 0 and (b[3] <= h*.4 or b[2]-b[0] < 35 or b[3]-b[1] < 60):
+            if r["class_id"] == PERSON and (b[3] <= h*.4 or b[2]-b[0] < 35 or b[3]-b[1] < 60):
                 continue
             vehicles.append(b+[r["confidence"],r["class_id"],r["track_id"],distances.get(r.get("object_id"))])
         candidates = []
@@ -121,9 +122,9 @@ class PlateModel(PerceptionModel):
             vw,vh = x2-x1,y2-y1
             if min(vw,vh) < self.min_size or (v[7] is not None and v[7] > self.max_distance):
                 continue
-            if v[5] == 0:
+            if v[5] == PERSON:
                 px,py,pd = max(vw*.65,100),vh*.1,vh*.35
-            elif v[5] == 3:
+            elif v[5] == MOTORCYCLE:
                 px,py,pd = max(vw*.35,60),vh*.1,max(vh*.25,40)
             else:
                 px,py,pd = vw*self.padding,vh*self.padding,vh*self.padding
@@ -223,10 +224,9 @@ class OCRModel(PerceptionModel):
                 continue
             self.seen[tid] = context.index
             old = self.tracker.records.get(tid)
-            if old and old.get("veh_cls") is not None and cls is not None:
-                if (old["veh_cls"] in (0, 1, 3)) != (cls in (0, 1, 3)):
-                    self.tracker.records.pop(tid)
-                    self.attempts.pop(tid, None)
+            if old and not same_vehicle_family(old.get("veh_cls"), cls):
+                self.tracker.records.pop(tid)
+                self.attempts.pop(tid, None)
         output = []
         h,w = frame.shape[:2]
         for plate in upstream["plates"].records:
@@ -235,7 +235,7 @@ class OCRModel(PerceptionModel):
             if tid is not None:
                 self.seen[tid] = context.index
                 old = self.tracker.records.get(tid)
-                if old and old.get("veh_cls") is not None and cls is not None and ((old["veh_cls"] in (0,1,3)) != (cls in (0,1,3))):
+                if old and not same_vehicle_family(old.get("veh_cls"), cls):
                     self.tracker.records.pop(tid)
                     self.attempts.pop(tid,None)
             x1,y1,x2,y2 = plate["bbox_xyxy"]

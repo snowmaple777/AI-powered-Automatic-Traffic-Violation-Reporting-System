@@ -416,191 +416,144 @@ class TaiwanPlateValidator:
 
         return None
 
-class ONNXPPOCRv6Recognizer:
+PLATE_CHARACTERS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-'
+
+
+def ctc_greedy_decode(preds, character, allowed_indices):
+    """只在車牌允許字元中做 CTC greedy 解碼。
+
+    preds 為 [T, C] softmax 機率。信心值取所選字元的「模型原始機率」平均，
+    不再對允許字元重新正規化：模型若其實偏向中文或符號，信心會如實偏低。
     """
-    PP-OCRv6 車牌純文字辨識 ONNX 推論引擎 (Pure ONNXRuntime-GPU/CPU):
-    1. 採用 PaddleOCR 最新 PP-OCRv6 繁簡通用識別模型，字元集高達 18,710 字。
-    2. 內建動態解析度前處理 (固定 H=48，動態 W 保持原始寬高比，雙線性插值，歸一化)。
-    3. 英數字元先驗 Logits Masking：
-       - 自動從 ONNX 詮釋資料 (Model Metadata) 讀取字元字典。
-       - 車牌僅包含英數字元與連字號 ('0'-'9', 'A'-'Z', '-', blank)。
-       - 在 CTC Greedy Decode 前將非英數之類別 logit 設為 -1e9。
-       - 徹底杜絕中文、日文、特殊符號誤識別，大幅拉升車牌英數字信心度。
-    4. 純 ONNXRuntime 執行，完全不需額外依賴外部雲端或龐大框架。
+    preds = np.asarray(preds, dtype=np.float32)
+    allowed = preds[:, allowed_indices]
+    best = allowed.argmax(axis=1)
+    indices = allowed_indices[best]
+    probabilities = allowed[np.arange(len(best)), best]
+    text, scores, last = [], [], 0
+    for index, probability in zip(indices, probabilities):
+        if index != 0 and index != last:
+            text.append(character[index])
+            scores.append(float(probability))
+        last = index
+    return "".join(text), (float(np.mean(scores)) if scores else 0.0)
+
+
+class PlateTextRecognizer:
+    """車牌 OCR 前處理、解碼與重試策略的唯一實作。
+
+    ONNX 與 Paddle 後端只需實作 _forward(tensor) -> [T, C] 機率，
+    保證兩種後端對同一張車牌採用相同流程與相同的台灣車牌驗證。
     """
-    def __init__(self, model_path="checkpoints/PP-OCRv6_rec_small.onnx", device="cuda"):
-        import onnxruntime as ort
-        so = ort.SessionOptions()
-        so.log_severity_level = 3
-        providers = ['CPUExecutionProvider']
-        if str(device).startswith('cuda') and 'CUDAExecutionProvider' in ort.get_available_providers():
-            device_id = int(str(device).split(':')[1]) if ':' in str(device) else 0
-            providers.insert(0, ('CUDAExecutionProvider', {'device_id': device_id}))
-        self.session = ort.InferenceSession(model_path, sess_options=so, providers=providers)
-        self.input_name = self.session.get_inputs()[0].name
-        self.output_name = self.session.get_outputs()[0].name
-        
-        meta = self.session.get_modelmeta().custom_metadata_map
-        self.character = ['blank'] + meta['character'].splitlines() + [' ']
-        self.allowed_indices = np.array([0] + [i for i, c in enumerate(self.character) if c in '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-'], dtype=np.int64)
-        self.mask = np.full(len(self.character), -1e9, dtype=np.float32)
-        self.mask[self.allowed_indices] = 0.0
+    IMAGE_HEIGHT = 48
+    MIN_WIDTH = 120  # 讓 CTC 有足夠時間步分開連續相同字元（66、88、00）
+    MAX_WIDTH = 320
+    EARLY_EXIT_CONFIDENCE = 0.88
+    RETRY_BELOW_CONFIDENCE = 0.70
+    ROTATIONS = (-10, 10, -5, 5)
+
+    def _setup_characters(self, characters):
+        self.character = ['blank'] + list(characters) + [' ']
+        self.allowed_indices = np.array(
+            [0] + [i for i, c in enumerate(self.character) if c in PLATE_CHARACTERS], dtype=np.int64)
+
+    def _forward(self, tensor):
+        raise NotImplementedError
 
     @staticmethod
     def _enhance_plate(img):
-        """
-        工業級車牌超解析自適應銳化與對比度增強 (Adaptive Plate Enhancement):
-        1. 雙三次插值幾何放大 (Bicubic Upscaling):
-           - 當車牌高度 h < 48px 時，雙三次插值放大至標準高度 48px，保留微小筆畫連續度。
-        2. 雙邊保邊降噪 (Bilateral Filter):
-           - 在銳化前先濾除行車記錄器常見之 H.264/JPEG 壓縮方塊雜點，避免雜訊被銳化放大為虛假筆畫。
-        3. 自適應反遮罩銳化 (Adaptive Unsharp Mask):
-           - 依據車牌清晰度 (Laplacian 方差) 動態調整銳化係數：
-             - 嚴重模糊 (lap_var < 500)：強銳化 (係數 1.45, 模糊 -0.45)，拉大字元邊緣反差。
-             - 中度模糊 (500 <= lap_var < 2500)：溫和銳化 (係數 1.25, 模糊 -0.25)。
-             - 極度清晰 (lap_var >= 2500)：維持微調 (係數 1.10, 模糊 -0.10)，杜絕光暈 (Halo) 偽影。
-        4. 車牌專用長條網格 CLAHE:
-           - 轉至 LAB 色彩空間，採用 2x6 長寬比自適應網格強化字元與車牌底板局部對比度，克服大燈反光與逆光陰影。
-        """
+        """放大至 48px 高 → 雙邊濾波 → 依清晰度自適應銳化 → LAB 2x6 網格 CLAHE。"""
         if img is None or img.size == 0:
             return img
         h, w = img.shape[:2]
         if h < 48:
-            scale = 48.0 / float(h)
-            target_w = int(round(w * scale))
-            up = cv2.resize(img, (target_w, 48), interpolation=cv2.INTER_CUBIC)
+            up = cv2.resize(img, (int(round(w * 48.0 / h)), 48), interpolation=cv2.INTER_CUBIC)
         else:
             up = img.copy()
-
-        # 估算清晰度
-        gray = cv2.cvtColor(up, cv2.COLOR_BGR2GRAY)
-        lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-
-        # 雙邊濾波降噪 (抑制壓縮噪點，避免被銳化放大為虛假筆畫)
+        lap_var = cv2.Laplacian(cv2.cvtColor(up, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
         smooth = cv2.bilateralFilter(up, d=5, sigmaColor=25, sigmaSpace=25)
-
-        # 自適應銳化強度
         if lap_var < 500:
-            blur = cv2.GaussianBlur(smooth, (0, 0), 1.2)
-            sharpened = cv2.addWeighted(smooth, 1.45, blur, -0.45, 0)
+            sharpened = cv2.addWeighted(smooth, 1.45, cv2.GaussianBlur(smooth, (0, 0), 1.2), -0.45, 0)
         elif lap_var < 2500:
-            blur = cv2.GaussianBlur(smooth, (0, 0), 1.0)
-            sharpened = cv2.addWeighted(smooth, 1.25, blur, -0.25, 0)
+            sharpened = cv2.addWeighted(smooth, 1.25, cv2.GaussianBlur(smooth, (0, 0), 1.0), -0.25, 0)
         else:
-            blur = cv2.GaussianBlur(smooth, (0, 0), 0.8)
-            sharpened = cv2.addWeighted(smooth, 1.10, blur, -0.10, 0)
-
-        # LAB 空間 CLAHE 強化局部亮度與對比度 (車牌長寬比自適應 2x6 網格)
+            sharpened = cv2.addWeighted(smooth, 1.10, cv2.GaussianBlur(smooth, (0, 0), 0.8), -0.10, 0)
         lab = cv2.cvtColor(sharpened, cv2.COLOR_BGR2LAB)
-        clahe = cv2.createCLAHE(clipLimit=1.6, tileGridSize=(2, 6))
-        lab[:, :, 0] = clahe.apply(lab[:, :, 0])
-        enhanced = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-        return enhanced
-
-    def _infer_single(self, img):
-        if img is None or img.size == 0 or img.shape[0] < 6 or img.shape[1] < 12:
-            return None, 0.0
-        h, w = img.shape[:2]
-        ratio = w / float(h)
-        img_h = 48
-        base_w = int(math.ceil(img_h * ratio))
-        # 確保寬度至少 120 像素，使 CTC 解碼器具備足夠時間步分離連續相同字元 (如 66, 88, 00)
-        min_w = 120
-        resized_w = max(min_w, min(base_w, 320))
-        resized = cv2.resize(img, (resized_w, img_h), interpolation=cv2.INTER_LINEAR)
-        resized = (resized.astype(np.float32) / 255.0 - 0.5) / 0.5
-        norm_img = np.zeros((1, 3, img_h, resized_w), dtype=np.float32)
-        norm_img[0] = resized.transpose((2, 0, 1))
-        
-        preds = self.session.run([self.output_name], {self.input_name: norm_img})[0]
-        masked_preds = preds + self.mask
-        pred_indices = masked_preds.argmax(axis=-1)[0]
-        
-        T = len(pred_indices)
-        raw_probs = preds[0, np.arange(T), pred_indices]
-        allowed_sums = preds[0][:, self.allowed_indices].sum(axis=1)
-        renorm_probs = raw_probs / np.clip(allowed_sums, 1e-6, 1.0)
-        
-        text = []
-        scores = []
-        last_idx = 0
-        for idx, rn_p in zip(pred_indices, renorm_probs):
-            if idx != 0 and idx != last_idx:
-                text.append(self.character[idx])
-                scores.append(rn_p)
-            last_idx = idx
-            
-        final_text = "".join(text)
-        avg_score = float(np.mean(scores)) if scores else 0.0
-        return final_text, avg_score
+        lab[:, :, 0] = cv2.createCLAHE(clipLimit=1.6, tileGridSize=(2, 6)).apply(lab[:, :, 0])
+        return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
 
     @staticmethod
     def _rotate_crop(img, angle):
         h, w = img.shape[:2]
         center = (w / 2.0, h / 2.0)
-        M = cv2.getRotationMatrix2D(center, angle, 1.0)
-        cos = np.abs(M[0, 0])
-        sin = np.abs(M[0, 1])
-        nw = int((h * sin) + (w * cos))
-        nh = int((h * cos) + (w * sin))
-        M[0, 2] += (nw / 2.0) - center[0]
-        M[1, 2] += (nh / 2.0) - center[1]
-        return cv2.warpAffine(img, M, (nw, nh), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+        cos, sin = np.abs(matrix[0, 0]), np.abs(matrix[0, 1])
+        nw, nh = int((h * sin) + (w * cos)), int((h * cos) + (w * sin))
+        matrix[0, 2] += (nw / 2.0) - center[0]
+        matrix[1, 2] += (nh / 2.0) - center[1]
+        return cv2.warpAffine(img, matrix, (nw, nh), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+
+    @classmethod
+    def _prepare(cls, img):
+        h, w = img.shape[:2]
+        width = max(cls.MIN_WIDTH, min(int(math.ceil(cls.IMAGE_HEIGHT * w / float(h))), cls.MAX_WIDTH))
+        resized = cv2.resize(img, (width, cls.IMAGE_HEIGHT), interpolation=cv2.INTER_LINEAR)
+        resized = (resized.astype(np.float32) / 255.0 - 0.5) / 0.5
+        return np.ascontiguousarray(resized.transpose((2, 0, 1))[None])
+
+    def _infer_single(self, img):
+        if img is None or img.size == 0 or img.shape[0] < 6 or img.shape[1] < 12:
+            return "", 0.0
+        return ctc_greedy_decode(self._forward(self._prepare(img)), self.character, self.allowed_indices)
 
     def predict(self, img):
+        """原圖 → 增強圖 → 必要時小角度旋轉；符合台灣車牌格式者加權。回傳 (文字或空字串, 信心)。"""
         if img is None or img.size == 0 or img.shape[0] < 6 or img.shape[1] < 12:
-            return None, 0.0
+            return "", 0.0
+        valid = TaiwanPlateValidator.validate_and_normalize
+        text, conf = self._infer_single(img)
+        if valid(text) and conf >= self.EARLY_EXIT_CONFIDENCE:
+            return text, conf
+        enhanced = self._enhance_plate(img)
+        candidates = [(text, conf), self._infer_single(enhanced)]
+        best_text, best_conf = max(candidates, key=lambda c: c[1] + (1.0 if valid(c[0]) else 0.0))
+        best_score = best_conf + (1.0 if valid(best_text) else 0.0)
+        if not valid(best_text) or best_conf < self.RETRY_BELOW_CONFIDENCE:
+            for angle in self.ROTATIONS:
+                r_text, r_conf = self._infer_single(self._rotate_crop(enhanced, angle))
+                if not r_text:
+                    continue
+                r_valid = valid(r_text)
+                r_score = r_conf + (1.0 if r_valid else 0.0)
+                if r_score > best_score:
+                    best_text, best_conf, best_score = r_text, r_conf, r_score
+                    if r_valid and r_conf >= 0.85:
+                        break
+        return best_text or "", float(best_conf)
 
-        # 防護 2：優先使用超解析銳化 + CLAHE 增強之車牌影像推論
-        enh_img = self._enhance_plate(img)
-        enh_text, enh_conf = self._infer_single(enh_img)
-        enh_valid = TaiwanPlateValidator.validate_and_normalize(enh_text) if enh_text else None
-        
-        # 若增強版已通過台灣車牌格式校驗且信心度高，直接返回
-        if enh_valid and enh_conf >= 0.88:
-            return enh_text, enh_conf
 
-        # 備援嘗試原始原圖
-        orig_text, orig_conf = self._infer_single(img)
-        orig_valid = TaiwanPlateValidator.validate_and_normalize(orig_text) if orig_text else None
-        if orig_valid and orig_conf >= 0.88:
-            return orig_text, orig_conf
+class ONNXPPOCRv6Recognizer(PlateTextRecognizer):
+    """PP-OCRv6 ONNX 後端（字典取自模型 metadata）；流程見 PlateTextRecognizer。"""
+    def __init__(self, model_path="checkpoints/PP-OCRv6_rec_small.onnx", device="cuda"):
+        import onnxruntime as ort
+        options = ort.SessionOptions()
+        options.log_severity_level = 3
+        providers = ['CPUExecutionProvider']
+        if str(device).startswith('cuda') and 'CUDAExecutionProvider' in ort.get_available_providers():
+            device_id = int(str(device).split(':')[1]) if ':' in str(device) else 0
+            providers.insert(0, ('CUDAExecutionProvider', {'device_id': device_id}))
+        self.session = ort.InferenceSession(model_path, sess_options=options, providers=providers)
+        self.input_name = self.session.get_inputs()[0].name
+        self.output_name = self.session.get_outputs()[0].name
+        self._setup_characters(self.session.get_modelmeta().custom_metadata_map['character'].splitlines())
 
-        # 綜合評估增強版與原始版之最佳結果
-        if enh_valid and not orig_valid:
-            best_text, best_conf, best_valid = enh_text, enh_conf, enh_valid
-        elif orig_valid and not enh_valid:
-            best_text, best_conf, best_valid = orig_text, orig_conf, orig_valid
-        elif enh_conf >= orig_conf:
-            best_text, best_conf, best_valid = enh_text, enh_conf, enh_valid
-        else:
-            best_text, best_conf, best_valid = orig_text, orig_conf, orig_valid
-
-        best_score = best_conf + (1.0 if best_valid else 0.0)
-
-        # 僅在未通過格式校驗或信心度偏低時，測試自適應傾角校正 (-14, 14, -8, 8)
-        # 傾角校正基於增強版影像進行
-        for angle in [-14, 14, -8, 8]:
-            rot_img = self._rotate_crop(enh_img, angle)
-            rot_text, rot_conf = self._infer_single(rot_img)
-            if not rot_text or rot_conf < 0.40:
-                continue
-            rot_valid = TaiwanPlateValidator.validate_and_normalize(rot_text)
-            rot_score = rot_conf + (1.0 if rot_valid else 0.0)
-            if rot_score > best_score:
-                best_score = rot_score
-                best_text = rot_text
-                best_conf = rot_conf
-                if rot_valid and rot_conf >= 0.85:
-                    break
-
-        return best_text, best_conf
+    def _forward(self, tensor):
+        return self.session.run([self.output_name], {self.input_name: tensor})[0][0]
 
     def __call__(self, img, **kwargs):
         text, conf = self.predict(img)
-        if text:
-            return [[text, conf]], 0.0
-        return None, 0.0
+        return ([[text, conf]], 0.0) if text else (None, 0.0)
+
 
 class PlateOCRTracker:
     """
@@ -719,12 +672,35 @@ class PlateOCRTracker:
             rec.update(best_raw_text=raw_clean, best_compensated_text=text, best_conf=conf)
         rec["raw_history"] = (rec["raw_history"] + [(raw_clean, conf)])[-12:]
         rec["compensated_history"] = (rec["compensated_history"] + [(text, conf)])[-12:]
-        support = [score for value, score in rec["compensated_history"]
-                   if value == rec["best_compensated_text"]]
+        self._update_vote(rec)
+        displayed = rec.get("voted_text") or rec["best_compensated_text"]
+        support = [score for value, score in rec["compensated_history"] if value == displayed]
         rec["confirmed"] = bool(support) and (
             (len(support) >= 3 and sum(support) / len(support) >= .70)
             or (len(support) >= 2 and max(support) >= .88))
         return rec["best_raw_text"], rec["best_conf"]
+
+    def _update_vote(self, rec):
+        """單次最高信心的讀數若從未被其他讀數支持，改採逐字元加權投票結果。
+
+        最高信心讀數至少重複兩次時維持原規則（嚴格更高信心才換字）；投票只在
+        至少三筆同長度讀數組成、且結果通過台灣車牌格式時採用。
+        """
+        rec["voted_text"] = rec["voted_conf"] = None
+        if not self.enable_taiwan_filter:
+            return
+        history = rec["compensated_history"]
+        best = rec["best_compensated_text"]
+        if sum(value == best for value, _ in history) >= 2:
+            return
+        cleaned = [re.sub(r'[^A-Z0-9]', '', value) for value, _ in history]
+        lengths = Counter(len(value) for value in cleaned if 5 <= len(value) <= 8)
+        if not lengths or lengths.most_common(1)[0][1] < 3:
+            return
+        voted, voted_conf = self.assemble_composite_plate(history)
+        voted = TaiwanPlateValidator.validate_and_normalize(voted)
+        if voted and voted != best:
+            rec["voted_text"], rec["voted_conf"] = voted, voted_conf
 
     def get_plate_raw(self, track_id, veh_cls=None):
         """取得原始未補償的車牌文字 (供影片畫面標註繪製)"""
@@ -745,13 +721,15 @@ class PlateOCRTracker:
             if rec_cls is not None and veh_cls is not None:
                 if (rec_cls in (0, 1, 3)) != (veh_cls in (0, 1, 3)):
                     return None, 0.0
+            if rec.get("voted_text"):
+                return rec["voted_text"], rec["voted_conf"]
             return rec["best_compensated_text"], rec["best_conf"]
         return None, 0.0
 
     def get_all_confirmed(self):
         """取得所有已確認/最佳之合規車牌字典 (供終端報告與外出資料匯出)"""
         return {
-            tid: (data["best_compensated_text"], data["best_conf"])
+            tid: self.get_plate(tid)
             for tid, data in self.records.items()
             if data.get("best_compensated_text")
         }
@@ -782,6 +760,7 @@ class PlateOCRTracker:
                 to_rec[key] = from_rec[key]
         for key in ("raw_history", "compensated_history"):
             to_rec[key] = (to_rec[key] + from_rec[key])[-12:]
+        self._update_vote(to_rec)
         if from_rec.get("last_infer_frame", 0) > to_rec.get("last_infer_frame", 0):
             to_rec["last_infer_frame"] = from_rec["last_infer_frame"]
             to_rec["last_plate_w"] = from_rec.get("last_plate_w")

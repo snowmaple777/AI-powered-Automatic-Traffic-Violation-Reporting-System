@@ -102,11 +102,11 @@ def extract_double_lines(mask, markings, min_area=40):
             x, y, width, height, area = map(int, stats[label])
             if area < min_area or height < 8:
                 continue
-            rows = []
-            for row in range(y, y + height):
-                xs = np.flatnonzero(labels[row, x:x + width] == label) + x
-                if len(xs):
-                    rows.append([float(xs[0]), float(xs[-1]), row])
+            crop = labels[y:y + height, x:x + width] == label
+            present = crop.any(axis=1)
+            first = crop.argmax(axis=1) + x
+            last = x + width - 1 - crop[:, ::-1].argmax(axis=1)
+            rows = [[float(first[r]), float(last[r]), y + r] for r in np.flatnonzero(present).tolist()]
             # Very broad/branching components are not usable line geometry.
             if max(right - left for left, right, _ in rows) > mask.shape[1] * .08:
                 continue

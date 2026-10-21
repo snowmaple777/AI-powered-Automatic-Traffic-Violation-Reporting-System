@@ -135,7 +135,7 @@ class DoubleLineRuleTests(unittest.TestCase):
 
     def test_identity_motion_gap_and_low_quality_break_candidates(self):
         for mode in ("vehicle_id", "motion", "missing_line", "frame_gap", "low_confidence",
-                     "box_jump", "pair_missing", "stale_line", "missing_vehicle"):
+                     "box_jump", "pair_missing", "stale_line", "long_missing_vehicle"):
             records = sequence(LANE_CHANGE)
             item = records[4]
             if mode == "line_id":
@@ -158,10 +158,24 @@ class DoubleLineRuleTests(unittest.TestCase):
                 item["observations"]["double_lines"][0].pop("members")
             elif mode == "stale_line":
                 item["observations"]["double_lines"][0]["source_frame"] = 3
-            else:
-                item["observations"]["vehicles"] = []
+            else:  # 超過 max_observation_gap_sec（0.3 秒＝3 幀）的漏偵測
+                for record in records[4:8]:
+                    record["observations"]["vehicles"] = []
             with self.subTest(mode=mode):
                 self.assertEqual(run_records(records), [])
+
+    def test_brief_missed_detection_keeps_candidate_as_suspected(self):
+        # 偵測器漏掉一幀，與「參考點暫時不可用」同樣處理：保留候選但只能是疑似。
+        records = sequence(LANE_CHANGE)
+        records[4]["observations"]["vehicles"] = []
+        events = run_records(records)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["status"], "suspected")
+        self.assertFalse(events[0]["conditions"]["uninterrupted_positions"])
+        # 尚未 armed 時漏偵測：起點證據不足，直接放棄。
+        records = sequence(LANE_CHANGE)
+        records[1]["observations"]["vehicles"] = []
+        self.assertEqual(run_records(records), [])
 
     def test_event_dedup_and_reverse_crossing_after_rearm(self):
         path = LANE_CHANGE + [(185, 160)] * 15

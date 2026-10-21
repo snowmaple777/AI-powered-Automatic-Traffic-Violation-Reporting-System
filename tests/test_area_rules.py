@@ -202,6 +202,15 @@ class AreaRuleTests(unittest.TestCase):
                 if change == "identity": v["object_id"] = str(i//5)
             self.assertEqual(evaluate(rows), [], change)
 
+    def test_brief_missed_detection_keeps_dwell_but_long_absence_resets(self):
+        rows = records()
+        rows[7]["observations"]["vehicles"] = []
+        self.assertEqual(len(evaluate(rows)), 1)
+        rows = records()
+        for row in rows[5:10]:  # 0.5 秒，超過 max_observation_gap_sec
+            row["observations"]["vehicles"] = []
+        self.assertEqual(evaluate(rows), [])
+
     def test_missing_region_and_frame_gap_reset_dwell(self):
         for change in ("missing", "gap"):
             rows = records()

@@ -1,0 +1,248 @@
+{
+  "version": 1,
+  "time_tolerance_sec": 1.0,
+  "_說明": "category＝該片主要違規規則（ms/s/mm 開頭請自行填入）；逐一核對影片後填 events 並設 reviewed=true。events 範例：{\"rule_id\":\"red_light_stop_line_crossing\",\"start_sec\":3.0,\"end_sec\":4.0,\"plate\":\"CAA-8738\",\"note\":\"\"}",
+  "videos": {
+    "cdy01": {
+      "file": "input/違規跨越雙實線/cdy01.mp4",
+      "category": "double_yellow_line_crossing",
+      "reviewed": false,
+      "events": []
+    },
+    "cdy02": {
+      "file": "input/違規跨越雙實線/cdy02.mp4",
+      "category": "double_yellow_line_crossing",
+      "reviewed": false,
+      "events": []
+    },
+    "cdy03": {
+      "file": "input/違規跨越雙實線/cdy03.mp4",
+      "category": "double_yellow_line_crossing",
+      "reviewed": false,
+      "events": []
+    },
+    "cdy04": {
+      "file": "input/違規跨越雙實線/cdy04.mp4",
+      "category": "double_yellow_line_crossing",
+      "reviewed": false,
+      "events": []
+    },
+    "cdy05": {
+      "file": "input/違規跨越雙實線/cdy05.mp4",
+      "category": "double_yellow_line_crossing",
+      "reviewed": false,
+      "events": []
+    },
+    "cdy06": {
+      "file": "input/違規跨越雙實線/cdy06.mp4",
+      "category": "double_yellow_line_crossing",
+      "reviewed": false,
+      "events": []
+    },
+    "cdy07": {
+      "file": "input/違規跨越雙實線/cdy07.mp4",
+      "category": "double_yellow_line_crossing",
+      "reviewed": false,
+      "events": []
+    },
+    "mm01": {
+      "file": "input/闖紅燈/多台車輛違規/mm01.mp4",
+      "category": "red_light_stop_line_crossing",
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "red_light_stop_line_crossing",
+          "start_sec": 2.0,
+          "end_sec": 5.0,
+          "plate": "BHX3155",
+          "note": "違規參考.txt：約2~5秒處，汽車"
+        },
+        {
+          "rule_id": "red_light_stop_line_crossing",
+          "start_sec": 2.0,
+          "end_sec": 5.0,
+          "plate": "MSC6626",
+          "note": "違規參考.txt：約2~5秒處，機車"
+        }
+      ]
+    },
+    "ms01": {
+      "file": "input/闖紅燈/單台車輛違規/ms01.mp4",
+      "category": "red_light_stop_line_crossing",
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "red_light_stop_line_crossing",
+          "start_sec": 1.0,
+          "end_sec": 3.0,
+          "plate": "CAA8738",
+          "note": "違規參考.txt：約2秒處，貨車"
+        }
+      ]
+    },
+    "ms02": {
+      "file": "input/闖紅燈/單台車輛違規/ms02.mp4",
+      "category": "red_light_stop_line_crossing",
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "red_light_stop_line_crossing",
+          "start_sec": 2.0,
+          "end_sec": 4.0,
+          "plate": "9696L2",
+          "note": "違規參考.txt：約3秒處，汽車"
+        }
+      ]
+    },
+    "ms03": {
+      "file": "input/闖紅燈/單台車輛違規/ms03.mp4",
+      "category": "red_light_stop_line_crossing",
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "red_light_stop_line_crossing",
+          "start_sec": 1.0,
+          "end_sec": 3.0,
+          "plate": "KB1998",
+          "note": "違規參考.txt：約2秒處，機車"
+        }
+      ]
+    },
+    "ms04": {
+      "file": "input/闖紅燈/單台車輛違規/ms04.mp4",
+      "category": "red_light_stop_line_crossing",
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "red_light_stop_line_crossing",
+          "start_sec": 3.0,
+          "end_sec": 5.0,
+          "plate": "EMT9517",
+          "note": "違規參考.txt：約4秒處，機車"
+        }
+      ]
+    },
+    "ms05": {
+      "file": "input/闖紅燈/單台車輛違規/ms05.mp4",
+      "category": "red_light_stop_line_crossing",
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "red_light_stop_line_crossing",
+          "start_sec": 3.0,
+          "end_sec": 5.0,
+          "plate": "9165G9",
+          "note": "違規參考.txt：約4秒處，汽車"
+        }
+      ]
+    },
+    "ms06": {
+      "file": "input/闖紅燈/單台車輛違規/ms06.mp4",
+      "category": "red_light_stop_line_crossing",
+      "reviewed": false,
+      "events": []
+    },
+    "ms07": {
+      "file": "input/闖紅燈/單台車輛違規/ms07.mp4",
+      "category": "red_light_stop_line_crossing",
+      "reviewed": false,
+      "events": []
+    },
+    "s01": {
+      "file": "input/闖紅燈/單台車輛違規/s01.mp4",
+      "category": "red_light_stop_line_crossing",
+      "reviewed": false,
+      "events": []
+    },
+    "s02": {
+      "file": "input/闖紅燈/單台車輛違規/s02.mp4",
+      "category": "red_light_stop_line_crossing",
+      "reviewed": false,
+      "events": []
+    },
+    "s03": {
+      "file": "input/闖紅燈/單台車輛違規/s03.mp4",
+      "category": "red_light_stop_line_crossing",
+      "reviewed": false,
+      "events": []
+    },
+    "s04": {
+      "file": "input/闖紅燈/單台車輛違規/s04.mp4",
+      "category": "red_light_stop_line_crossing",
+      "reviewed": false,
+      "events": []
+    },
+    "s05": {
+      "file": "input/闖紅燈/單台車輛違規/s05.mp4",
+      "category": "red_light_stop_line_crossing",
+      "reviewed": false,
+      "events": []
+    },
+    "soc01": {
+      "file": "input/停止在斑馬線上/soc01.mp4",
+      "category": "crosswalk_stopping",
+      "reviewed": false,
+      "events": []
+    },
+    "soc02": {
+      "file": "input/停止在斑馬線上/soc02.mp4",
+      "category": "crosswalk_stopping",
+      "reviewed": false,
+      "events": []
+    },
+    "soc03": {
+      "file": "input/停止在斑馬線上/soc03.mp4",
+      "category": "crosswalk_stopping",
+      "reviewed": false,
+      "events": []
+    },
+    "soc04": {
+      "file": "input/停止在斑馬線上/soc04.mp4",
+      "category": "crosswalk_stopping",
+      "reviewed": false,
+      "events": []
+    },
+    "soc05": {
+      "file": "input/停止在斑馬線上/soc05.mp4",
+      "category": "crosswalk_stopping",
+      "reviewed": false,
+      "events": []
+    },
+    "ctm01": {
+      "file": "input/汽車駛入機車停等區/ctm01.mp4",
+      "category": "car_motorcycle_waiting_area",
+      "reviewed": false,
+      "events": []
+    },
+    "ctm02": {
+      "file": "input/汽車駛入機車停等區/ctm02.mp4",
+      "category": "car_motorcycle_waiting_area",
+      "reviewed": false,
+      "events": []
+    },
+    "ctm03": {
+      "file": "input/汽車駛入機車停等區/ctm03.mp4",
+      "category": "car_motorcycle_waiting_area",
+      "reviewed": false,
+      "events": []
+    },
+    "ctm04": {
+      "file": "input/汽車駛入機車停等區/ctm04.mp4",
+      "category": "car_motorcycle_waiting_area",
+      "reviewed": false,
+      "events": []
+    },
+    "ctm05": {
+      "file": "input/汽車駛入機車停等區/ctm05.mp4",
+      "category": "car_motorcycle_waiting_area",
+      "reviewed": false,
+      "events": []
+    },
+    "ctm06": {
+      "file": "input/汽車駛入機車停等區/ctm06.mp4",
+      "category": "car_motorcycle_waiting_area",
+      "reviewed": false,
+      "events": []
+    }
+  }
+}

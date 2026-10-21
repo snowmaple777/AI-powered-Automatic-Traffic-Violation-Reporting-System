@@ -75,7 +75,7 @@ run_pipeline.py 的獨立命令列選項。複製設定建議放在 configs 內�
 plates 需要 vehicles，ocr 需要 plates；停用 depth 後無法依估測距離篩選車牌。
 常用設定位置（位於 models 下的各階段 params）：
 
-- vehicles.interval：車輛推論間隔，預設 2；設為 1 可每幀推論。
+- vehicles.interval：車輛推論間隔，預設 1（每幀推論）。設為 2 以上時，中間幀沿用上一幀車框，規則不會把沿用的車框當成新觀測。
 - vehicles.tracker：可指定追蹤器檔案，預設使用 configs/bytetrack_perception.yaml。
 - depth.interval：深度推論間隔，預設 2。
 - plates.max_distance、ocr.max_distance：距離上限，預設 22 公尺，建議同步修改。

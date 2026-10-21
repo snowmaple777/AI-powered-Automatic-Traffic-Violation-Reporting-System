@@ -1,5 +1,6 @@
 from pathlib import Path
 import hashlib
+import math
 import sys
 
 import cv2
@@ -121,31 +122,7 @@ class RoadMarkingSegmenter:
         from mmseg.apis import inference_model
         result = inference_model(self.model, frame)
         mask = result.pred_sem_seg.data.squeeze().cpu().numpy().astype(np.uint8)
-        records = []
-        for class_id in np.unique(mask):
-            class_id = int(class_id)
-            if class_id == 0:
-                continue
-            binary = (mask == class_id).astype(np.uint8)
-            count, labels, stats, centroids = cv2.connectedComponentsWithStats(binary, 8)
-            components = []
-            for label in range(1, count):
-                area = int(stats[label, cv2.CC_STAT_AREA])
-                if area < self.min_pixels:
-                    continue
-                x, y, w, h = [int(v) for v in stats[label, :4]]
-                ys, xs = np.where(labels == label)
-                line_xyxy = self._fit_line(xs, ys, mask.shape[1], mask.shape[0])
-                components.append({"area": area, "bbox_xywh": [x, y, w, h],
-                                   "centroid": [round(float(centroids[label, 0]), 2),
-                                                round(float(centroids[label, 1]), 2)],
-                                   "line_xyxy": line_xyxy})
-            if components:
-                records.append({"class_id": class_id,
-                                "class_name": self.classes[class_id],
-                                "pixels": int(binary.sum()),
-                                "components": components})
-        return mask, records
+        return mask, mask_components(mask, self.classes, self.min_pixels)
 
     @staticmethod
     def _fit_line(xs, ys, width, height):
@@ -173,6 +150,73 @@ class RoadMarkingSegmenter:
         output = frame.copy()
         output[mask != 0] = blended[mask != 0]
         return output
+
+
+def mask_components(mask, classes, min_pixels):
+    """將語意遮罩轉為每類別的連通區塊紀錄（面積、外框、質心與主軸線）。
+
+    主軸由所有區塊的一階／二階矩一次算出（np.bincount），等同 cv2.fitLine(DIST_L2)，
+    避免對每個區塊在全畫面重做 labels == label 比對。
+    """
+    records = []
+    height, width = mask.shape
+    for class_id in np.unique(mask):
+        class_id = int(class_id)
+        if class_id == 0:
+            continue
+        selected = mask == class_id
+        rows, cols = np.flatnonzero(selected.any(axis=1)), np.flatnonzero(selected.any(axis=0))
+        top, left = int(rows[0]), int(cols[0])
+        # 只在該類別像素的外接範圍內標記；標號順序與全畫面標記相同。
+        binary = selected[top:rows[-1] + 1, left:cols[-1] + 1].astype(np.uint8)
+        count, labels, stats, centroids = cv2.connectedComponentsWithStats(binary, 8)
+        stats[:, cv2.CC_STAT_LEFT] += left
+        stats[:, cv2.CC_STAT_TOP] += top
+        centroids = centroids + [left, top]
+        ys, xs = np.nonzero(labels)
+        owner = labels[ys, xs]
+        xs, ys = xs.astype(np.float64) + left, ys.astype(np.float64) + top
+        n = np.bincount(owner, minlength=count).astype(np.float64)
+        safe = np.maximum(n, 1)
+        mean_x = np.bincount(owner, xs, count) / safe
+        mean_y = np.bincount(owner, ys, count) / safe
+        cov_xx = np.bincount(owner, xs * xs, count) / safe - mean_x ** 2
+        cov_yy = np.bincount(owner, ys * ys, count) / safe - mean_y ** 2
+        cov_xy = np.bincount(owner, xs * ys, count) / safe - mean_x * mean_y
+        angle = 0.5 * np.arctan2(2 * cov_xy, cov_xx - cov_yy)
+        components = []
+        for label in range(1, count):
+            area = int(stats[label, cv2.CC_STAT_AREA])
+            if area < min_pixels:
+                continue
+            x, y, w, h = [int(v) for v in stats[label, :4]]
+            line_xyxy = None
+            if n[label] >= 2:
+                line_xyxy = _principal_line(math.cos(angle[label]), math.sin(angle[label]),
+                                            mean_x[label], mean_y[label], width, height)
+            components.append({"area": area, "bbox_xywh": [x, y, w, h],
+                               "centroid": [round(float(centroids[label, 0]), 2),
+                                            round(float(centroids[label, 1]), 2)],
+                               "line_xyxy": line_xyxy})
+        # 固定輸出順序：外框由上到下、由左到右（cv2 標號順序會隨裁切範圍改變）。
+        components.sort(key=lambda c: (c["bbox_xywh"][1], c["bbox_xywh"][0], c["area"]))
+        if components:
+            records.append({"class_id": class_id, "class_name": classes[class_id],
+                            "pixels": int(binary.sum()), "components": components})
+    return records
+
+
+def _principal_line(vx, vy, x0, y0, width, height):
+    """主軸延伸到畫面邊界，回傳 [x1, y1, x2, y2]（與舊 _fit_line 的輸出格式相同）。"""
+    if abs(vx) >= abs(vy):
+        x1, x2 = 0.0, float(width - 1)
+        slope = vy / vx
+        y1, y2 = y0 + (x1 - x0) * slope, y0 + (x2 - x0) * slope
+    else:
+        y1, y2 = 0.0, float(height - 1)
+        slope = vx / vy
+        x1, x2 = x0 + (y1 - y0) * slope, x0 + (y2 - y0) * slope
+    return [round(float(x1), 2), round(float(y1), 2), round(float(x2), 2), round(float(y2), 2)]
 
 
 def draw_boxes(frame, records, color, prefix=""):

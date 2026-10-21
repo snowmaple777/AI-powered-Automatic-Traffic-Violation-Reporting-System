@@ -131,11 +131,27 @@ def extract_traffic_regions(mask, markings, cfg):
             marking["class_name"], marking["class_name"])
         if kind not in {"crosswalk", "motorcycle_waiting_area"}:
             continue
-        binary = (mask == marking["class_id"]).astype(np.uint8)
+        selected = mask == marking["class_id"]
+        rows, cols = np.flatnonzero(selected.any(axis=1)), np.flatnonzero(selected.any(axis=0))
+        if not len(rows):
+            continue
+        # 閉運算只在外擴 2×gap 的範圍內進行：膨脹最多外擴 gap，侵蝕再往外看 gap，
+        # 因此與全畫面運算結果相同，但面積小得多。
+        pad = 2 * gap + 1
+        top, left = max(0, int(rows[0]) - pad), max(0, int(cols[0]) - pad)
+        bottom, right = min(h, int(rows[-1]) + pad + 1), min(w, int(cols[-1]) + pad + 1)
+        binary = selected[top:bottom, left:right].astype(np.uint8)
         joined = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
         count, labels = cv2.connectedComponents(joined)
+        # 一次取出原始語意像素並依連通區塊分組（穩定排序保留逐列順序），
+        # 避免對每個區塊在全畫面重做 labels == label 比對。
+        all_ys, all_xs = np.nonzero(binary)
+        owner = labels[all_ys, all_xs]
+        order = np.argsort(owner, kind="stable")
+        bounds = np.searchsorted(owner[order], np.arange(count + 1))
         for label in range(1, count):
-            ys, xs = np.where((labels == label) & (binary != 0))
+            members = order[bounds[label]:bounds[label + 1]]
+            ys, xs = all_ys[members] + top, all_xs[members] + left
             if len(xs) < cfg["min_region_pixels"]:
                 continue
             hull = cv2.convexHull(np.column_stack((xs, ys)).astype(np.float32)).reshape(-1, 2)
@@ -147,6 +163,8 @@ def extract_traffic_regions(mask, markings, cfg):
             regions.append(dict(kind=kind, polygon=hull.tolist(), confidence=cfg["estimated_quality"],
                 method="semantic_fragment_hull", quality_kind="heuristic_not_probability",
                 semantic_pixels=len(xs)))
+    # 固定輸出順序（cv2 標號順序會隨裁切範圍改變）：類別內依多邊形最上、最左點排序。
+    regions.sort(key=lambda r: (r["kind"], min(p[1] for p in r["polygon"]), min(p[0] for p in r["polygon"])))
     return regions
 
 
@@ -517,7 +535,10 @@ class AreaOccupancyRule:
                     state["reported"] = True
                 except (ValueError, TypeError, KeyError, cv2.error) as exc:
                     self.diagnostics["blocked"].append(dict(object_id=identity, region_id=region_id, reason=str(exc)))
-        self.states = {key: state for key, state in self.states.items() if key in retained}
+        # 偵測器短暫漏掉車輛時保留累積中的狀態，直到 max_observation_gap_sec；
+        # 車輛仍在但已離開區域或條件不符者照舊清除。
+        self.states = {key: state for key, state in self.states.items() if key in retained or (
+            key[0] not in vehicle_ids and now - state["last_time"] <= cfg["max_observation_gap_sec"])}
         self.diagnostics["states"] = [dict(object_id=k[0], region_id=k[1], count=s["count"], reported=s["reported"])
                                       for k, s in self.states.items()]
         return events

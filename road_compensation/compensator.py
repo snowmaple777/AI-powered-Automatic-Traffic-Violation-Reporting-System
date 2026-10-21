@@ -138,7 +138,7 @@ class RoadMarkingCompensator:
             self.tracks[key]=track
             outputs.append(self._annotate(track,"observed",timestamp_sec,vehicles,w,h))
 
-        for key in unused:
+        for key in sorted(unused):  # 集合走訪順序隨字串雜湊種子而變，必須排序才可重現
             track=self.tracks[key]
             track.component=projected[key]
             age=timestamp_sec-track.last_observed_time

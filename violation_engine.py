@@ -69,7 +69,7 @@ class RedLightStopLineCrossingRule(ViolationRule):
                  min_track_frames=10, min_line_area=300,
                  min_line_aspect=2.0, max_line_angle=35.0,
                  min_line_stable_frames=5, crossing_direction="away",
-                 max_crossing_gap_seconds=0.32):
+                 max_crossing_gap_seconds=0.32, max_line_handoff_ratio=0.008):
         self.context = context
         self.signal_confidence = signal_confidence
         self.line_margin = max(line_margin_pixels,
@@ -79,6 +79,8 @@ class RedLightStopLineCrossingRule(ViolationRule):
         self.min_line_aspect = min_line_aspect
         self.max_line_angle = max_line_angle
         self.min_line_stable_frames = min_line_stable_frames
+        # 換線交接只允許幾乎重合的線段；交接後的事件不能成為「確認」。
+        self.max_line_handoff_ratio = max_line_handoff_ratio
         self.line_tracks = {}
         self.next_line_id = 1
         self.crossing_states = {}
@@ -161,7 +163,7 @@ class RedLightStopLineCrossingRule(ViolationRule):
                                 reverse=True):
             cx, cy = component["centroid"]
             best_id, best_distance = None, float("inf")
-            for line_id in unused:
+            for line_id in sorted(unused):
                 previous = self.line_tracks[line_id]
                 if frame_index - previous["last_frame"] > self.max_crossing_gap:
                     continue
@@ -216,7 +218,7 @@ class RedLightStopLineCrossingRule(ViolationRule):
                     continue
                 cx=(max(x,ox)+min(x+width,ox+ow))/2
                 delta=abs(self._line_y(current["line_xyxy"],cx)-self._line_y(old["line_xyxy"],cx))
-                if delta<=self.context.frame_height*.015:
+                if delta<=self.context.frame_height*self.max_line_handoff_ratio:
                     candidates.append((delta,old))
             if candidates:
                 old=min(candidates,key=lambda pair:pair[0])[1]
@@ -303,6 +305,15 @@ class RedLightStopLineCrossingRule(ViolationRule):
                     "last_frame":index, "red_before":False, "before_frame":None,
                     "red_before_frame":None})
                 state["last_frame"] = index
+                if vehicle.get("source_frame", index) != index:
+                    # 降頻推論時沿用的上一幀車框不是新觀測：只讓狀態不過期，
+                    # 不累積線前／線後次數，也不產生事件。
+                    self.diagnostics["vehicles"].append({"object_id":object_id,
+                        "marking_id":stop_line["marking_id"],"signed_distance_pixels":round(signed_distance,2),
+                        "phase":state["phase"],"before_count":state["before_count"],
+                        "after_count":state["after_count"],"red_before":state["red_before"],
+                        "blocked_by":["cached_detection"]})
+                    continue
                 if side == -1:
                     state["before_count"] += 1
                     state["after_count"] = 0
@@ -333,6 +344,8 @@ class RedLightStopLineCrossingRule(ViolationRule):
                 if (state.get("red_before_evidence", {}).get("signal_id")
                         != self.signal_tracker.evidence.get("signal_id")):
                     blocked_by.append("signal_identity_not_confirmed")
+                if state.get("line_reassociated_from"):
+                    blocked_by.append("stop_line_reassociated")
                 if object_id in self.reported:
                     blocked_by.append("already_reported")
                 self.diagnostics["vehicles"].append({"object_id":object_id,
@@ -342,6 +355,7 @@ class RedLightStopLineCrossingRule(ViolationRule):
                     "blocked_by":blocked_by})
                 confirmed = (state["after_count"] >= 2 and state["red_before"] and signal_state == "red"
                         and state.get("red_before_evidence", {}).get("signal_id") == self.signal_tracker.evidence.get("signal_id")
+                        and not state.get("line_reassociated_from")
                         and object_id not in self.reported)
                 suspected = (state["after_count"] >= 2 or
                              (state["after_count"] >= 1 and signal_state == "red"))
@@ -356,6 +370,7 @@ class RedLightStopLineCrossingRule(ViolationRule):
                     "red_at_crossing": signal_state == "red",
                     "same_signal": bool(state.get("red_before_evidence", {}).get("signal_id")) and
                         state.get("red_before_evidence", {}).get("signal_id") == self.signal_tracker.evidence.get("signal_id"),
+                    "same_stop_line": not state.get("line_reassociated_from"),
                 }
                 if confirmed:
                     behavior = "red_light_stop_line_crossing"
@@ -490,10 +505,20 @@ class DoubleLineCrossingRule(ViolationRule):
         valid_ids = {line["track_id"] for line in usable}
         vehicle_ids = {v.get("object_id") for v in vehicles}
         for key, state in list(self.states.items()):
-            if (key[1] not in valid_ids or key[0] not in vehicle_ids or
+            if (key[1] not in valid_ids or
                     frame["timestamp_sec"] - state["last_time"] > self.settings["max_observation_gap_sec"]):
                 del self.states[key]
                 continue
+            if key[0] not in vehicle_ids:
+                # 偵測器短暫漏掉車輛，與「參考點暫時不可用」同樣處理：已 armed／越線中的
+                # 候選保留到 max_observation_gap_sec，但標記缺口（事件最多為疑似）；
+                # 尚在建立起點的候選直接放棄。不更新 last_time，也不補造位置。
+                if state["phase"] in ("armed", "crossing"):
+                    state["position_gap"] = True
+                    state.update(after_path=[], destination_since=None, destination_count=0)
+                elif state["phase"] != "reported":
+                    del self.states[key]
+                    continue
             try:
                 # Bring old ground samples into the current road coordinate system.
                 # Evidence snapshots remain in their original image coordinates.

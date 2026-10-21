@@ -5,7 +5,7 @@
       "backend": "perception_vehicle",
       "params": {
         "weights": "../models/vehicle/yolo26s.onnx",
-        "interval": 2
+        "interval": 1
       }
     },
     "traffic_lights": {

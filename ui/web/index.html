@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f5f6fb">
+<title>馬路三寶檢舉輔助系統</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" onerror="this.remove()">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="booting">
+
+<!-- ======================= Icon sprite（線條圖示） ======================= -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+  <defs>
+    <linearGradient id="g-brand" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5b7cff"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient>
+  </defs>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></symbol>
+  <symbol id="i-video" viewBox="0 0 24 24"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="m22 8-6 4 6 4V8z"/></symbol>
+  <symbol id="i-pin" viewBox="0 0 24 24"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></symbol>
+  <symbol id="i-scan" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/><path d="M12 5v2M12 17v2M5 12h2M17 12h2"/></symbol>
+  <symbol id="i-review" viewBox="0 0 24 24"><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><polygon points="7 4 20 12 7 20 7 4" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol>
+  <symbol id="i-car" viewBox="0 0 24 24"><path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2"/><circle cx="7" cy="17" r="2"/><path d="M9 17h6"/><circle cx="17" cy="17" r="2"/></symbol>
+  <symbol id="i-moto" viewBox="0 0 24 24"><circle cx="5.5" cy="17" r="3.5"/><circle cx="18.5" cy="17" r="3.5"/><path d="M15 5h2l2 6"/><path d="M5.5 17 9 10h6l3.5 7"/><path d="M9 10 8 7H6"/></symbol>
+  <symbol id="i-light" viewBox="0 0 24 24"><rect x="7" y="2" width="10" height="20" rx="4"/><circle cx="12" cy="7" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="17" r="1.6"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></symbol>
+  <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M5 3v4"/><path d="M3 5h4"/><path d="M19 17v4"/><path d="M17 19h4"/></symbol>
+  <symbol id="i-eyeoff" viewBox="0 0 24 24"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.53 13.53 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></symbol>
+  <symbol id="i-right" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></symbol>
+  <symbol id="i-left" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></symbol>
+  <symbol id="i-locate" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></symbol>
+  <symbol id="i-route" viewBox="0 0 24 24"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></symbol>
+  <symbol id="i-map" viewBox="0 0 24 24"><polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"/><line x1="9" y1="3" x2="9" y2="18"/><line x1="15" y1="6" x2="15" y2="21"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></symbol>
+  <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2M9 2v2M15 20v2M9 20v2M20 15h2M20 9h2M2 15h2M2 9h2"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 2 10 5-10 5L2 7Z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></symbol>
+  <symbol id="i-type" viewBox="0 0 24 24"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></symbol>
+  <symbol id="i-ruler" viewBox="0 0 24 24"><path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0Z"/><path d="m14.5 12.5 2-2M11.5 9.5l2-2M8.5 6.5l2-2M17.5 15.5l2-2"/></symbol>
+  <symbol id="i-scissors" viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></symbol>
+  <symbol id="i-scale" viewBox="0 0 24 24"><path d="m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="M7 21h10"/><path d="M12 3v18"/><path d="M3 7h2c2 0 5-1 7-2 2 1 5 2 7 2h2"/></symbol>
+  <symbol id="i-package" viewBox="0 0 24 24"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></symbol>
+  <symbol id="i-parking" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M9 17V7h4a3 3 0 0 1 0 6H9"/></symbol>
+  <symbol id="i-turn" viewBox="0 0 24 24"><polyline points="15 14 20 9 15 4"/><path d="M4 20v-7a4 4 0 0 1 4-4h12"/></symbol>
+  <symbol id="i-ban" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></symbol>
+  <symbol id="i-mail" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/></symbol>
+  <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></symbol>
+  <symbol id="i-gauge" viewBox="0 0 24 24"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></symbol>
+  <symbol id="i-hash" viewBox="0 0 24 24"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="i-save" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+  <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></symbol>
+</svg>
+
+<div class="bg-blobs" aria-hidden="true"><i></i><i></i><i></i></div>
+
+<!-- ======================= 登入／註冊 ======================= -->
+<section id="auth-screen" class="auth">
+  <div class="auth-hero">
+    <div class="brand light">
+      <div class="logo"><svg class="ic"><use href="#i-light"/></svg></div>
+      <div><div class="brand-title">馬路三寶</div><div class="brand-sub">AI 交通違規檢舉輔助</div></div>
+    </div>
+    <div class="hero-copy">
+      <h1>讓每一次<br><span>危險駕駛</span>都被看見</h1>
+      <p>上傳行車記錄器影片，AI 自動辨識違規與車牌、剪好佐證片段、填好檢舉單。你只需要確認，然後送出。</p>
+      <ul class="hero-points">
+        <li><span><svg class="ic"><use href="#i-scan"/></svg></span>AI 偵測闖紅燈、跨越雙白線等違規</li>
+        <li><span><svg class="ic"><use href="#i-scissors"/></svg></span>自動剪輯違規前後的佐證影片</li>
+        <li><span><svg class="ic"><use href="#i-send"/></svg></span>一鍵帶入全台 20 縣市檢舉表單</li>
+      </ul>
+    </div>
+    <div class="hero-float">
+      <div class="float-card a">
+        <span class="ic-bubble red"><svg class="ic"><use href="#i-light"/></svg></span>
+        <div><b>闖紅燈</b><small>確定違規・信心 92%</small></div><span class="plate">ABC-1234</span>
+      </div>
+      <div class="float-card b">
+        <span class="ic-bubble green"><svg class="ic"><use href="#i-check"/></svg></span>
+        <div><b>檢舉已送出</b><small>高雄市政府警察局</small></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="auth-panel">
+    <div class="auth-card">
+      <div class="brand auth-mobile-brand">
+        <div class="logo"><svg class="ic"><use href="#i-light"/></svg></div>
+        <div><div class="brand-title">馬路三寶</div><div class="brand-sub">AI 交通違規檢舉輔助</div></div>
+      </div>
+      <h2 id="auth-title">歡迎回來</h2>
+      <p class="muted" id="auth-sub">登入以繼續你的檢舉</p>
+      <div class="seg full" id="auth-tabs">
+        <button data-mode="login" class="active">登入</button>
+        <button data-mode="register">註冊</button>
+      </div>
+      <button class="btn google full" id="btn-google" type="button"><span class="g-mark">G</span>使用 Google 帳號繼續</button>
+      <div class="divider"><span>或使用 Email</span></div>
+      <form id="auth-form" class="form" novalidate>
+        <label class="reg-only">姓名<div class="input-ic"><svg class="ic"><use href="#i-user"/></svg><input name="name" autocomplete="name" placeholder="王小明"></div></label>
+        <label>Email<div class="input-ic"><svg class="ic"><use href="#i-mail"/></svg><input name="email" type="email" autocomplete="email" placeholder="you@example.com"></div></label>
+        <label>密碼<div class="input-ic pw"><svg class="ic"><use href="#i-lock"/></svg><input name="password" type="password" autocomplete="current-password" placeholder="至少 6 個字元">
+          <button type="button" class="eye" tabindex="-1" title="顯示密碼"><svg class="ic"><use href="#i-eye"/></svg></button></div></label>
+        <div class="pw-meter reg-only" id="pw-meter"><i></i><i></i><i></i><i></i><span></span></div>
+        <label class="reg-only">確認密碼<div class="input-ic"><svg class="ic"><use href="#i-lock"/></svg><input name="password2" type="password" autocomplete="new-password" placeholder="再輸入一次密碼"></div></label>
+        <div class="auth-row login-only">
+          <label class="check-row"><input type="checkbox" id="remember" checked> 記住我</label>
+          <a class="link" id="forgot">忘記密碼？</a>
+        </div>
+        <label class="check-row reg-only"><input type="checkbox" name="agree"> 我同意使用條款與隱私權政策</label>
+        <div class="auth-error hidden" id="auth-error"><svg class="ic xs"><use href="#i-alert"/></svg><span></span></div>
+        <button class="btn primary big full" id="auth-submit" type="submit">登入</button>
+      </form>
+      <p class="auth-switch" id="auth-switch">還沒有帳號？<a class="link" data-switch="register">立即註冊</a></p>
+      <p class="auth-note"><svg class="ic xs"><use href="#i-info"/></svg> 本機模擬登入：帳號只存在這台電腦，Google 登入為展示用</p>
+    </div>
+  </div>
+</section>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="logo"><svg class="ic"><use href="#i-light"/></svg></div>
+    <div><div class="brand-title">馬路三寶</div><div class="brand-sub">AI 交通違規檢舉輔助</div></div>
+  </div>
+  <nav class="nav">
+    <a data-view="new" class="active"><svg class="ic"><use href="#i-plus"/></svg><span>新增檢舉</span></a>
+    <a data-view="cases"><svg class="ic"><use href="#i-folder"/></svg><span>案件紀錄</span></a>
+    <a data-view="profile"><svg class="ic"><use href="#i-user"/></svg><span>檢舉人</span></a>
+  </nav>
+  <div class="mode-pill" title="目前使用模擬分析器"><span class="dot"></span>模擬模式</div>
+  <div class="user-menu" id="user-menu">
+    <button class="avatar-btn" id="user-btn" title="帳號"><span class="avatar sm" id="user-avatar">?</span></button>
+    <div class="user-dropdown hidden" id="user-dropdown">
+      <div class="ud-head"><span class="avatar" id="ud-avatar">?</span><div><b id="ud-name"></b><small id="ud-email"></small></div></div>
+      <span class="provider-chip" id="ud-provider"></span>
+      <a class="ud-item" data-view-link="profile"><svg class="ic"><use href="#i-user"/></svg>檢舉人資料</a>
+      <a class="ud-item" data-view-link="cases"><svg class="ic"><use href="#i-folder"/></svg>案件紀錄</a>
+      <a class="ud-item danger" id="btn-logout"><svg class="ic"><use href="#i-logout"/></svg>登出</a>
+    </div>
+  </div>
+</header>
+
+<main>
+  <!-- ======================= 新增檢舉 ======================= -->
+  <section id="view-new" class="view active">
+    <div class="draft-bar hidden" id="draft-bar">
+      <span class="ic-bubble green sm"><svg class="ic"><use href="#i-save"/></svg></span>
+      <div class="draft-info"><b id="draft-name">新的檢舉</b><span id="save-state" class="muted small">進度會自動儲存</span></div>
+      <button class="btn ghost small" id="btn-new-draft"><svg class="ic"><use href="#i-plus"/></svg>開始新的檢舉</button>
+    </div>
+    <div class="resume-banner hidden" id="resume-banner"></div>
+    <ol class="stepper" id="stepper">
+      <li data-step="1"><i><svg class="ic"><use href="#i-upload"/></svg></i><span>上傳影片</span></li>
+      <li data-step="2"><i><svg class="ic"><use href="#i-scan"/></svg></i><span>AI 分析</span></li>
+      <li data-step="3"><i><svg class="ic"><use href="#i-review"/></svg></i><span>違規審查</span></li>
+      <li data-step="4"><i><svg class="ic"><use href="#i-file"/></svg></i><span>檢舉單</span></li>
+      <li data-step="5"><i><svg class="ic"><use href="#i-send"/></svg></i><span>送出</span></li>
+    </ol>
+
+    <!-- Step 1 -->
+    <div class="step" id="step-1">
+      <div class="hero">
+        <h1>上傳行車影片，<span class="grad">AI 幫你揪出三寶</span></h1>
+        <p>自動辨識車牌與違規行為、剪好佐證片段、填好檢舉單，你只要確認後送出。</p>
+      </div>
+      <div class="grid2">
+        <div class="card" style="--i:0">
+          <div class="card-head"><span class="ic-bubble blue"><svg class="ic"><use href="#i-video"/></svg></span><div><h2>行車影片</h2><p>行車記錄器原始檔即可</p></div></div>
+          <label class="dropzone" id="dropzone">
+            <input type="file" id="video-input" accept="video/*" hidden>
+            <div class="dz-art"><svg class="ic"><use href="#i-upload"/></svg></div>
+            <div class="dz-text">拖曳影片到這裡，或 <u>選擇檔案</u></div>
+            <div class="dz-hint">MP4・MOV・AVI</div>
+          </label>
+          <div id="upload-progress" class="progress hidden"><div></div><span></span></div>
+          <div class="video-wrap hidden" id="video-wrap">
+            <video id="video-preview" controls muted playsinline></video>
+            <div class="file-chip" id="video-info"></div>
+          </div>
+        </div>
+
+        <div class="card" style="--i:1">
+          <div class="card-head"><span class="ic-bubble green"><svg class="ic"><use href="#i-pin"/></svg></span><div><h2>GPS 位置</h2><p>用來判斷違規地點與受理縣市</p></div></div>
+          <div class="seg full" id="gps-tabs">
+            <button data-tab="preset" class="active"><svg class="ic"><use href="#i-map"/></svg>常用地點</button>
+            <button data-tab="manual"><svg class="ic"><use href="#i-locate"/></svg>輸入座標</button>
+            <button data-tab="file"><svg class="ic"><use href="#i-route"/></svg>GPS 檔</button>
+          </div>
+          <div class="tab-body" data-tab="preset"><select id="preset-select"></select></div>
+          <div class="tab-body hidden" data-tab="manual">
+            <div class="row">
+              <label>緯度<input id="lat-input" type="number" step="0.000001" placeholder="22.7335"></label>
+              <label>經度<input id="lon-input" type="number" step="0.000001" placeholder="120.2850"></label>
+            </div>
+            <button class="btn soft small" id="btn-locate"><svg class="ic"><use href="#i-locate"/></svg>使用目前裝置位置</button>
+          </div>
+          <div class="tab-body hidden" data-tab="file">
+            <label class="file-pick"><input type="file" id="gps-input" accept=".csv,.gpx,.nmea,.txt,.log" hidden>
+              <svg class="ic"><use href="#i-route"/></svg><span id="gps-file-name">選擇 GPS 軌跡檔</span></label>
+            <div class="muted small">CSV（t,lat,lon）、GPX、NMEA（$GPRMC）</div>
+          </div>
+          <div id="map" class="map"></div>
+          <div id="gps-info" class="geo-line"></div>
+          <div class="row">
+            <label>影片開始錄影時間<input id="recorded-at" type="datetime-local" step="1"></label>
+            <label>模擬分析速度
+              <select id="speed"><option value="1">1x（展示用）</option><option value="2" selected>2x</option><option value="5">5x（快速測試）</option></select>
+            </label>
+          </div>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn primary big" id="btn-analyze" disabled><svg class="ic"><use href="#i-sparkles"/></svg>開始 AI 分析</button>
+      </div>
+    </div>
+
+    <!-- Step 2 -->
+    <div class="step hidden" id="step-2">
+      <div class="analysis">
+        <div class="card live-card">
+          <div class="card-head compact">
+            <span class="ic-bubble violet"><svg class="ic"><use href="#i-scan"/></svg></span>
+            <div><h2>即時分析畫面</h2><p id="job-meta">準備中…</p></div>
+            <span class="live-badge" id="live-tag"><span class="dot"></span>LIVE</span>
+          </div>
+          <div class="live-frame" id="live-frame">
+            <img id="live-img" alt="">
+            <div class="live-empty" id="live-empty"><div class="spinner"></div>載入影格中…</div>
+            <div class="hud"><i></i><i></i><i></i><i></i></div>
+            <div class="scanline"></div>
+            <div class="alert-stack" id="alert-stack"></div>
+          </div>
+          <div class="models" id="models"></div>
+        </div>
+
+        <div class="side-col">
+          <div class="card ring-card">
+            <div class="ring-wrap">
+              <svg class="ring" viewBox="0 0 120 120">
+                <circle cx="60" cy="60" r="52" class="ring-bg"/>
+                <circle cx="60" cy="60" r="52" class="ring-fg" id="ring-fg"/>
+              </svg>
+              <div class="ring-text"><b id="ring-pct">0</b><span>%</span></div>
+            </div>
+            <div class="ring-info">
+              <div class="ring-stage" id="ring-stage">準備開始</div>
+              <div class="muted small" id="ring-eta"><svg class="ic xs"><use href="#i-clock"/></svg> 預估剩餘 --</div>
+            </div>
+          </div>
+          <div class="card">
+            <h3 class="mini-title">處理流程</h3>
+            <ul class="stages" id="stages"></ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="stats" id="stats">
+        <div class="stat"><span class="ic-bubble blue"><svg class="ic"><use href="#i-video"/></svg></span><div><b data-k="frames_done">0</b><small>已處理影格 <em id="frames-total"></em></small></div></div>
+        <div class="stat"><span class="ic-bubble violet"><svg class="ic"><use href="#i-car"/></svg></span><div><b data-k="objects">0</b><small>追蹤目標</small></div></div>
+        <div class="stat"><span class="ic-bubble green"><svg class="ic"><use href="#i-type"/></svg></span><div><b data-k="plates">0</b><small>辨識車牌</small></div></div>
+        <div class="stat"><span class="ic-bubble red"><svg class="ic"><use href="#i-alert"/></svg></span><div><b data-k="violations">0</b><small>發現違規</small></div></div>
+      </div>
+
+      <div class="grid2">
+        <div class="card">
+          <h3 class="mini-title">即時違規</h3>
+          <div class="feed" id="feed"><div class="feed-empty">還沒發現違規，持續分析中…</div></div>
+        </div>
+        <div class="card">
+          <details class="log" open>
+            <summary><svg class="ic xs"><use href="#i-terminal"/></svg>系統紀錄</summary>
+            <div class="console" id="console"></div>
+          </details>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn ghost big hidden" id="btn-rerun"><svg class="ic"><use href="#i-refresh"/></svg>重新分析</button>
+        <button class="btn primary big hidden" id="btn-to-review">查看違規結果<svg class="ic"><use href="#i-right"/></svg></button>
+      </div>
+    </div>
+
+    <!-- Step 3 -->
+    <div class="step hidden" id="step-3">
+      <div class="review-top">
+        <div>
+          <h1 class="page-title">違規審查</h1>
+          <p class="muted">確認每一筆違規，選擇要檢舉的建立檢舉單。</p>
+        </div>
+        <div class="seg" id="filter">
+          <button data-f="all" class="active">全部</button>
+          <button data-f="confirmed">確定違規</button>
+          <button data-f="suspected">疑似違規</button>
+        </div>
+      </div>
+      <div class="stats three" id="summary"></div>
+      <div class="card">
+        <div class="timeline-wrap">
+          <video id="full-video" controls muted playsinline></video>
+          <div class="timeline" id="timeline"></div>
+          <div class="muted small"><svg class="ic xs"><use href="#i-info"/></svg> 點時間軸上的色塊可以跳到違規時間點</div>
+        </div>
+      </div>
+      <div class="violations" id="violations"></div>
+      <div class="actions left">
+        <button class="btn ghost" data-goto="1"><svg class="ic"><use href="#i-left"/></svg>重新上傳</button>
+      </div>
+    </div>
+
+    <!-- Step 4 -->
+    <div class="step hidden" id="step-4">
+      <div class="review-top"><div><h1 class="page-title">確認檢舉單</h1><p class="muted">AI 已經幫你填好，檢查一下有沒有需要修改的地方。</p></div></div>
+      <div class="grid2 wide-left">
+        <div class="card">
+          <form id="case-form" class="form">
+            <div class="form-section"><svg class="ic"><use href="#i-pin"/></svg>違規地點</div>
+            <div class="row">
+              <label>受理縣市<select name="city" id="city-select"></select><em class="hint ok" id="city-hint"></em></label>
+              <label>違規行政區<input name="district" required></label>
+            </div>
+            <label>交通違規地點<input name="location" required placeholder="例：高雄市楠梓區大學南路 700 號前">
+              <em class="hint warn"><svg class="ic xs"><use href="#i-info"/></svg>GPS 只能推到行政區，請補上路名／門牌</em></label>
+            <div class="form-section"><svg class="ic"><use href="#i-calendar"/></svg>時間與車輛</div>
+            <div class="row">
+              <label>違規日期<input name="date" type="date" required></label>
+              <label>違規時間<input name="time" type="time" required></label>
+            </div>
+            <div class="row">
+              <label>車牌號碼<input name="plate" required class="plate-input"></label>
+              <label>違規車種類型<select name="vehicle_type"><option>汽車</option><option>機車</option><option>大型重型機車</option></select></label>
+            </div>
+            <div class="form-section"><svg class="ic"><use href="#i-scale"/></svg>違規內容</div>
+            <div class="row">
+              <label>違規類別<input name="category" required></label>
+              <label>違規事實<input name="fact" required></label>
+            </div>
+            <label>違規事實敘述<textarea name="description" rows="3"></textarea></label>
+          </form>
+        </div>
+        <div class="side-col">
+          <div class="card">
+            <h3 class="mini-title">佐證影片</h3>
+            <div id="evidence-box"></div>
+            <div id="evidence-meta" class="muted small" style="margin-top:8px"></div>
+          </div>
+          <div class="card">
+            <h3 class="mini-title">檢舉人 <a class="link small" data-view-link="profile"><svg class="ic xs"><use href="#i-edit"/></svg>修改</a></h3>
+            <div id="reporter-box"></div>
+          </div>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn ghost" data-goto="3"><svg class="ic"><use href="#i-left"/></svg>回違規列表</button>
+        <button class="btn primary big" id="btn-make-case">產生檢舉案件<svg class="ic"><use href="#i-right"/></svg></button>
+      </div>
+    </div>
+
+    <!-- Step 5 -->
+    <div class="step hidden" id="step-5"><div id="submit-panel"></div></div>
+  </section>
+
+  <!-- ======================= 案件紀錄 ======================= -->
+  <section id="view-cases" class="view">
+    <div class="review-top"><div><h1 class="page-title">案件紀錄</h1><p class="muted">未完成的檢舉會自動保存在這裡，隨時可以接著做</p></div></div>
+    <h3 class="section-title">進行中的檢舉</h3>
+    <div id="draft-list"></div>
+    <h3 class="section-title">檢舉案件</h3>
+    <div id="case-list"></div>
+  </section>
+
+  <!-- ======================= 檢舉人資料 ======================= -->
+  <section id="view-profile" class="view">
+    <div class="review-top"><div><h1 class="page-title">檢舉人資料</h1><p class="muted">各縣市檢舉網站都要求實名。資料只存在你這台電腦的 <code>ui/data/</code>，不會上傳。</p></div></div>
+    <div class="card narrow">
+      <form id="profile-form" class="form">
+        <label>姓名<div class="input-ic"><svg class="ic"><use href="#i-user"/></svg><input name="reporter_name"></div></label>
+        <label>身分證字號<div class="input-ic"><svg class="ic"><use href="#i-hash"/></svg><input name="reporter_id"></div></label>
+        <label>聯絡電話<div class="input-ic"><svg class="ic"><use href="#i-phone"/></svg><input name="reporter_phone"></div></label>
+        <label>電子郵件<div class="input-ic"><svg class="ic"><use href="#i-mail"/></svg><input name="reporter_email" type="email"></div></label>
+        <label>聯絡地址<div class="input-ic"><svg class="ic"><use href="#i-pin"/></svg><input name="reporter_address"></div></label>
+        <div class="actions left"><button class="btn primary" type="submit"><svg class="ic"><use href="#i-check"/></svg>儲存</button><span id="profile-saved" class="muted small"></span></div>
+      </form>
+    </div>
+  </section>
+
+</main>
+
+<div id="toast"></div>
+<div id="modal" class="modal hidden"><div class="modal-card"><button class="modal-x" id="modal-x"><svg class="ic"><use href="#i-x"/></svg></button><div id="modal-body"></div></div></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" onerror="window.L=undefined"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

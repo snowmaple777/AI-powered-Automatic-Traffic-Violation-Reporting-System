@@ -7,10 +7,10 @@ for row in manifest['files']:
     p=root/row['path']
     if hashlib.sha256(p.read_bytes()).hexdigest()!=row['sha256']:
         raise ValueError('Missing/changed release file: '+row['path'])
-for p in root.rglob('*'):
-    rel=p.relative_to(root)
-    if any(x in rel.parts for x in ['.git','.venv','__pycache__']):continue
-    if p.is_file() and p.suffix.lower() in {'.pth','.pt','.ckpt','.mp4','.avi','.zip'}:
-        raise ValueError('Private/generated artifact found; exclude before upload: '+str(rel))
+# Source manifest excludes generated outputs and runtime assets. Runtime assets
+# are checked into the branch and verified separately by setup.
+for row in manifest['files']:
+    if Path(row['path']).suffix.lower() in {'.pth','.pt','.ckpt','.mp4','.avi','.zip'}:
+        raise ValueError('Binary asset must be a Release asset, not tracked source: '+row['path'])
 assert (root/'mmseg/utils/bpe_simple_vocab_16e6.txt.gz').is_file()
-print('PASS: release hashes, vocabulary and source-only artifact check')
+print('PASS: source hashes, vocabulary and tracked-source artifact check')

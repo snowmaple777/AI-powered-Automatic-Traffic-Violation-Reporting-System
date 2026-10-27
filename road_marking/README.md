@@ -1,118 +1,84 @@
-# Road marking inference — best56000
+# 道路標線影片推論｜best56000
 
-台灣道路標線（25 類）的影片推論工具，使用 SegFormer B2。輸入影片，輸出標線疊色影片、每幀像素數與標線出現的時間區間。
+這個分支直接包含目前版本需要的程式、原始模型權重、固定 374 張驗證影像與標註。**除了環境，不需要再向其他人索取檔案。不是 Release 或整包壓縮檔交付。**
 
-## 需求
-
-- Windows、NVIDIA GPU（不會自動改用 CPU）
-- Python 3.10、PyTorch 2.1.2+cu121、MMCV 2.1.0、MMEngine 0.10.7（已測環境，其他系統未驗證）
-- FFmpeg（需支援 libx264，bin 目錄要在 PATH）。只輸出 CSV、不產生疊色影片時不需要
-
-## 目前這台電腦直接跑影片
-
-**這段可整段貼到新開的 PowerShell，無論目前在哪個目錄。** 它會切回已備妥權重、
-驗證資料與驗證報告的原專案，使用既有環境，不需要在待上傳資料夾重新安裝。
-請勿只複製最後一條命令；`$py` 等變數只在目前的 PowerShell 工作階段有效。
+## 1. 取得這個分支
 
 ```powershell
-& {
-    Set-Location -LiteralPath 'D:\hw_code\畢專\闖紅燈\mmsegmentation' -ErrorAction Stop
-    $py = 'D:\road_marking\.venv\Scripts\python.exe'
-    $env:PYTHONIOENCODING = 'utf-8'
-    $env:MPLBACKEND = 'Agg'
-    $video = 'D:\hw_code\畢專\闖紅燈\多台車時單台車闖紅燈\ms04.mp4'
-    $out = 'work_dirs\video_' + (Get-Date -Format 'yyyyMMdd_HHmmss_fff')
-    if (-not (Test-Path -LiteralPath $py -PathType Leaf)) { throw '找不到 Python' }
-    if (-not (Test-Path -LiteralPath $video -PathType Leaf)) { throw '找不到輸入影片' }
-    & $py -u tools/road_marking_infer.py --settings configs/road_marking_infer.yaml `
-      --input $video --out $out --overlay
-    if ($LASTEXITCODE -ne 0) { throw '推論失敗，請查看上方完整錯誤' }
-    if (-not (Test-Path -LiteralPath (Join-Path $out 'overlay.mp4'))) { throw '缺少輸出影片' }
-    Invoke-Item -LiteralPath $out
-}
+git clone --single-branch --branch feature/road-marking https://github.com/snowmaple777/AI-powered-Automatic-Traffic-Violation-Reporting-System.git
+Set-Location -LiteralPath '.\AI-powered-Automatic-Traffic-Violation-Reporting-System\road_marking'
 ```
 
-以下步驟適用於**新電腦或獨立部署待上傳目錄**。這份原始碼包不含 `.venv`、權重、
-資料集與驗證報告，不能解壓後只執行推論那一行。
+也可使用 GitHub 的 Download ZIP 後開啟其中的 `road_marking` 資料夾。
+原始權重約 106 MB，超過 GitHub 一般單檔限制，故以 **Git LFS 存在同一分支的原檔名／路徑下**。
+若 Git clone 或 Download ZIP 只取得 LFS 指標，安裝程式會自動從這個分支取回原權重並核對 SHA256，不需另外找下載頁或安裝 Git LFS。
 
-## 新電腦安裝
+## 2. 安裝環境（不執行驗證）
+
+需求：Windows 64 位元、NVIDIA CUDA GPU／相容驅動、Python 3.10（含 Python Launcher）與安裝時網路。其他系統尚未驗證。
+
+在 `road_marking` 資料夾的 PowerShell 執行：
 
 ```powershell
-py -3.10 -m venv .venv
-$py = '.\.venv\Scripts\python.exe'
-& $py -m pip install torch==2.1.2 torchvision==0.16.2 --index-url https://download.pytorch.org/whl/cu121
-& $py -m pip install --only-binary=:all: mmcv==2.1.0 -f https://download.openmmlab.com/mmcv/dist/cu121/torch2.1/index.html
-& $py -m pip install -r requirements-inference.txt
-& $py -m pip install --no-deps -e .
-if ($LASTEXITCODE -ne 0) { throw '安裝失敗，請檢查完整錯誤' }
+.\install.cmd
 ```
 
-若找不到對應的 MMCV wheel，請停止並回報，不要讓 pip 自行編譯。
+自動建立本目錄 `.venv`、安裝固定 PyTorch／MMCV／MMEngine、準備套件內附 FFmpeg、檢查分支中的模型與資料 SHA256，並實際匯入 custom imports／visualization／tokenizer。
+FFmpeg 不需另外安裝或設定 PATH。安裝腳本**不會推論、跑 val 或訓練**。
+看到 `ENVIRONMENT READY` 即表示環境與必要檔案備妥。
 
-## 需要準備的檔案
-
-1. **模型權重**：放在 `work_dirs/segformer_b2_rlmd_expanded_weather_relearn_768/best_mIoU_iter_56000.pth`
-   SHA256：`75ccd13c8efe31a0c1a76f22ddcd3867ebdd606287af3c39ae43b6c589d96b36`
-   不能換成其他或精簡過的權重。
-2. **驗證集（374 張）**：`data/rlmd_kaggle_upload/` 下的 `images/val/`、`annotations/val/`、`splits/val.txt`
-   `val.txt` SHA256：`618aeb35daaf724a919e3ff9e446cc1482d94fb9ffa21675d7e28e14a82ca2de`
-   必須是原始的同一批影像與標註。
-3. **你的影片**：在下面指令中改成實際路徑即可。
-
-## 使用方式
-
-先切換到本目錄。第一次使用、或換電腦與環境後，要先跑驗證（兩組完整 val，耗時較久），通過才能推論。
+## 3. 自行執行驗證
 
 ```powershell
-$py = '.\.venv\Scripts\python.exe'
-$env:PYTHONIOENCODING = 'utf-8'
-$env:MPLBACKEND = 'Agg'
-& $py -u tools/verify_infer_pipeline.py --settings configs/road_marking_infer.yaml
-if ($LASTEXITCODE -ne 0) { throw '驗證未通過，停止推論' }
+.\verify.cmd
 ```
 
-完成安裝、備妥上述私有檔案並通過驗證後，推論請**整段貼上**。
-先切換到這份獨立 repository 根目錄，把 `$video` 改成實際影片；本段自行設定 Python，
-不依賴前一個程式區塊留下的變數。FFmpeg 必須已加入 PATH。
+此步驟由使用者主動執行，在本機完整評估兩組各 374 張 val；512/341 須重現 58.66、1024/683 須重現 59.94（±0.1）。
+原本的 SHA256、strict=True、run identity 與 fingerprint 閘門保留；不提供跳過或拿別台電腦的報告通關。
+
+## 4. 跑影片
 
 ```powershell
-& {
-    $py = Join-Path (Get-Location).Path '.venv\Scripts\python.exe'
-    $env:PYTHONIOENCODING = 'utf-8'
-    $env:MPLBACKEND = 'Agg'
-    $video = 'D:\videos\your_video.mp4'
-    $out = 'work_dirs\video_' + (Get-Date -Format 'yyyyMMdd_HHmmss_fff')
-    foreach ($required in @($py, $video, 'configs/road_marking_infer.yaml',
-        'work_dirs/segformer_b2_rlmd_expanded_weather_relearn_768/best_mIoU_iter_56000.pth',
-        'work_dirs/road_marking_verify/verification.json')) {
-        if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
-            throw "缺少 $required；請先完成安裝、私有檔案準備與驗證"
-        }
-    }
-    & $py -u tools/road_marking_infer.py --settings configs/road_marking_infer.yaml `
-      --input $video --out $out --overlay
-    if ($LASTEXITCODE -ne 0) { throw '推論失敗，請查看上方完整錯誤' }
-    if (-not (Test-Path -LiteralPath (Join-Path $out 'overlay.mp4'))) { throw '缺少輸出影片' }
-    Invoke-Item -LiteralPath $out
-}
+.\run_video.cmd 'D:\videos\your_video.mp4'
 ```
 
-- 輸出目錄必須是新目錄。
-- 輸入若是影格資料夾，要加 `--fps` 指定真實 FPS。
-- 去掉 `--overlay` 只會輸出 CSV 與事件檔，速度較快。
+將路徑換成自己的影片。也可將單支影片拖到 `run_video.cmd`。
+結果位於新的 `work_dirs/video_時間戳記/`，終端機會印出完整位置；不覆寫舊結果。
 
-## 輸出
+指定輸出位置、只產生 CSV：
 
-| 檔案 | 內容 |
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Run-Video.ps1 `
+  -Video 'D:\videos\your_video.mp4' -Output 'D:\results\new_result' -NoOverlay
+```
+
+可加 `-MaxFrames 20` 僅處理前 20 幀，正式完整處理不要加。
+
+## 分支內必要檔案
+
+| 路徑 | 用途 |
 |---|---|
-| `overlay.mp4` | 疊色影片（圖例只列該幀出現的類別） |
-| `pixel_counts.csv` | 每幀每類的像素數 |
-| `presence_timeline.csv` | 每類是否出現（原始與投票後） |
-| `events.csv` | 每類連續出現的起訖時間 |
+| `tools/road_marking_*.py`、`tools/verify_infer_pipeline.py` | 推論核心、疊色與驗證 |
+| `configs/` | 原 config 完整繼承鏈、推論設定與獨立疊色 palette |
+| `mmseg/` | 此模型需要的客製 MMSeg，含 tokenizer 詞彙檔 |
+| `work_dirs/segformer_b2_rlmd_expanded_weather_relearn_768/best_mIoU_iter_56000.pth` | 原始完整權重，Git LFS |
+| `data/rlmd_kaggle_upload/images/val/` | 全部 374 張驗證影像 |
+| `data/rlmd_kaggle_upload/annotations/val/` | 配對的 374 張 mask |
+| `data/rlmd_kaggle_upload/splits/val.txt` | 固定驗證清單 |
+| `release/runtime_manifest.json` | 上述必要資產的逐檔 SHA256（此資料夾只放清單，無需下載 Release） |
 
-## 推論設定（固定）
+模型 SHA256：`75ccd13c8efe31a0c1a76f22ddcd3867ebdd606287af3c39ae43b6c589d96b36`。
+不含 `.venv`、訓練資料、舊模型、其他實驗、個人輸入影片或預先產生的驗證報告。
 
-- 滑動視窗 1024/683，FP32
-- 時間平滑：EMA alpha=0.7（延遲約 1～3 幀，為估計值）
-- 出現判定：類別像素超過畫面 0.05%，15 幀窗口過半才算出現（前 14 幀留空，投票另有延遲）
-- 疊色顏色由獨立的 YAML 設定，與模型無關；24 色色卡見[使用手冊](road_marking_inference/README.md)
+## 固定設定與輸出
+
+純 slide 1024/683、FP32、EMA α=0.7（GPU fp16 機率）、15 幀事件投票、面積門檻 0.05%；前 14 幀投票留空。
+高對比疊色讀獨立 YAML，不改模型 metainfo。
+
+輸出：`overlay.mp4`（H.264，無音訊）、`pixel_counts.csv`、`presence_timeline.csv`、`events.csv`、完成狀態與執行指紋。
+
+既有完整 val mIoU：512/341 **58.65745**，1024/683 **59.93841**。影片沒有 GT，平滑只量過閃爍，不能宣稱準確率提升。
+詳細限制、色卡及影格資料夾操作見 [使用手冊](road_marking_inference/README.md)。
+
+固定環境：Python 3.10、torch 2.1.2+cu121、torchvision 0.16.2+cu121、mmcv 2.1.0、mmengine 0.10.7。
+環境依賴由安裝程式連網取得。LICENSE 與 THIRD_PARTY_NOTICES.md 保留上游及資產說明。

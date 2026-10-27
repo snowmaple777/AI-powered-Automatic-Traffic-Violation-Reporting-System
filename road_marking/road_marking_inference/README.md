@@ -13,51 +13,31 @@
 
 ## 使用方式
 
-**第一次使用、或環境與推論設定改變後，要先驗證。** 驗證會在完整 374 張 val 上重現 512/341 為 58.66、1024/683 為 59.94（各 ±0.1），沒通過就無法推論，也沒有跳過的選項。
+先依 [主 README](../README.md) 執行 `install.cmd` 安裝環境。模型與固定 374 張驗證資料直接包含於分支；安裝不執行驗證。接著自行執行 `verify.cmd`，通過後再跑影片。
+
+影片使用入口：
 
 ```powershell
-Set-Location -LiteralPath '專案目錄'
-$py = '.\.venv\Scripts\python.exe'
-$env:PYTHONIOENCODING = 'utf-8'
-$env:MPLBACKEND = 'Agg'
-
-& $py -u tools/verify_infer_pipeline.py --settings configs/road_marking_infer.yaml
-if ($LASTEXITCODE -ne 0) { throw '驗證未通過，不可推論' }
+.\run_video.cmd 'D:\videos\your_video.mp4'
 ```
 
-推論影片：
+進階影格資料夾（在 `road_marking` 根目錄執行；`--fps` 請填真實 FPS）：
 
 ```powershell
-$py = '.\.venv\Scripts\python.exe'
-$env:PYTHONIOENCODING = 'utf-8'
-$env:MPLBACKEND = 'Agg'
-$video = 'D:\videos\your_video.mp4'
-$out = 'work_dirs\video_' + (Get-Date -Format 'yyyyMMdd_HHmmss')
-& $py -u tools/road_marking_infer.py --settings configs/road_marking_infer.yaml `
-  --input $video --out $out --overlay
+& {
+    $py = Join-Path (Get-Location).Path '.venv/Scripts/python.exe'
+    $env:PYTHONIOENCODING = 'utf-8'
+    $env:MPLBACKEND = 'Agg'
+    $out = 'work_dirs/frames_' + (Get-Date -Format 'yyyyMMdd_HHmmss_fff')
+    & $py -u tools/road_marking_infer.py --settings work_dirs/portable_settings.yaml `
+      --input 'D:\your_frames_folder' --fps 30 --out $out --overlay
+    if ($LASTEXITCODE -ne 0) { throw '推論失敗，請查看完整錯誤' }
+}
 ```
 
-推論影格資料夾（`--fps` 必須填真實 FPS，30 只適用來源確為 30 fps 的情況）：
+30 只適用來源真實為 30 fps 的影格。影片使用其 FPS metadata；可變幀率影片的時間不是逐幀 PTS。解析度中途改變會停止。輸出必須是新目錄；影格自然排序且只讀第一層圖片。
 
-```powershell
-$py = '.\.venv\Scripts\python.exe'
-$env:PYTHONIOENCODING = 'utf-8'
-$env:MPLBACKEND = 'Agg'
-$frames = 'D:\your_frames_folder'
-$out = 'work_dirs\frames_' + (Get-Date -Format 'yyyyMMdd_HHmmss')
-& $py -u tools/road_marking_infer.py --settings configs/road_marking_infer.yaml `
-  --input $frames --fps 30 --out $out --overlay
-```
-
-**注意事項：**
-
-- 輸出目錄必須是新目錄，不會覆寫既有結果。
-- 省略 `--overlay` 只輸出 CSV 與事件檔，不需要 FFmpeg。疊色影片需要支援 libx264 的 FFmpeg，路徑寫在 YAML。
-- `--check-only`：檢查驗證報告、模型載入與第一幀解碼，不做推論。
-- `--max-frames 20`：只處理前 20 幀，用來快速確認流程，summary 會標示不是完整輸出。
-- 影格資料夾只讀第一層圖片，依檔名自然排序（`frame_2` 在 `frame_10` 前）。
-- 影片用其 FPS 資料計算時間；可變幀率影片的時間不是逐幀的實際時間戳。
-- 同一段輸入的解析度若中途改變，會直接停止。
+安裝產生的 `work_dirs/portable_settings.yaml` 只將 FFmpeg 換成套件內的執行檔，其餘推論設定與原始 YAML 相同。所有入口仍檢查原 SHA、strict 載入、完整 val 驗證與指紋；沒有 skip/force。
 
 ## 設定檔
 

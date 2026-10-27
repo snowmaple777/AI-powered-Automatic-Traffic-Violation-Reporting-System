@@ -1,23 +1,5 @@
 {
-  "scope": "source-only best56000 inference; no remote/push/training",
-  "copied_source_files": 238,
-  "config_chain": [
-    "configs/_base_/datasets/ade20k.py",
-    "configs/_base_/default_runtime.py",
-    "configs/_base_/models/segformer_mit-b0.py",
-    "configs/_base_/schedules/schedule_160k.py",
-    "configs/overlay_palette.yaml",
-    "configs/rlmd/segformer_b2_rlmd_expanded_weather.py",
-    "configs/rlmd/segformer_b2_rlmd_expanded_weather_long.py",
-    "configs/rlmd/segformer_b2_rlmd_expanded_weather_relearn.py",
-    "configs/rlmd/segformer_b2_rlmd_expanded_weather_relearn_768.py",
-    "configs/rlmd/segformer_b2_rlmd_final_ft.py",
-    "configs/rlmd/segformer_b2_rlmd_rcs_accum4.py",
-    "configs/road_marking_infer.yaml",
-    "configs/segformer/segformer_mit-b0_8xb2-160k_ade20k-512x512.py",
-    "configs/segformer/segformer_mit-b2_8xb2-160k_ade20k-512x512.py"
-  ],
-  "source_unchanged": true,
+  "scope": "current branch source; runtime model/data checked in separately and SHA-verified; no environment",
   "files": [
     {
       "path": ".gitattributes",
@@ -26,13 +8,18 @@
     },
     {
       "path": ".gitignore",
-      "size": 345,
-      "sha256": "48a9c339b594d4ed898e8f858b32a6f119295b84535c68a2ddf6960bf40c86bc"
+      "size": 1078,
+      "sha256": "595cf0dc29b3761cfc48d42cb3ac23009dc00d0c0dea9c1fa80bacbf9412e900"
     },
     {
       "path": "CITATION.cff",
       "size": 299,
       "sha256": "2bc20643b94d58cba8a53f2c371cfb6a577bc8bdc675ebd0eb22fadb4a1fb4a7"
+    },
+    {
+      "path": "Install.ps1",
+      "size": 1688,
+      "sha256": "5822eb45a1937ff8845c96e9f405b9c13c8df5cfbb89eef3fe89ddd540c60110"
     },
     {
       "path": "LICENSE",
@@ -46,13 +33,23 @@
     },
     {
       "path": "README.md",
-      "size": 5680,
-      "sha256": "9d1b14df59b40f34828c0a34ca65398479ba3050c158852232ba20810345fc0e"
+      "size": 4323,
+      "sha256": "df48761ea80dfb23ecdc3f5b8ac02398f0af5efbc73893cf1709f57c7804069c"
+    },
+    {
+      "path": "Run-Video.ps1",
+      "size": 1472,
+      "sha256": "4003a57cd51c805ec6fe4640d807c3c238851d071989ac9997598e315a50cd9c"
     },
     {
       "path": "THIRD_PARTY_NOTICES.md",
-      "size": 710,
-      "sha256": "0e7124430c18bbb0c853fc049d34034efb22a8e4976644180859d165d139bf36"
+      "size": 958,
+      "sha256": "f03660b50bd19ae192ae24522f3dc47bec7efc33b7f804bb27b99eb0f79442a4"
+    },
+    {
+      "path": "Verify.ps1",
+      "size": 701,
+      "sha256": "c8179f848b5e9755418de31081d5fdcc4663373d41e1d21a42d3cc57a77a6257"
     },
     {
       "path": "configs/_base_/datasets/ade20k.py",
@@ -125,14 +122,14 @@
       "sha256": "5ed0311af6f614b52dcbd07ddb5b3f16bafde8ecdb826ab236b5fa3223ed515d"
     },
     {
-      "path": "docs/road_marking_github_README.md",
-      "size": 5680,
-      "sha256": "9d1b14df59b40f34828c0a34ca65398479ba3050c158852232ba20810345fc0e"
-    },
-    {
       "path": "environment-tested.json",
       "size": 544,
       "sha256": "52b4e48d56a93d846410a37d39223db974ec3b339e97ad4018dc358ba51d9e5b"
+    },
+    {
+      "path": "install.cmd",
+      "size": 106,
+      "sha256": "67bc3abba31c075fa1ac0b46f90c1f001688f3fe3af70361a0f5b8b6e51d5c6c"
     },
     {
       "path": "mmseg/__init__.py",
@@ -1141,13 +1138,18 @@
     },
     {
       "path": "release/check_source.py",
-      "size": 903,
-      "sha256": "aaf9bc31313d3f3af90b2747639fc1dcc352e2e1bd15c291d3c46b0337862dc0"
+      "size": 953,
+      "sha256": "e524da217ef0e100be5f08dc0dd8e35db3e4199ebf283cb967856cf184657739"
+    },
+    {
+      "path": "release/runtime_manifest.json",
+      "size": 139789,
+      "sha256": "4c2c723135a33e78620a94da3d43fda2d4c2356eb3fa04d1bf7f347f65605a8f"
     },
     {
       "path": "requirements-inference.txt",
-      "size": 273,
-      "sha256": "88d1cbc368bda612ea0664663eec82b1ed7e6c90edb50e6401ba8ce5a25dab75"
+      "size": 296,
+      "sha256": "1d8d7a5e5481200420fe227533b331e19df546c59973a8e3b3e22916c34a2558"
     },
     {
       "path": "requirements.txt",
@@ -1196,13 +1198,18 @@
     },
     {
       "path": "road_marking_inference/README.md",
-      "size": 6485,
-      "sha256": "4946141fb526ce9592cfbdc3b208c9b81e6f4fdade29e41beeaea4737bc1bc7f"
+      "size": 5899,
+      "sha256": "f911b9fee3c134f2f33e8da4e22c79b13083ad72a44ccdad8b52716c999369bc"
     },
     {
       "path": "road_marking_inference/overlay_palette_card.png",
       "size": 76238,
       "sha256": "557dd5fae5f725f73aaeebcc54460288a8daa306ea04623f87a38dc62dd11ed3"
+    },
+    {
+      "path": "run_video.cmd",
+      "size": 205,
+      "sha256": "4654d317477947cd7bfed945d414e6363dac97735ec6c3ae5a6cb8f1bca7e493"
     },
     {
       "path": "setup.cfg",
@@ -1220,11 +1227,6 @@
       "sha256": "54a47c0b468dc23f2ac70ac9ae06ec733e02429d02c8651d998160d48ca87ece"
     },
     {
-      "path": "tools/prepare_road_marking_github.py",
-      "size": 12215,
-      "sha256": "23a8af5e1765142a58f057f2370c824f159f2aa6d73c61ff13b10e832cad7fbe"
-    },
-    {
       "path": "tools/road_marking_core.py",
       "size": 11623,
       "sha256": "76a5091be090da5052592883d5a68103c048de1d2f9d28ca41d32dcb326e3b00"
@@ -1240,9 +1242,19 @@
       "sha256": "bb2a2def87acb9bfea86682adf2ca6edb6555d574b5bfb9629348c79eaf12f25"
     },
     {
+      "path": "tools/setup_portable.py",
+      "size": 4564,
+      "sha256": "58d0b013611b6d79673ea4ebb5f6db29d6e917070622f8cee14d76814f3c2886"
+    },
+    {
       "path": "tools/verify_infer_pipeline.py",
       "size": 6540,
       "sha256": "aa8024ae848bc9aff4378d9faa17f6727ebd7b5f724b01e859bc813a8b3983f3"
+    },
+    {
+      "path": "verify.cmd",
+      "size": 105,
+      "sha256": "41a63a2bccfa6a1ae6d33d15d6feb743edf96369123f21fe2598485db1103362"
     }
   ]
 }

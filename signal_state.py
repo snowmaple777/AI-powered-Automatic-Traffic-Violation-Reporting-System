@@ -14,8 +14,11 @@ def signal_lights(lights):
 class TemporalSignalState:
     def __init__(self, fps, anchor_confidence=.30, support_confidence=.18,
                  window_seconds=.5, max_missing_seconds=.20, min_samples=3,
-                 min_mean_confidence=None, id_prefix="signal"):
+                 min_mean_confidence=None, id_prefix="signal", yellow_confirm_seconds=0.):
+        """yellow_confirm_seconds：同一燈由紅轉黃時，黃燈需連續觀測這麼久才中斷紅燈記憶；
+        在此之前黃燈不寫入歷史、也不觸發轉燈，紅燈證據照常延續。0 為原行為（立即中斷）。"""
         self.window=max(3,round(fps*window_seconds))
+        self.yellow_confirm=max(1,round(fps*yellow_confirm_seconds))
         self.max_missing=max(1,round(fps*max_missing_seconds))
         self.anchor_confidence=anchor_confidence
         self.support_confidence=support_confidence
@@ -58,13 +61,31 @@ class TemporalSignalState:
                 self.tracks[key]={"history":deque(),"center":center,"last":index,"size":20.}
             track=self.tracks[key]
             color=light["class_name"].lower()
+            size=max(box[2]-box[0],box[3]-box[1]) if box else 20.
+            pending=track.get("pending_yellow",[])
+            if (color=="yellow" and self.yellow_confirm>1 and track["history"]
+                    and track["history"][-1][1]=="red"):
+                # 紅燈中短暫讀成黃燈（夜間過曝等）：先累積，連續 yellow_confirm 次才算轉燈。
+                if pending and index-pending[-1][0]>self.max_missing:
+                    pending=[]
+                pending.append((index,color,float(light["confidence"])))
+                track["pending_yellow"]=pending
+                if len(pending)<self.yellow_confirm:
+                    track.update(center=center,last=index,size=size)
+                    used.add(key)
+                    continue
+                # 確認轉黃：切斷紅燈記憶，先前累積的黃燈成為歷史（本次觀測於下方加入）。
+                track["history"]=deque(pending[:-1])
+                if key==self.selected:
+                    transition=(key,color)
+            track.pop("pending_yellow",None)
             # 同一燈出現不同顏色立即切斷舊紅燈記憶；不以多數決吞掉轉綠證據。
             if track["history"] and track["history"][-1][1]!=color:
                 track["history"].clear()
                 if key==self.selected and color in {"green","yellow"}:
                     transition=(key,color)
             track["history"].append((index,color,float(light["confidence"])))
-            track.update(center=center,last=index,size=max(box[2]-box[0],box[3]-box[1]) if box else 20.)
+            track.update(center=center,last=index,size=size)
             used.add(key)
         if transition is not None:
             self.evidence={"state":transition[1],"signal_id":transition[0],
@@ -105,14 +126,21 @@ class CombinedSignalState:
     延續：強或弱證據確立紅燈後，若之後暫時沒有任何燈號證據、當幀也沒有綠／黃燈偵測，
           維持紅燈 hold_seconds 秒（號誌常在車輛接近停止線時離開畫面）。
     evidence["strength"] 為 strong／weak／held；只有 strong 的紅燈能讓事件成為「確認」。
+    黃燈確認：紅燈中出現的黃燈需連續 yellow_confirm_seconds（預設 0.2 秒）才中斷紅燈，延續階段也一樣
+    （連續這麼多幀都有黃燈才取消延續）。全片評估中同一燈「紅→黃→紅」的跳動多為 1–5 幀，真正的黃燈數十幀。
     """
 
-    def __init__(self, fps, anchor_confidence=.30, window_seconds=.5, weak_evidence=True, hold_seconds=3.0):
-        self.strong = TemporalSignalState(fps, anchor_confidence=anchor_confidence, window_seconds=window_seconds)
+    def __init__(self, fps, anchor_confidence=.30, window_seconds=.5, weak_evidence=True, hold_seconds=3.0,
+                 yellow_confirm_seconds=.2):
+        self.strong = TemporalSignalState(fps, anchor_confidence=anchor_confidence, window_seconds=window_seconds,
+                                          yellow_confirm_seconds=yellow_confirm_seconds)
         self.weak = (TemporalSignalState(fps, anchor_confidence=.12, support_confidence=.12, window_seconds=1.0,
                                          max_missing_seconds=.4, min_samples=6, min_mean_confidence=.15,
-                                         id_prefix="weak-signal") if weak_evidence else None)
+                                         id_prefix="weak-signal", yellow_confirm_seconds=yellow_confirm_seconds)
+                     if weak_evidence else None)
         self.hold = max(0, round(fps * hold_seconds))
+        self.yellow_confirm = max(1, round(fps * yellow_confirm_seconds))
+        self.yellow_run = 0  # 連續含黃燈偵測的幀數
         self.last_red = None
         self.strength = None
         self.evidence = dict(self.strong.evidence, strength=None)
@@ -120,13 +148,16 @@ class CombinedSignalState:
     def update(self, lights, index):
         strong = self.strong.update(lights, index)
         weak = self.weak.update(lights, index) if self.weak is not None else None
+        yellow = any(l["class_name"].lower() == "yellow" and l["confidence"] >= .12 for l in lights)
+        self.yellow_run = self.yellow_run + 1 if yellow else 0
         if strong is not None:
             state, evidence, strength = strong, dict(self.strong.evidence), "strong"
         elif weak is not None:
             state, evidence, strength = weak, dict(self.weak.evidence), "weak"
         else:
             state, evidence, strength = None, dict(self.strong.evidence), None
-            contrary = any(l["class_name"].lower() in {"green", "yellow"} and l["confidence"] >= .12 for l in lights)
+            contrary = (any(l["class_name"].lower() == "green" and l["confidence"] >= .12 for l in lights)
+                        or self.yellow_run >= self.yellow_confirm)
             if (self.last_red is not None and not contrary and index - self.last_red["frame"] <= self.hold
                     and self.strong.evidence.get("reason") == "insufficient_signal_evidence"):
                 state, strength = "red", "held"

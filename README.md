@@ -1,6 +1,6 @@
 # AI-powered-Automatic-Traffic-Violation-Reporting-System
 
-道路標線目前的可重現推論版本：請見 [best56000 使用說明](road_marking/reproducible_best56000/README.md)。
+道路標線推論模組：請見 [best56000 使用說明](road_marking/README.md)。
 使用純 slide 1024/683、FP32、EMA α=0.7 與 15 幀事件投票；包含 CSV、事件與高對比疊色影片輸出。
 權重與固定驗證資料須另外準備，完整 val 驗證通過才能執行。此版本不包含訓練流程。
 

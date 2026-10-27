@@ -1,5 +1,10 @@
 # 台灣道路標線語意分割 · SegFormer-B2
 
+> **目前推薦入口：** [可重現 best56000 推論模組](reproducible_best56000/README.md)。
+> 純 slide 1024/683、FP32、EMA α=0.7，完整 val mIoU 59.93841；保留 SHA、strict 載入及驗證閘門。
+> 以下說明保留舊 hybrid 版本的使用方式。新版本的命令請從上述連結取得。
+
+
 以 MMSegmentation 為基礎，辨識 RLMD 的25類道路標線。預設 **hybrid 推論：75%高斯加權滑窗 logits＋25%整張影像 logits**，先融合再分類。可用任意影片
 
 ## 快速開始（Windows）

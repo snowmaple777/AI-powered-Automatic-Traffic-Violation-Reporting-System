@@ -1,0 +1,30 @@
+# Paths are absolute, or relative to the mmsegmentation project root.
+# This release supports ONLY the original, audited best56000 file.
+checkpoint: {path: 'work_dirs/segformer_b2_rlmd_expanded_weather_relearn_768/best_mIoU_iter_56000.pth', sha256: '75ccd13c8efe31a0c1a76f22ddcd3867ebdd606287af3c39ae43b6c589d96b36'}
+model_config: configs/rlmd/segformer_b2_rlmd_expanded_weather_relearn_768.py
+device: cuda:0
+input:
+  fps_override: null  # Required for frame folders unless --fps is provided.
+inference:
+  crop: [1024, 1024]
+  stride: [683, 683]
+  precision: float32
+  probability_storage: cuda_float16
+  alpha: 0.7
+  vote_window: 15
+  presence_fraction: 0.0005
+verification:
+  data_root: data/rlmd_kaggle_upload
+  val_list: data/rlmd_kaggle_upload/splits/val.txt
+  report: work_dirs/road_marking_verify/verification.json
+overlay:
+  palette: configs/overlay_palette.yaml
+  legend_fraction: 0.0002
+  legend_panel_width: 340
+  thin_width_px: 8.0
+  thin_alpha: 0.8
+  large_alpha: 0.35
+  contour_width_px: 2
+  ffmpeg: ffmpeg  # Install FFmpeg and add its bin directory to PATH
+  crf: 18
+  preset: veryfast

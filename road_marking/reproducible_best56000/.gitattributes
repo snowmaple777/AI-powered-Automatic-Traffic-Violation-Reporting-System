@@ -1,0 +1,4 @@
+* -text
+# Preserve audited source/config bytes and SHA-based identities.
+*.png binary
+*.gz binary

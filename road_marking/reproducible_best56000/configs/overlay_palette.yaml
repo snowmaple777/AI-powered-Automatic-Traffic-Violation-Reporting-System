@@ -1,0 +1,26 @@
+# RGB display colors ONLY. Never copied into model/dataset metainfo.
+# Class 0 is transparent and intentionally absent.
+1: [255, 0, 175]    # box junction
+2: [223, 239, 127]  # crosswalk
+3: [255, 111, 111]  # stop line
+4: [0, 255, 255]    # solid single white
+5: [63, 143, 239]   # solid single yellow
+6: [79, 143, 47]    # solid single red
+7: [255, 0, 255]    # solid double white
+8: [255, 255, 0]    # solid double yellow
+9: [127, 207, 0]    # dashed single white
+10: [191, 95, 47]   # dashed single yellow
+11: [255, 0, 0]     # left arrow
+12: [0, 255, 0]     # straight arrow
+13: [255, 165, 0]   # right arrow
+14: [47, 191, 143]  # left straight arrow
+15: [160, 32, 240]  # right straight arrow
+16: [207, 79, 127]  # channelizing line
+17: [0, 191, 63]    # motor prohibited
+18: [255, 191, 111] # slow
+19: [255, 111, 15]  # motor priority lane
+20: [111, 111, 255] # motor waiting zone
+21: [159, 143, 0]   # left turn box
+22: [239, 143, 255] # motor icon
+23: [255, 0, 95]    # bike icon
+24: [0, 255, 159]   # parking lot

@@ -18,11 +18,12 @@
     "road_markings": {
       "backend": "mmseg_marking",
       "params": {
-        "weights": "../models/road_marking/segformer_b2_rlmd.pth",
+        "weights": "../models/road_marking/segformer_b2_rlmd_best56000.pth",
         "config": "../road_marking_config.py",
-        "sha256": "5c8da1343ab2848b480db84431dfdceb27a9e58c1139e7aaeed3bb0d8c2379df",
+        "sha256": "75ccd13c8efe31a0c1a76f22ddcd3867ebdd606287af3c39ae43b6c589d96b36",
         "fast_attention": true,
-        "fp16": true
+        "fp16": true,
+        "slide": {"crop": [1024, 1024], "stride": [683, 683]}
       }
     },
     "depth": {

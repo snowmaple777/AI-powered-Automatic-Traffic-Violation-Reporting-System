@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 THIRD_PARTY = ROOT / "third_party"
 if str(THIRD_PARTY) not in sys.path:
     sys.path.insert(0, str(THIRD_PARTY))
-ROAD_MODEL_SHA256 = "5c8da1343ab2848b480db84431dfdceb27a9e58c1139e7aaeed3bb0d8c2379df"
+ROAD_MODEL_SHA256 = "75ccd13c8efe31a0c1a76f22ddcd3867ebdd606287af3c39ae43b6c589d96b36"  # best56000
 
 
 def _file_sha256(path):
@@ -96,8 +96,10 @@ class TrafficLightDetector:
 class RoadMarkingSegmenter:
     def __init__(self, config, weights, device="cpu", min_pixels=100, sha256=ROAD_MODEL_SHA256,
                  classes=None, palette=None, inference_scale=None, fp16=False, roi_top=0.0,
-                 fast_attention=False):
-        """inference_scale：[寬, 高]，取代設定檔 test_pipeline 的 Resize（預設 1920x1080，保持長寬比）。
+                 fast_attention=False, slide=None):
+        """slide：{"crop": [高, 寬], "stride": [高, 寬]}，以滑動視窗推論（在 Resize 後的影像上）；
+        None 為整張推論（設定檔 test_cfg）。best56000 官方推論使用 crop 1024、stride 683。
+        inference_scale：[寬, 高]，取代設定檔 test_pipeline 的 Resize（預設 1920x1080，保持長寬比）。
         fp16：CUDA 上以半精度 autocast 推論。
         roi_top：只分割畫面高度此比例以下的道路區域（以原解析度推論，上方遮罩為背景）。
         fast_attention：注意力層以 need_weights=False 呼叫 PyTorch，使用融合注意力核心，
@@ -141,6 +143,15 @@ class RoadMarkingSegmenter:
         self.fast_attention = bool(fast_attention)
         if self.fast_attention:
             enable_fast_attention(self.model)
+        self.slide = None
+        if slide is not None:
+            crop, stride = (tuple(slide.get(k, ())) if isinstance(slide, dict) else () for k in ("crop", "stride"))
+            if (len(crop) != 2 or len(stride) != 2 or not all(isinstance(v, int) and v > 0 for v in crop + stride)
+                    or any(s > c for s, c in zip(stride, crop))):
+                raise ValueError('slide must be {"crop": [h, w], "stride": [h, w]} with 0 < stride <= crop')
+            from mmengine.config import ConfigDict
+            self.model.test_cfg = ConfigDict(mode="slide", crop_size=crop, stride=stride)
+            self.slide = dict(crop=list(crop), stride=list(stride))
 
     def infer(self, frame):
         import torch

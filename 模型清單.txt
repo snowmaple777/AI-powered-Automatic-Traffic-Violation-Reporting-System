@@ -15,9 +15,10 @@
 以上 Perception 檔案大小與 SHA256 記錄於 models/perception_manifest.json。
 
 道路標線模型
-  models/road_marking/segformer_b2_rlmd.pth
-  大小 125892250 bytes（已驗證）
-  SHA256 5C8DA1343AB2848B480DB84431DFDCEB27A9E58C1139E7AAEED3BB0D8C2379DF
+  models/road_marking/segformer_b2_rlmd_best56000.pth（現行，SegFormer B2，滑動視窗 1024/683、fp16）
+  大小 105669530 bytes
+  SHA256 75CCD13C8EFE31A0C1A76F22DDCD3867EBDD606287AF3C39AE43B6C589D96B36
+  舊模型 models/road_marking/segformer_b2_rlmd.pth（SHA256 5C8DA134…379DF）暫時保留作為退回選項
 
 交通燈模型
   models/traffic_light/traffic_light_best.pt（YOLO26s，紅／綠／黃／箭頭，推論尺寸 1280）

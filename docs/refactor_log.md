@@ -1,7 +1,8 @@
 # 分階段重構紀錄
 
 每個階段完成後執行 `驗證階段.cmd <階段名稱>`，確認可以運行後才進行下一階段。
-各階段的程式碼以 git tag 保存：`refactor-pre`（重構前）、`refactor-stage1`、`refactor-stage2`、`refactor-stage4b`（階段 3 至 4b）。原本的 `_backup_*` 資料夾內容已逐檔確認與對應 tag 相同，可以刪除；需要舊版程式時以 `git worktree add ..\stage1 refactor-stage1` 取出。
+各階段的程式碼以 git tag 保存：`refactor-pre`（重構前）、`refactor-stage1`、`refactor-stage2`、`refactor-stage4b`（階段 3 至 4b）。原本的 `_backup_*` 資料夾已逐檔確認與對應 tag 相同後刪除；需要舊版程式時以 `git worktree add ..\stage1 refactor-stage1` 取出。
+文中提到的 `outputs/...` 評估與驗證輸出已於 2026-10-28 整理時刪除（不在 git 中），數字以本文件為準；需要時可用 `全片評估.cmd`、`驗證階段.cmd` 重新產生。
 
 ## 驗證工具（階段 0）
 
@@ -261,7 +262,7 @@ stage3f 與 stage3e 的輸出三支影片逐幀相同；鏡頭運動等待時間
   - slide：mm01 的第二台違規車、ms02、ms05 新命中，ms01、ms04 維持確認；多出 ms02 重複事件、mm01 14.9 秒等誤報；s01（未標註）不再命中。
 - 速度選項（60 幀、五支影片抽樣，對照 slide FP32）：fp16＋fast_attention 349 ms，重點類別 IoU ≥ 0.999（採用）；fp32＋fast_attention 553 ms；stride 896 為 258 ms，但停等區 IoU 0.85；單列 1080 高視窗 210 ms，但停止線 IoU 0.57；整張 161 ms，停止線 IoU 0.53；6 個視窗合成一批推論反而較慢（392 ms，GPU 已飽和，已移除）。這個模型對視窗大小很敏感，只有原始的 1024/683 能得到相同結果。
 - 完整流程速度（`outputs/verify/stage4h`，RTX 5060 Laptop）：ms01 2.18 → 1.23 FPS、cdy01 3.43 → 2.04 FPS、soc03 2.24 → 1.48 FPS。標線 329–372 ms/幀，約佔每幀 65–70%；ms01 的區域幾何 42 → 69 ms（新模型分割出較多區域）。三支短片的事件與前次相同（幀差 ≤ 3）。
-- 舊權重 `segformer_b2_rlmd.pth` 暫時保留，作為退回選項。
+- 舊權重 `segformer_b2_rlmd.pth`（SHA256 `5c8da134…379df`）已於 2026-10-28 整理時刪除。
 
 ### 4i：標線每 2 幀推論一次（以鏡頭運動推移中間幀）
 - 修改：

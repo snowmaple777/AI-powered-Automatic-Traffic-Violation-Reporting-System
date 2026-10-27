@@ -69,5 +69,39 @@ class YellowConfirmationTests(unittest.TestCase):
         self.assertNotEqual(held_after(3)[1], "held")
 
 
+def sized(color, x, size, confidence):
+    return dict(class_name=color, confidence=confidence, bbox_xyxy=[x, 10, x + size, 10 + size * 2])
+
+
+class DominantTrackTests(unittest.TestCase):
+    def run_frames(self, lights, frames=10, **kwargs):
+        state = CombinedSignalState(30, **kwargs)
+        result = None
+        for index in range(frames):
+            result = state.update(lights, index)
+        return result, state
+
+    def test_clearly_more_confident_light_wins_as_dominant_evidence(self):
+        # ms03：近處紅燈信心約 0.65，遠處被讀成黃燈的小號誌約 0.35。
+        result, state = self.run_frames([sized("red", 100, 10, .65), sized("yellow", 400, 10, .35)])
+        self.assertEqual(result, "red")
+        self.assertEqual(state.strength, "dominant")
+        self.assertEqual(state.evidence["reason"], "dominant_signal_track")
+        self.assertEqual(state.evidence["overridden"], ["yellow"])
+
+    def test_much_larger_light_wins_even_with_similar_confidence(self):
+        result, state = self.run_frames([sized("green", 100, 30, .40), sized("red", 400, 10, .45)])
+        self.assertEqual(result, "green")
+        self.assertEqual(state.strength, "dominant")
+
+    def test_no_clear_winner_stays_unknown(self):
+        result, state = self.run_frames([sized("red", 100, 12, .5), sized("green", 400, 10, .45)])
+        self.assertIsNone(result)
+        self.assertEqual(state.strong.evidence["reason"], "conflicting_signal_tracks")
+        result, _ = self.run_frames([sized("red", 100, 10, .65), sized("yellow", 400, 10, .35)],
+                                    dominance_confidence_ratio=None)
+        self.assertIsNone(result)  # 停用時維持原行為
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -18,8 +18,8 @@
     },
     {
       "path": "Install.ps1",
-      "size": 1688,
-      "sha256": "5822eb45a1937ff8845c96e9f405b9c13c8df5cfbb89eef3fe89ddd540c60110"
+      "size": 2735,
+      "sha256": "d5fec7bd8009805560ba53641fa95c63e98f5e81526f9b143a067cc2afe89f29"
     },
     {
       "path": "LICENSE",
@@ -33,8 +33,8 @@
     },
     {
       "path": "README.md",
-      "size": 4323,
-      "sha256": "df48761ea80dfb23ecdc3f5b8ac02398f0af5efbc73893cf1709f57c7804069c"
+      "size": 4647,
+      "sha256": "d4a54aeb9eb52ccc88c2830f673422f6256b355288b74c205b6c14a31f211f87"
     },
     {
       "path": "Run-Video.ps1",

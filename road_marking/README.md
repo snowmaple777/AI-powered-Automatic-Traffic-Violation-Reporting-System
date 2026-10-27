@@ -10,6 +10,9 @@ Set-Location -LiteralPath '.\AI-powered-Automatic-Traffic-Violation-Reporting-Sy
 ```
 
 也可使用 GitHub 的 Download ZIP 後開啟其中的 `road_marking` 資料夾。
+Windows 建議解壓縮到短路徑（例如 `D:\rm_infer`），避免重複兩層很長的專案名稱。
+未啟用長路徑支援時，巢狀路徑可能讓 pip 自身檔案超過 260 字元而無法匯入。
+若需要換位置，請只複製程式與資料，排除 `.venv`，到新位置重新執行 `install.cmd`。
 原始權重約 106 MB，超過 GitHub 一般單檔限制，故以 **Git LFS 存在同一分支的原檔名／路徑下**。
 若 Git clone 或 Download ZIP 只取得 LFS 指標，安裝程式會自動從這個分支取回原權重並核對 SHA256，不需另外找下載頁或安裝 Git LFS。
 

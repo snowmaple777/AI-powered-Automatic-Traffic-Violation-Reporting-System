@@ -159,14 +159,15 @@ def run(args, resources, pipeline=None):
                 pending_motion.update(frame=frame, index=frame_index, time=timestamp, future=None)
                 with timer.measure("models"):
                     results = pipeline.infer(frame, FrameContext(frame_index, timestamp))
+                result = processor.process(frame, frame_index, timestamp, results,
+                                           motion_future=pending_motion["future"])
                 if args.save_masks is not None:
                     with timer.measure("save_masks"):
-                        mask = results["road_markings"].artifacts.get("mask")
+                        # 存處理後的遮罩：標線降頻時為依鏡頭運動推移到當幀的遮罩，離線重播才會一致。
+                        mask = result.marking_result.artifacts.get("mask")
                         if mask is not None:
                             args.save_masks.mkdir(parents=True, exist_ok=True)
                             cv2.imwrite(str(args.save_masks / f"{frame_index:06d}.png"), mask)
-                result = processor.process(frame, frame_index, timestamp, results,
-                                           motion_future=pending_motion["future"])
                 record = result.record
                 with timer.measure("write_jsonl"):
                     jsonl.write(json.dumps(record, ensure_ascii=False) + "\n")

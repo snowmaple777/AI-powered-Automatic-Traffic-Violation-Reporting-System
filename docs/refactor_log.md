@@ -262,3 +262,13 @@ stage3f 與 stage3e 的輸出三支影片逐幀相同；鏡頭運動等待時間
 - 速度選項（60 幀、五支影片抽樣，對照 slide FP32）：fp16＋fast_attention 349 ms，重點類別 IoU ≥ 0.999（採用）；fp32＋fast_attention 553 ms；stride 896 為 258 ms，但停等區 IoU 0.85；單列 1080 高視窗 210 ms，但停止線 IoU 0.57；整張 161 ms，停止線 IoU 0.53；6 個視窗合成一批推論反而較慢（392 ms，GPU 已飽和，已移除）。這個模型對視窗大小很敏感，只有原始的 1024/683 能得到相同結果。
 - 完整流程速度（`outputs/verify/stage4h`，RTX 5060 Laptop）：ms01 2.18 → 1.23 FPS、cdy01 3.43 → 2.04 FPS、soc03 2.24 → 1.48 FPS。標線 329–372 ms/幀，約佔每幀 65–70%；ms01 的區域幾何 42 → 69 ms（新模型分割出較多區域）。三支短片的事件與前次相同（幀差 ≤ 3）。
 - 舊權重 `segformer_b2_rlmd.pth` 暫時保留，作為退回選項。
+
+### 4i：標線每 2 幀推論一次（以鏡頭運動推移中間幀）
+- 修改：
+  - `MarkingModel(interval=…)`：只在 `index % interval == 0` 的幀推論，其餘幀回傳上次的遮罩並標記 `source_frame`。
+  - `FrameProcessor`：先取得當幀的鏡頭運動，再處理標線。若標線來自前幀，就以前幀→當幀的路面單應矩陣推移前一幀處理後的遮罩（最近鄰），並以 `mask_components` 重建標線紀錄。下游的停止線補償、雙線、區域都收到對齊當幀的遮罩。鏡頭運動無效時沿用未推移的遮罩。紀錄新增 `postprocessing.road_marking_source`（schema 1.7）。
+  - `run_pipeline` 的 `--save-masks` 改存處理後的遮罩（推移後），離線重播才會一致。
+  - 三個模型設定檔設為 `road_markings.interval: 2`。
+- 準確度（`outputs/eval/_sub_i2`，以 slide 遮罩與記錄的鏡頭運動離線模擬，與 `_sub_slide` 同一批 21 支影片）：影片層級與事件層級指標完全相同（闖紅燈 TP 6 FP 3 FN 1、停等區 3/5、雙黃線 1/7、車牌 3/6），事件相同，時間差 ≤ 0.16 秒。推移失敗（鏡頭運動無效）的跳過幀集中在 cdy05（202/308）與 cdy07（87/105）。
+- 速度（`outputs/verify/stage4i`，對照 stage4h）：ms01 1.23 → 1.62 FPS、cdy01 2.04 → 2.78 FPS、soc03 1.48 → 1.81 FPS。標線平均 169–189 ms/幀（減半）。新增成本：遮罩推移 9–29 ms/幀（主要是從 1080p 遮罩重建標線紀錄），以及鏡頭運動等待約 11 ms（跳過的幀 GPU 時間變短，不再完全被覆蓋）。
+- 修正既有錯誤：雙線規則 `_hand_off_lines` 的舊線投影越過地平線時，`project_points` 拋出 ValueError 未被攔截，會讓整個辨識中斷（以新遮罩重播 ctm05 時發生）。現在略過該舊線，新增回歸測試。

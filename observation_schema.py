@@ -16,12 +16,14 @@ observations.traffic_regions / area_vehicles                 停等區／斑馬�
 postprocessing.ego_motion   鏡頭運動（road_compensation.EgoMotionTracker），1.6 起新增；
                             讀取請用 core.motion.road_motion()，舊紀錄會退回 road_marking_compensation.motion
 postprocessing.road_marking_compensation / rider_association / double_lines / area_geometry   各階段診斷
+postprocessing.road_marking_source  標線降頻（road_markings.interval > 1）時才有：本幀標線是由
+                            source_frame 的遮罩推移而來（warped=False 表示鏡頭運動無效、沿用未推移的遮罩）
 
-版本紀錄：1.6 新增 postprocessing.ego_motion（鏡頭運動成為獨立階段）。
+版本紀錄：1.6 新增 postprocessing.ego_motion（鏡頭運動成為獨立階段）；1.7 新增 postprocessing.road_marking_source。
 """
 import math
 
-SCHEMA_VERSION = "1.6"
+SCHEMA_VERSION = "1.7"
 
 
 def build_frame_observation(frame_index, timestamp_sec, width, height, fps,

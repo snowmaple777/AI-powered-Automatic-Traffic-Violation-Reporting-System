@@ -23,7 +23,8 @@
         "sha256": "75ccd13c8efe31a0c1a76f22ddcd3867ebdd606287af3c39ae43b6c589d96b36",
         "fast_attention": true,
         "fp16": true,
-        "slide": {"crop": [1024, 1024], "stride": [683, 683]}
+        "slide": {"crop": [1024, 1024], "stride": [683, 683]},
+        "interval": 2
       }
     },
     "depth": {

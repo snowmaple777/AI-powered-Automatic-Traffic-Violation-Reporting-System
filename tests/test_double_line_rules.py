@@ -59,6 +59,15 @@ def run_records(records, color="yellow", settings=None):
 
 
 class DoubleLineRuleTests(unittest.TestCase):
+    def test_line_handoff_skips_lines_projected_behind_the_horizon(self):
+        # 曾讓全片重播當掉：舊線經鏡頭運動投影到地平線後方，project_points 拋出 ValueError。
+        rule = create_rules(["double_yellow_line_crossing"], RuleContext("test", 10, 400, 300))[0]
+        rule.previous_lines = {"old": np.array([[100., 50.], [120., 250.]])}
+        usable = [{"track_id": "new", "centerline": [[101., 50.], [121., 250.]]}]
+        behind = np.array([[1., 0, 0], [0, 1., 0], [0, .01, -1.]])  # w = 0.01y - 1 <= 0（y <= 100）
+        rule._hand_off_lines(usable, behind)  # 不得拋出例外
+        self.assertEqual(set(rule.previous_lines), {"new"})
+
     def test_brief_unsupported_position_requires_review_and_expires(self):
         original_position = __import__("violation_engine").vehicle_line_position
         records = sequence(LANE_CHANGE)

@@ -687,7 +687,12 @@ class DoubleLineCrossingRule(ViolationRule):
             return
         mapping = {}
         for old in lost:
-            path = np.asarray(project_points(previous[old], matrix), dtype=float)
+            try:
+                path = np.asarray(project_points(previous[old], matrix), dtype=float)
+            except ValueError:
+                continue  # 投影越過地平線等不穩定情況：這條舊線不參與交接
+            if not np.isfinite(path).all():
+                continue
             best = None
             for track in new:
                 target = current[track]

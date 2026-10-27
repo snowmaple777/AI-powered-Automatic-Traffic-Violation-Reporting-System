@@ -1,20 +1,25 @@
 {
-  "architecture": "YOLO11n",
+  "architecture": "YOLO26s",
   "task": "detect",
-  "source": "runs/detect/train-6/weights/best.pt",
+  "source": "traffic_light_best.pt（2026-10-27 提供，訓練資料 ntc_unique_v2_26s_runtime.yaml）",
   "weights": "traffic_light_best.pt",
-  "sha256": "57b19ed8b7a01b23ac442b61984d90066dd931c3b40cad25935a2cd59c7ac760",
-  "size_bytes": 5491268,
+  "sha256": "3ff0b2e2a039ed8302a63ee5c12437389cb32760329a57cd8b21537c789d62cb",
+  "size_bytes": 20473221,
   "ultralytics_version": "8.4.146",
+  "trained": "2026-10-13",
   "names": {
-    "2": "yellow",
     "0": "red",
-    "1": "green"
+    "1": "green",
+    "2": "yellow",
+    "3": "arrow"
   },
   "training": {
-    "epochs": 30,
+    "epochs": 50,
     "batch": 8,
-    "imgsz": 800
+    "imgsz": 1280,
+    "fliplr": 0.0
   },
-  "verification": "Archive metadata and SHA-256 checked; inference not tested in packaging environment"
+  "notes": "arrow（箭頭燈）保留在觀測中，但不參與紅／綠／黃燈號判定（signal_state.SIGNAL_COLORS）。",
+  "replaces": "YOLO11n red/green/yellow, imgsz 800, sha256 57b19ed8b7a01b23ac442b61984d90066dd931c3b40cad25935a2cd59c7ac760",
+  "verification": "全片評估 31 支影片離線重播：闖紅燈事件層級 TP 5 FP 2 → TP 5 FP 1；見 docs/refactor_log.md 4e"
 }

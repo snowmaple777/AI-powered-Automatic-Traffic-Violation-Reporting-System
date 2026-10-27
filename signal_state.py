@@ -2,6 +2,14 @@
 from collections import deque
 import math
 
+# 只有圓形燈參與紅／綠／黃判定。箭頭燈（模型類別 arrow）常與紅燈同時亮起、只允許特定方向，
+# 若當成另一種顏色，會讓同一路口出現「顏色衝突」而把紅燈判成未知；保留在觀測中但不參與判定。
+SIGNAL_COLORS = frozenset({"red", "green", "yellow"})
+
+
+def signal_lights(lights):
+    return [light for light in lights if light["class_name"].lower() in SIGNAL_COLORS]
+
 
 class TemporalSignalState:
     def __init__(self, fps, anchor_confidence=.30, support_confidence=.18,
@@ -20,6 +28,7 @@ class TemporalSignalState:
         self.evidence={"state":"unknown","reason":"insufficient_signal_evidence"}
 
     def update(self, lights, index):
+        lights=signal_lights(lights)
         self.tracks={k:t for k,t in self.tracks.items() if index-t["last"]<=self.window}
         used=set()
         transition=None

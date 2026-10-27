@@ -15,7 +15,7 @@ from core.continuity import is_continuous
 from core.geometry import project_points
 from core.motion import homography, road_motion
 from core.fastcopy import clone
-from signal_state import CombinedSignalState
+from signal_state import CombinedSignalState, signal_lights
 
 
 AREA_RULES = {
@@ -243,7 +243,7 @@ def _associate_area_lanes(regions, obs, state, cfg, frame):
         lanes.append(item)
     signals = state.setdefault("signals", {})
     for lane in lanes:
-        candidates = [light for light in obs.get("traffic_lights", [])
+        candidates = [light for light in signal_lights(obs.get("traffic_lights", []))
             if "signal_roi" in lane and light.get("source_frame", index) == index and
             light.get("confidence", 0) >= .5 and cv2.pointPolygonTest(lane["signal_roi"],
             tuple(map(float, light["center"])), False) >= 0]

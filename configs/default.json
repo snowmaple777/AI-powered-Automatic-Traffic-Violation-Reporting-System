@@ -11,7 +11,8 @@
     "traffic_lights": {
       "backend": "yolo_light",
       "params": {
-        "weights": "../models/traffic_light/traffic_light_best.pt"
+        "weights": "../models/traffic_light/traffic_light_best.pt",
+        "imgsz": 1280
       }
     },
     "road_markings": {

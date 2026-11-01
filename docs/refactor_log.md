@@ -279,3 +279,14 @@ stage3f 與 stage3e 的輸出三支影片逐幀相同；鏡頭運動等待時間
 - 速度（`outputs/verify/stage4j`，只改 `road_markings.interval`）：ms01 1.62 → 1.86 FPS、cdy01 2.78 → 3.40 FPS、soc03 1.81 → 2.11 FPS。標線平均 109–124 ms/幀；遮罩推移 10–38 ms/幀（ms01 最高）。
 - 第一次量測誤把深度模型的 interval 一併改成 3（文字取代同時命中兩行），已作廢並重新量測。
 - 結論：interval 3 再快約 15–22%，指標相同，但在標註很少的情況下，確認狀態與事件時間的變動無法判斷好壞。先維持 interval 2，補足標註後再評估。
+
+### 4k：保守標線活動升頻（2026-11-01，預設關閉）
+- 基準 4b88629，分支 feature/conservative-marking-schedule；未提交／未整合。
+- 新增 MarkingModel activity_boost=false、activity_hold_seconds=1.0。活動提示為任何車輛或燈號；只補做推論，保留固定 interval 推論幀。首次、不連續及尺寸改變重新觀測，跨片 reset 清理統計。
+- 新增獨立 configs/activity_boost.json；啟用時 timings JSON 保存推論次數與觸發原因。不改觀測 schema 與規則。
+- 驗證：test_marking_interval 10 項通過（新增 7）；全套 114 項，113 通過、1 因無既有輸出略過，23.471 秒。
+- 未跑真實 GPU 推論與影片比較；TP/FP/FN、事件時間與速度前後數字均未取得。此版沒有降頻加速，可能因升頻變慢，亦可能改變確認狀態。
+- 決策：維持預設關閉。推估證據閘門、運動品質喚醒與真正低頻取樣留待整合與獨立評估。
+- 完整變更、限制、可重現命令及給 Opus／Astra 的 prompt：docs/handoff/conservative_marking_schedule.md。
+
+補充整合驗證：4 幀合成 MP4、假標線模型、實際 run_pipeline 解碼與輸出；關閉時模型呼叫 2 次且無新統計欄位，啟用時呼叫 4 次且統計 frames=4、inferences=4。皆成功寫出 JSONL/CSV/timings。此為流程驗證，非 GPU 或準確率測試。

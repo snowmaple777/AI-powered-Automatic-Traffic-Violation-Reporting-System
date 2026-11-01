@@ -206,6 +206,9 @@ def run(args, resources, pipeline=None):
             violations_file.flush()
     timings = {"frames": frame_index, "wall_seconds": round(time.perf_counter() - started, 3),
                "ms_per_frame": timer.summary(frame_index)}
+    marking_model = pipeline.models.get("road_markings")
+    if getattr(marking_model, "activity_boost", False):
+        timings["road_marking_schedule"] = marking_model.schedule_diagnostics
     (args.output_dir / f"{stem}_timings.json").write_text(json.dumps(timings, indent=2), encoding="utf-8")
     if rule_names and args.violation_clips:
         print("正在剪輯違規片段…", flush=True)

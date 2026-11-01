@@ -476,3 +476,17 @@ roi_top 與 roi_bottom 限制背景取樣的垂直範圍，值為影像高度比
 重複影片壓縮包及舊模型已清除。輸入影片、既有輸出、填表案件與個人設定均保留。
 目錄用途見根目錄 README.md，權重位置見「模型清單.txt」。
 已完成的短片段整合驗證不代表完整影片準確率；ONNX／Paddle GPU 路徑未實測。
+
+保守標線動態排程（實驗）
+
+使用 configs/activity_boost.json 啟用：
+.venv\Scripts\python.exe run_pipeline.py input/ms01.mp4 --model-config configs/activity_boost.json --output-dir outputs/activity_boost/ms01 --rules all --no-violation-clips
+
+road_markings.params.activity_boost 預設 false；啟用後偵測到任何車輛或燈號即額外推論標線。
+activity_hold_seconds 預設 1.0 秒，為非負有限數值；活動消失後保持高頻，再回原 interval。
+首次、索引／時間不連續或尺寸改變時重新觀測。沒有活動仍維持原固定推論幀，不延長快取。
+這是排程與診斷的實驗基礎，可能變慢且可能改變事件；未宣稱加速或準確率改善。
+只讀取當幀模型輸出作排程提示，不會將快取框當成直接證據。未做場景切換／運動失效偵測。
+影片時間須有效；關閉時保留既有推論行為。各模型原始幀索引、觀測 schema 與規則不變。
+啟用時 *_timings.json 新增 road_marking_schedule，含 frames、inferences、extra_inferences、reasons。
+停用：改回 configs/default.json，或將 activity_boost 設為 false。實驗請使用獨立輸出目錄。

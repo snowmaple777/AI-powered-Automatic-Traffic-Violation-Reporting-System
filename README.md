@@ -37,6 +37,7 @@ default 與 full 均啟用完整六階段；違規判定需另外加上
 - [完整使用說明](docs/usage.md)：安裝、辨識、裝置、輸出與常見問題。
 - [純文字使用說明](使用說明.txt)：供記事本閱讀，與操作文件同步。
 - [AI agent 先備須知](AGENTS.md)：開發分工、介面契約、驗證流程與已知問題（Claude 另讀 [CLAUDE.md](CLAUDE.md)）。
+- [Astra 功能開發指引](docs/ASTRA.md)與[交接範本](docs/handoff/TEMPLATE.md)：功能開發 → 驗證 → Opus 架構整合的具體交付內容。
 
 ## 使用版目錄
 

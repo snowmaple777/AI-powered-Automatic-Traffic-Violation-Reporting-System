@@ -2,7 +2,20 @@
 
 給參與本專案開發的 AI agent 閱讀。開始任何工作前請讀完本文件；細節以程式碼與
 [docs/refactor_log.md](docs/refactor_log.md)（每次修改的原因、驗證方式與數字）為準。
-最後更新：2026-10-28（master `f0bb594` 之後）。
+最後核對：2026-10-28；本次閱讀基準為 commit `4b88629`，實際狀態以工作目錄為準。
+
+閱讀順序：本文件 → 自己的角色指引（[Astra](docs/ASTRA.md)／[Opus](CLAUDE.md)）→ 任務相關原始碼與測試。
+交接使用 [共用範本](docs/handoff/TEMPLATE.md)。角色名稱依使用者指定，並非對模型產品版本或能力的驗證。
+
+### 每次開始工作的核對
+
+1. 讀取使用者最新要求，確認是實作、分析還是文件工作；不要把舊待辦當成本次授權。
+2. 檢查 `git status --short`、目前分支與 HEAD；保留其他人已修改但未提交的檔案，不自行還原。
+3. 讀取目標模組、直接呼叫端、設定與相關測試；本文件描述與程式不同時，記錄差異再處理，不照舊聊天內容覆蓋新架構。
+4. 確認本機是否有權重、輸入影片、基準 JSONL 與遮罩。歷史報告的路徑不保證仍存在。
+5. 在交接中寫明任務範圍、基準版本、預期行為改變及驗證方式。只有缺少必需資訊時才向使用者確認。
+
+使用者當次明確指示優先於本文的預設分工；分工不是要求 agent 為一般可逆工作反覆申請許可。
 
 ---
 
@@ -21,7 +34,7 @@
 | --- | --- | --- |
 | 主責 | 新功能開發與驗證 | 架構與接口整合 |
 | 典型工作 | 新規則、新模型後端、規則門檻與後處理改良、評估實驗、測試 | 資料契約（觀測紀錄、模型與規則介面）、主流程、設定預設值、效能、合併到 master、整體回歸驗證 |
-| 工作位置 | `feature/<功能名>` 分支 | 整合分支或 master |
+| 工作位置 | `feature/<功能名>` 分支或隔離 worktree | 整合分支；驗證後依授權合併至 master |
 | 交付物 | 程式＋測試＋評估數字＋交接文件（第 9 節） | 介面調整、預設值切換、`refactor_log.md` 正式紀錄、合併 |
 
 ### 邊界規則
@@ -31,18 +44,22 @@
   切換預設值屬於整合決策，由 Opus 依評估結果決定。
 - **Opus 不重寫 Astra 已驗證的功能邏輯**；整合時若需要改動行為，必須重新評估並在紀錄中說明差異。
 - 任何一方都**不得在沒有評估數字的情況下宣稱「改善」**。
+- 優先擴充既有模組與共用函式。新增類別／檔案須有清楚的責任邊界；不要另建平行主流程、臨時補丁鏈或複製整套幾何工具。
+- 功能開發者應交付可執行的最小垂直流程（資料產生 → 規則 → 診斷／輸出 → 測試），不要只交未接線的框架並聲稱功能完成。
+- 介面修改先記錄生產端、所有消費端、舊資料相容策略及整合次序；在兩個 agent 的交接文件中確認。這不是一律要求使用者批准小型介面新增。
 
 ---
 
 ## 3. 環境
 
 - Windows 11；專案路徑含空白與中文（`C:\Users\user\Downloads\新增資料夾 (3)\traffic_ai`），命令一律加引號。
-- Python 3.10.11，虛擬環境 `.venv\`（`.venv\Scripts\python.exe`）。主要套件：torch 2.11（CUDA 12.8）、
+- 歷史環境紀錄：Python 3.10.11，虛擬環境 `.venv\`（`.venv\Scripts\python.exe`）。主要套件：torch 2.11（CUDA 12.8）、
   ultralytics 8.4.146、mmcv 2.1.0、mmengine 0.10.7、onnxruntime-gpu 1.23.2、opencv 4.10、numpy 1.26.4、paddlepaddle 3.3.1（OCR，CPU）。
 - MMSegmentation **不是 pip 套件**，原始碼在 `third_party/mmseg/`，由 `model_library/detectors.py` 加入 `sys.path`。不要修改 `third_party/`；
   需要改模型行為時在 `model_library/` 以替換方法的方式處理（範例：`enable_fast_attention`）。
 - GPU：RTX 5060 Laptop（單張）。**效能量測時不要同時跑其他 GPU 工作**，否則數字失真。
-- 主控台編碼是 cp950：執行 Python 前設定 `PYTHONIOENCODING=utf-8`（與 `PYTHONUTF8=1`），否則中文輸出亂碼、寫檔編碼錯誤。
+- Windows 主控台可能是 cp950：PowerShell 可設定 `$env:PYTHONIOENCODING='utf-8'` 與 `$env:PYTHONUTF8='1'`；檔案讀寫仍須明確指定編碼。
+- 套件版本與裝置需以本機實查為準；`torch.cuda.is_available()` 不代表 ONNX 或 Paddle 正在使用 GPU。交接需記錄各後端實際 provider／device。
 - `ultralytics` 的自動安裝已關閉（`model_library/runtime.py` 設 `YOLO_AUTOINSTALL=false`）；不要讓任何工具自動安裝或升級套件。
 
 ---
@@ -65,11 +82,11 @@
 | `models/` | 權重（**不在 git 中**）、`模型清單.txt` 記錄檔名與 SHA-256 |
 | `eval/` | `ground_truth.json`（人工標註）、`metrics.py`（指標） |
 | `tools/` | 評估、重播、量測工具（第 7 節） |
-| `tests/` | 單元與回歸測試（目前 107 項） |
+| `tests/` | 單元與回歸測試；數量以本次實際執行結果為準 |
 | `reporting/autoForm/` | 填表 GUI（獨立模組，個人設定與案件不進 git） |
 | `docs/usage.md`、`使用說明.txt` | 使用者操作說明（兩份需同步） |
 | `docs/refactor_log.md` | **開發紀錄**：每次修改的原因、驗證方式、數字、撤回的實驗 |
-| `input/`、`outputs/` | 影片與輸出（不在 git 中；`outputs/` 目前是空的，見 7.1） |
+| `input/`、`outputs/` | 影片與輸出（不在 git 中；本次核對時 `outputs/` 無既有結果，使用前重新檢查，見 7.1） |
 
 ---
 
@@ -82,7 +99,13 @@
 - 新後端：在 `BACKENDS` 註冊（或 `register_backend`），設定檔以 `"backend": "<名稱>"`、`"params": {...}` 使用；
   `weights`、`config` 等路徑相對於設定檔所在目錄解析，啟動時檢查檔案存在。
 - **快取／降頻語意**：降頻的模型在未推論的幀回傳上次結果並標記 `source_frame`（車輛是每筆紀錄的 `source_frame`；標線是 `artifacts["source_frame"]`）。
-  `source_frame != 當幀` 的資料**不能被規則當成新觀測**（不能累積證據、不能觸發事件）。標線例外：由 `FrameProcessor` 依鏡頭運動推移到當幀後視為當幀資料，並在紀錄寫入 `postprocessing.road_marking_source`。
+  車輛 `source_frame != 當幀` 時**不能作為新的車輛觀測**累積證據或觸發事件。
+  標線目前會由 `FrameProcessor` 推移到當幀再交給規則，來源保存在 `postprocessing.road_marking_source`；
+  這只是對齊當幀的估計，並非模型重新觀測。運動無效時仍沿用未推移遮罩（`warped=false`）。
+  **現有風險**：下游不一定對推移標線設置獨立確認閘門，不能宣稱所有 `confirmed` 都基於直接觀測標線；
+  interval 3 曾改變確認狀態，因此未採用（refactor_log 4j）。修改此語意屬於行為變更，需獨立驗證。
+- 輸入是 `uint8 BGR`，輸出座標均為原圖像素；模型後端不可修改輸入 frame 或 upstream。
+  `records` 必須可 JSON 序列化，遮罩等陣列留在 `artifacts`。跨影片須 `reset()`，結束須 `close()`。
 
 ### 5.2 逐幀後處理順序（`FrameProcessor.process`）
 鏡頭運動（車輛偵測後即在背景執行緒估計）→ 標線推移（降頻時）→ 建立觀測紀錄 → 停止線補償 → 騎士配對 → 雙線 → 停等區／斑馬線區域。
@@ -98,7 +121,8 @@
 - 註冊：`violation_engine.RULE_FACTORIES`；`create_rules(names, context, rule_options)`，`"all"` 啟用全部。
 - 規則 ID：`red_light_stop_line_crossing`、`double_yellow_line_crossing`、`double_white_line_crossing`、`car_motorcycle_waiting_area`、`crosswalk_stopping`。
 - 事件必要欄位：`event_id`、`rule_id`、`status`（`suspected`／`confirmed`）、`frame`、`timestamp_sec`、`object_id`、`conditions`（條件名 → bool）、`evidence`。
-  `conditions` 中任一放寬條件為 False 時，狀態最多為 `suspected`。
+  `conditions` 同時含證據成立旗標與估計／預測旗標，不可用 `all(conditions.values())` 決定確認狀態。
+  必須依各規則的確認條件判斷；新增放寬路徑只能支持 `suspected`。
 - `ViolationEngine` 會把同一車輛 3 秒內的停等區事件併入闖紅燈事件的 `merged_events`（停等區事件因此最多延後 3 秒輸出，帶 `released_timestamp_sec`）。
 - 每幀診斷寫在 `rule.diagnostics`（阻擋原因），全片評估以此統計漏判原因；新規則也要提供。
 
@@ -110,14 +134,14 @@
 
 ## 6. 不可違反的原則
 
-1. **放寬只產生疑似**：為了提高召回而放寬的條件，只能讓事件成為 `suspected`；`confirmed` 的條件不得放寬（例如必須是強燈號證據、真正觀測到的停止線）。
+1. **放寬只產生疑似**：新增的召回放寬路徑只能讓事件成為 `suspected`，不得暗中削弱 `confirmed` 的確認條件。這是開發約束，不代表既有程式已消除第 5.1 節的推移標線風險。
 2. **快取資料不算證據**：見 5.1。
 3. **可重現**：同樣輸入必須得到同樣輸出。不要走訪無序集合後依順序產生結果（`tests/test_determinism.py` 以多個雜湊種子檢查）。
 4. **沒有數字不宣稱改善**：規則、後處理、模型的修改都要附評估結果（第 7 節），包括變差的部分；撤回的實驗也要記錄。
 5. **標註極少，不要對答案調參**：31 支評估影片只有 6 支有事件標註（約 7 個事件）。指標變動 1 個事件就是十幾個百分點，
    報告時寫絕對數（TP／FP／FN），並逐片檢查變動的事件畫面，不要只看百分比。
 6. **權重不進 git**：`.pt`／`.pth`／`.onnx` 由 `.gitignore` 排除。更換模型時更新 `模型清單.txt`、`models/<類別>/metadata.json`（若有）、設定檔中的 `sha256`。
-7. **外部檔案視為不受信任**：下載的權重先用 `pickletools` 檢視 pickle 內引用的類別再載入；Git LFS 指標檔（約 130 bytes、內容以 `version https://git-lfs` 開頭）不是權重。
+7. **外部檔案視為不受信任**：核對交付來源、大小、SHA-256 與部署格式，再按既有受控載入流程處理；不要任意執行未知 pickle。`pickletools` 檢視不等於安全驗證。Git LFS 指標檔不是權重。
 8. **不修改 `third_party/`、不自動安裝套件、不提交 `outputs/`、`input/`、個人資料**（`reporting/autoForm/reporter_profile.json`、`cases/`）。
 
 ---
@@ -127,7 +151,9 @@
 所有指令在專案根目錄執行，先設定 `PYTHONIOENCODING=utf-8`。
 
 ### 7.1 第一次使用：重建評估基準
-`outputs/` 已在 2026-10-28 清空。規則與後處理的離線評估需要全片評估的輸出，先跑一次（約 1–1.5 小時，可中斷續跑）：
+歷史紀錄指出 `outputs/` 曾在 2026-10-28 清空。本次核對也沒有既有輸出。
+只有任務需要實際影片評估且基準不存在時才重建；不要因首次閱讀文件就啟動長時間 GPU 工作。
+規則與後處理的離線評估需要全片評估輸出（歷史耗時約 1–1.5 小時，依本機而異，可中斷續跑）：
 
 ```
 .venv\Scripts\python.exe tools\batch_eval.py --label baseline
@@ -139,7 +165,8 @@
 
 | 修改內容 | 必做驗證 |
 | --- | --- |
-| 任何修改 | `.venv\Scripts\python.exe -m unittest discover -s tests`（全部通過） |
+| 程式修改 | 先跑相關測試，交接可執行程式變更時再跑 `.venv\Scripts\python.exe -m unittest discover -s tests`；記錄失敗與環境限制 |
+| 純文件修改 | 核對原始碼、文件連結、命令與參數；不必重跑模型或為文字修改新增測試 |
 | 只改規則（`violation_engine.py`、`area_rules.py` 規則部分、`signal_state.py`、規則設定） | `tools/rule_eval.py --source outputs/eval/baseline --label <名稱>`（約 1 分鐘，輸出 `rule_options.json` 記錄參數與 commit） |
 | 改後處理（補償、雙線、區域幾何、鏡頭運動、`frame_processing.py`） | `tools/real_replay.py outputs/eval/baseline --all --out outputs/eval/<名稱>`（不需 torch；`--recompute-motion` 重新估計鏡頭運動） |
 | 改模型或模型參數 | 只重跑該模型產生新 JSONL／遮罩，再用 `real_replay` 重播（做法見 refactor_log 4e、4h）；或重跑 `batch_eval` |
@@ -164,10 +191,10 @@
 | 標線 | SegFormer B2 best56000，滑動視窗 1024/683、fp16＋fast_attention，**每 2 幀推論**（中間幀依鏡頭運動推移） |
 | 深度／車牌／OCR | Depth Anything V2 Small（每 2 幀）、車牌 YOLO ONNX（stable_shapes）、台灣 PP-OCRv6（CPU） |
 
-### 速度（RTX 5060 Laptop，完整流程）
+### 歷史速度（RTX 5060 Laptop，完整流程；不是本次重測）
 1080p（ms01）約 1.62 FPS、720p（cdy01）約 2.78 FPS。標線約佔每幀一半；鏡頭運動 60–90 ms 在背景並行；ms01 區域幾何約 67 ms。
 
-### 準確度（21 支影片子集，現行設定）
+### 歷史準確度（21 支影片子集；來源 refactor_log 4h–4i，不是本次重測）
 闖紅燈事件層級 TP 6／FP 3／FN 1，影片層級 7/8；停等區影片層級 3/5（無事件標註）；雙黃線 1/7；斑馬線 0/5；車牌完全正確 3/6。
 
 ### 已知問題
@@ -193,7 +220,8 @@
 
 ## 9. 交接文件範本（Astra → Opus）
 
-每個功能分支在合併前附上（可放在 PR 描述或 `docs/handoff/<功能名>.md`）：
+每個功能分支在合併前填寫 [完整交接範本](docs/handoff/TEMPLATE.md)，可放在 PR 描述或 `docs/handoff/<功能名>.md`。
+以下是摘要格式；缺少數據時寫「未執行／原因」，不可填入過去測試數冒充本次結果：
 
 ```
 ## 功能
@@ -223,6 +251,10 @@
 - 遠端：`origin = github.com/snowmaple777/AI-powered-Automatic-Traffic-Violation-Reporting-System`。
   **本專案的整合分支是 `master`；遠端預設分支是 `main`（內容不同，不要混用）。** 其他遠端分支（`feature/perception`、`feature/road-marking` 等）是早期的獨立模組來源。
 - 功能開發在 `feature/<名稱>` 分支；推送與合併到 master 須經使用者同意。不要 force push、不要改寫已推送的歷史。
+- 分工本身不是發布授權；已獲得的當次授權持續有效，不要反覆確認。未受本次任務授權時，不推送、不提交填表案件或對外送出訊息。
+- 多 agent 同時工作時各用獨立 worktree／分支，或在交接中分配檔案責任；不要在同一工作目錄替另一個 agent 切分支。
+  共用介面一次由一方修改。開始與交接均檢查 diff，不得把其他人的變更當作自己的成果提交。
+- 交付以明確 commit 或完整差異檔為準，不能只說「已在聊天中改好」。未提交變更須列出檔案與如何取得。
 - commit 訊息：英文祈使句標題＋說明原因與驗證結果的內文（參考 `git log`）。
 - 本機 tag `refactor-pre`、`refactor-stage1`、`refactor-stage2`、`refactor-stage4b`、`refactor-stage4c` 標記重構階段（未推送）。
 - 文件與程式註解使用**繁體中文**；識別字使用英文。使用者文件 `docs/usage.md` 與 `使用說明.txt` 內容需同步。

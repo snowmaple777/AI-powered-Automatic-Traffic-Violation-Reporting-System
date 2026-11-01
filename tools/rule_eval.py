@@ -1,6 +1,8 @@
 """規則層快速評估：直接以全片評估的 JSONL 重算違規規則（不需影片或模型），計算指標。
 
   python tools/rule_eval.py --source outputs/eval/baseline --label rules_v1
+  python tools/rule_eval.py --source outputs/eval/baseline --label no_gate --no-direct-marking-gate
+    （停用「確認需直接觀測標線」的閘門，量測閘門本身改變了哪些事件）
 輸出 outputs/eval/<label>/<影片>/<影片>_violations.jsonl 與摘要，並與來源事件比較差異。
 """
 import argparse
@@ -18,10 +20,14 @@ from double_lines import double_line_rule_options  # noqa: E402
 from area_rules import area_rule_options  # noqa: E402
 
 
-def rule_options():
-    options = {"red_light_stop_line_crossing": {"crossing_direction": "away"}}
+def rule_options(direct_marking_gate=True):
+    options = {"red_light_stop_line_crossing": {"crossing_direction": "away",
+                                                "require_direct_marking_evidence": direct_marking_gate}}
     options.update(area_rule_options(ROOT / "configs/area_rules.json"))
     options.update(double_line_rule_options(ROOT / "configs/double_line_rules.json"))
+    if not direct_marking_gate:
+        for name in ("double_yellow_line_crossing", "double_white_line_crossing"):
+            options[name]["settings"]["require_direct_marking_evidence"] = False
     return options
 
 
@@ -36,7 +42,8 @@ def git_state():
     return {"commit": git("rev-parse", "HEAD"), "dirty": None if status is None else bool(status)}
 
 
-def run_rules(jsonl, out_dir, name, rules=("all",)):
+def run_rules(jsonl, out_dir, name, rules=("all",), options=None):
+    options = rule_options() if options is None else options
     out_dir.mkdir(parents=True, exist_ok=True)
     events, engine = [], None
     with jsonl.open(encoding="utf-8") as source, \
@@ -45,7 +52,7 @@ def run_rules(jsonl, out_dir, name, rules=("all",)):
             observation = json.loads(line)
             if engine is None:
                 frame = observation["frame"]
-                engine = ViolationEngine(create_rules(list(rules), RuleContext(name, frame["fps"], frame["width"], frame["height"]), rule_options()))
+                engine = ViolationEngine(create_rules(list(rules), RuleContext(name, frame["fps"], frame["width"], frame["height"]), options))
             events += engine.evaluate(observation)
             diagnostics.write(json.dumps({"frame": observation["frame"]["index"],
                                           "rules": {r.rule_id: getattr(r, "diagnostics", {}) for r in engine.rules}},
@@ -66,18 +73,21 @@ def main(argv=None):
     parser.add_argument("--source", type=Path, default=ROOT / "outputs/eval/baseline")
     parser.add_argument("--label", required=True)
     parser.add_argument("--only", nargs="*")
+    parser.add_argument("--no-direct-marking-gate", action="store_true",
+                        help="停用確認需直接觀測標線的閘門（對照用）")
     args = parser.parse_args(argv)
+    options = rule_options(not args.no_direct_marking_gate)
     out = ROOT / "outputs/eval" / args.label
     out.mkdir(parents=True, exist_ok=True)
     (out / "rule_options.json").write_text(json.dumps(
-        {"source": str(args.source), "only": args.only, "git": git_state(), "options": rule_options()},
+        {"source": str(args.source), "only": args.only, "git": git_state(), "options": options},
         ensure_ascii=False, indent=2), encoding="utf-8")
     changed = []
     for folder in sorted(p for p in args.source.iterdir() if (p / f"{p.name}_detections.jsonl").is_file()):
         name = folder.name
         if args.only and name not in args.only:
             continue
-        events = run_rules(folder / f"{name}_detections.jsonl", out / name, name)
+        events = run_rules(folder / f"{name}_detections.jsonl", out / name, name, options=options)
         before = [json.loads(l) for l in (folder / f"{name}_violations.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
         if brief(before) != brief(events):
             changed.append((name, brief(before), brief(events)))

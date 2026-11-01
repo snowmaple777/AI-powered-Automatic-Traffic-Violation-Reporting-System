@@ -15,6 +15,7 @@ from core.continuity import is_continuous
 from core.geometry import project_points
 from core.motion import homography, road_motion
 from core.fastcopy import clone
+from observation_schema import marking_evidence, marking_geometry_source
 from signal_state import CombinedSignalState, signal_lights
 
 
@@ -25,7 +26,12 @@ AREA_RULES = {
 DEFAULTS = dict(min_confidence=.5, min_observations=3, intrusion_seconds=.15,
                 overlap_ratio=.5, stationary_seconds=1., stationary_radius_px=4.,
                 min_intrusion_length_px=2., max_observation_gap_sec=.3,
-                max_frame_gap_sec=.2, rearm_seconds=2., side_margin_ratio=.02)
+                max_frame_gap_sec=.2, rearm_seconds=5., side_margin_ratio=.02,
+                duplicate_box_iou=.5, occlusion_gap_ratio=.25, stationary_radius_ratio=.2,
+                crosswalk_two_wheelers=False)
+# 允許為 0（停用）的數值設定；布林設定。其餘必須為正數。
+NONNEGATIVE = {"occlusion_gap_ratio", "stationary_radius_ratio"}
+BOOLEAN = {"crosswalk_two_wheelers"}
 
 
 def settings_for(overrides=None):
@@ -33,11 +39,15 @@ def settings_for(overrides=None):
         raise ValueError("Unknown area-rule settings")
     settings = {**DEFAULTS, **(overrides or {})}
     for key, value in settings.items():
-        if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+        if key in BOOLEAN:
+            if type(value) is not bool:
+                raise ValueError(f"{key} must be boolean")
+        elif type(value) not in (int, float) or not math.isfinite(value) or (value < 0 if key in NONNEGATIVE else value <= 0):
             raise ValueError(f"{key} must be finite and positive")
     if type(settings["min_observations"]) is not int or settings["min_observations"] < 2:
         raise ValueError("min_observations must be an integer >= 2")
-    if max(settings["overlap_ratio"], settings["min_confidence"], settings["side_margin_ratio"]) > 1:
+    if max(settings["overlap_ratio"], settings["min_confidence"], settings["side_margin_ratio"],
+           settings["duplicate_box_iou"]) > 1:
         raise ValueError("Ratios must be <= 1")
     return settings
 
@@ -204,7 +214,10 @@ def attach_area_geometry(record, mask, state, cfg):
     current = extract_traffic_regions(mask if mask_ok else None,
         obs.get("road_markings_raw", obs.get("road_markings", [])), cfg)
     used = set()
+    # 標線降頻時本幀遮罩可能是推移估計：區域保留來源（direct／propagated／stale），不當成直接觀測。
+    geometry_source = marking_geometry_source(marking_evidence(record))
     for region in current:
+        region["marking_source"] = geometry_source
         scores = sorted([(_polygon_iou(region["polygon"], item["polygon"]), n)
                          for n, item in enumerate(old) if item["kind"] == region["kind"] and n not in used], reverse=True)
         if scores and scores[0][0] >= cfg["region_match_iou"]:
@@ -380,6 +393,62 @@ def polygon(value):
     return points
 
 
+def _band_edges(hull):
+    """斑馬線區域的遠端／近端邊界線：在區域的水平範圍內取多個 x，量凸多邊形在該 x 的上下界並各擬合一直線。
+
+    回傳 (遠端線, 近端線, x 範圍)，線為 (斜率, 截距)，y = 斜率 * x + 截距；無法擬合或太斜（> 35 度）時回傳 None。
+    """
+    hull = np.asarray(hull, dtype=np.float64)
+    px1, px2 = float(hull[:, 0].min()), float(hull[:, 0].max())
+    if px2 - px1 < 10:
+        return None
+    edges = list(zip(hull, np.roll(hull, -1, axis=0)))
+    xs, tops, bottoms = [], [], []
+    for x in np.linspace(px1, px2, 22)[1:-1]:
+        ys = [a[1] + (x - a[0]) * (b[1] - a[1]) / (b[0] - a[0]) for a, b in edges
+              if (a[0] - x) * (b[0] - x) <= 0 and a[0] != b[0]]
+        if len(ys) >= 2:
+            xs.append(x), tops.append(min(ys)), bottoms.append(max(ys))
+    if len(xs) < 3:
+        return None
+    lines = [tuple(np.polyfit(xs, values, 1)) for values in (tops, bottoms)]
+    if any(math.degrees(math.atan(abs(slope))) > 35 for slope, _ in lines):
+        return None
+    return lines[0], lines[1], (px1, px2)
+
+
+def occluded_band_overlap(region_polygon, footprint, box, gap_ratio):
+    """車身遮住斑馬線時的足跡重疊比例（估計，只支持疑似）。
+
+    停在斑馬線上的車會遮住車身底下的條紋，分割出的斑馬線區域因此止於車身側緣，足跡與區域幾乎不重疊。
+    只有在區域的一端落在車框水平範圍內（或距車框不超過車寬 × gap_ratio）、且斑馬線帶延伸後穿過車框時，
+    才把斑馬線帶（遠端與近端邊界線之間）沿原方向延伸到車框範圍，計算足跡與延伸帶的重疊。否則回傳 0。
+    """
+    if gap_ratio <= 0:
+        return 0.0
+    edges = _band_edges(cv2.convexHull(np.asarray(region_polygon, dtype=np.float32)).reshape(-1, 2))
+    if edges is None:
+        return 0.0
+    far, near, (px1, px2) = edges
+    bx1, by1, bx2, by2 = (float(v) for v in box)
+    tolerance = (bx2 - bx1) * gap_ratio
+    ends_at_right = px1 < bx1 and bx1 - tolerance <= px2 <= bx2
+    ends_at_left = px2 > bx2 and bx1 <= px1 <= bx2 + tolerance
+    if not (ends_at_right or ends_at_left):
+        return 0.0
+    y_at = lambda line, x: line[0] * x + line[1]
+    center = (bx1 + bx2) / 2
+    if not (y_at(near, center) > by1 and y_at(far, center) < by2 and y_at(near, center) > y_at(far, center)):
+        return 0.0
+    xa, xb = min(px1, bx1), max(px2, bx2)
+    band = np.asarray([[xa, y_at(far, xa)], [xb, y_at(far, xb)], [xb, y_at(near, xb)], [xa, y_at(near, xa)]],
+                      dtype=np.float32)
+    if not cv2.isContourConvex(band) or cv2.contourArea(band) <= 1:
+        return 0.0
+    intersection, _ = cv2.intersectConvexConvex(footprint, band)
+    return float(intersection / cv2.contourArea(footprint))
+
+
 def front_overlap(edge, region):
     """Clip the finite front segment to a convex region, including crossing ends."""
     edge = np.asarray(edge, dtype=float)
@@ -405,6 +474,19 @@ def front_overlap(edge, region):
     return max(0., high - low) * length
 
 
+def _box_iou(a, b):
+    try:
+        ax1, ay1, ax2, ay2 = (float(v) for v in a)
+        bx1, by1, bx2, by2 = (float(v) for v in b)
+    except (TypeError, ValueError):
+        return 0.0
+    w, h = min(ax2, bx2) - max(ax1, bx1), min(ay2, by2) - max(ay1, by1)
+    if w <= 0 or h <= 0:
+        return 0.0
+    inter = w * h
+    return inter / ((ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - inter)
+
+
 class AreaOccupancyRule:
     """One shared state machine; no geometry estimators or model objects here."""
 
@@ -413,8 +495,9 @@ class AreaOccupancyRule:
         self.kind, self.label = AREA_RULES[rule_id]
         self.settings = settings_for(settings)
         self.states, self.previous_frame, self.diagnostics = {}, None, {}
-        # 已報告的車輛 → 最後一次仍在區域內的時間。區域編號換號或量測短暫低於門檻時，
-        # 同一台車在 rearm_seconds 內持續侵入只報告一次。
+        # 已報告的車輛 → (最後一次仍在區域內的時間, 當時車框)。區域編號換號或量測短暫低於門檻時，
+        # 同一台車在 rearm_seconds 內持續侵入只報告一次；追蹤換號時，新編號的車框與 rearm_seconds 內
+        # 已報告車輛的車框 IoU ≥ duplicate_box_iou 也視為同一台車（只抑制重複報告，不產生事件、不累積證據）。
         self.reported = {}
         # 沒有車道標定（行車紀錄器）時改用整個畫面的燈號；與闖紅燈規則相同的強／弱／延續證據。
         self.signal = CombinedSignalState(context.fps) if self.kind == "motorcycle_waiting_area" else None
@@ -482,7 +565,8 @@ class AreaOccupancyRule:
                         raise ValueError("missing_identity")
                     if vehicle_ids[identity] != 1 or region_ids[region_id] != 1:
                         raise ValueError("ambiguous_identity")
-                    allowed = {"car", "truck", "bus"} if self.kind == "motorcycle_waiting_area" else {"car", "truck", "bus", "motorcycle", "bicycle"}
+                    allowed = ({"car", "truck", "bus"} if self.kind == "motorcycle_waiting_area" or not cfg["crosswalk_two_wheelers"]
+                               else {"car", "truck", "bus", "motorcycle", "bicycle"})
                     if vehicle.get("class_name") not in allowed:
                         continue
                     if region.get("source_frame") != index:
@@ -491,6 +575,11 @@ class AreaOccupancyRule:
                     for item in (region, vehicle):
                         confidence = item.get("confidence", 0)
                         if not isinstance(confidence, (float, int)) or not math.isfinite(confidence) or not cfg["min_confidence"] <= confidence <= 1:
+                            # 偵測信心短暫低於門檻：與短暫漏偵測相同處理——不累積證據、不更新時間，
+                            # 但保留累積中的狀態到 max_observation_gap_sec，避免信心在門檻附近跳動時停留時間一再歸零。
+                            previous = self.states.get(key)
+                            if previous and now - previous["last_time"] <= cfg["max_observation_gap_sec"]:
+                                retained.add(key)
                             raise ValueError("low_confidence")
                     state = self.states.get(key)
                     if state and now - state["last_time"] > cfg["max_observation_gap_sec"]:
@@ -530,26 +619,41 @@ class AreaOccupancyRule:
                         footprint = polygon(geometry.get("footprint"))
                         intersection, _ = cv2.intersectConvexConvex(footprint, area)
                         measured = float(intersection / cv2.contourArea(footprint))
+                        occluded = False
+                        if measured + 1e-6 < cfg["overlap_ratio"]:
+                            # 斑馬線被這台車遮住：沿斑馬線帶延伸到車框範圍再量（只支持疑似，事件會標記）。
+                            extended = occluded_band_overlap(area, footprint, vehicle["bbox_xyxy"], cfg["occlusion_gap_ratio"])
+                            if extended + 1e-6 >= cfg["overlap_ratio"]:
+                                measured, occluded = extended, True
                         self.diagnostics["measurements"].append(dict(object_id=identity, region_id=region_id,
-                            measurement=measured, threshold=cfg["overlap_ratio"], name="footprint_overlap_ratio"))
+                            measurement=measured, threshold=cfg["overlap_ratio"], name="footprint_overlap_ratio",
+                            occlusion_extended=occluded))
                         if measured + 1e-6 < cfg["overlap_ratio"]:
                             continue
                         point, duration = footprint.mean(axis=0).tolist(), cfg["stationary_seconds"]
-                        if state and np.linalg.norm(np.asarray(point) - state["anchor"]) > cfg["stationary_radius_px"]:
+                        box = vehicle["bbox_xyxy"]
+                        radius = max(cfg["stationary_radius_px"], cfg["stationary_radius_ratio"] * (box[2] - box[0]))
+                        if state and np.linalg.norm(np.asarray(point) - state["anchor"]) > radius:
                             state = None
                     snapshot = clone(dict(frame=frame, vehicle=vehicle, region=region, measurement=measured))
                     if state is None:
                         state = dict(since=now, count=0, anchor=point, before=snapshot, reported=False)
                     state.update(last_time=now, count=state["count"] + 1)
+                    if self.kind == "crosswalk" and occluded:
+                        state["occlusion_extended"] = True
                     self.states[key] = state
                     retained.add(key)
-                    if state["reported"] or (identity in self.reported and now - self.reported[identity] <= cfg["rearm_seconds"]):
-                        self.reported[identity] = now
+                    duplicate = self._duplicate_of(identity, vehicle.get("bbox_xyxy"), now)
+                    if state["reported"] or duplicate:
+                        self.reported[identity] = (now, list(vehicle["bbox_xyxy"]))
+                        if duplicate and duplicate != identity and not state["reported"]:
+                            self.diagnostics.setdefault("duplicates", []).append(
+                                dict(object_id=identity, region_id=region_id, duplicate_of=duplicate))
                         state["reported"] = True
                         continue
                     if state["count"] < cfg["min_observations"] or now - state["since"] + 1e-6 < duration:
                         continue
-                    self.reported[identity] = now
+                    self.reported[identity] = (now, list(vehicle["bbox_xyxy"]))
                     event = dict(event_id=f"{self.context.source_id}:{self.rule_id}:{identity}:{region_id}:{index}",
                                  rule_id=self.rule_id, source_id=self.context.source_id, status="suspected",
                                  status_label="疑似違規", review_required=True, behavior=self.rule_id,
@@ -562,6 +666,10 @@ class AreaOccupancyRule:
                                                measurement_name="front_overlap_px" if point is None else "footprint_overlap_ratio"))
                     event["conditions"]["estimated_vehicle_geometry"] = bool(geometry.get("estimated"))
                     event["conditions"]["predicted_region"] = bool(region.get("predicted"))
+                    if self.kind == "crosswalk" and cfg["occlusion_gap_ratio"] > 0:
+                        event["conditions"]["region_visible_at_footprint"] = not state.get("occlusion_extended", False)
+                    event["conditions"]["direct_region_observation"] = bool(
+                        not region.get("predicted") and region.get("marking_source", "direct") == "direct")
                     if self.kind == "motorcycle_waiting_area":
                         event["conditions"].update(lane_matched=lane_matched, strong_signal_evidence=strong_signal,
                                                    front_edge_from_lane=not front_assumed)
@@ -579,10 +687,21 @@ class AreaOccupancyRule:
         # 車輛仍在但已離開區域或條件不符者照舊清除。
         self.states = {key: state for key, state in self.states.items() if key in retained or (
             key[0] not in vehicle_ids and now - state["last_time"] <= cfg["max_observation_gap_sec"])}
-        self.reported = {k: t for k, t in self.reported.items() if now - t <= cfg["rearm_seconds"]}
+        self.reported = {k: v for k, v in self.reported.items() if now - v[0] <= cfg["rearm_seconds"]}
         self.diagnostics["states"] = [dict(object_id=k[0], region_id=k[1], count=s["count"], reported=s["reported"])
                                       for k, s in self.states.items()]
         return events
+
+    def _duplicate_of(self, identity, box, now):
+        """回傳已報告的同一台車編號（同編號，或換號後車框高度重疊）；沒有則 None。依編號排序以保持可重現。"""
+        cfg = self.settings
+        if identity in self.reported and now - self.reported[identity][0] <= cfg["rearm_seconds"]:
+            return identity
+        for other in sorted(self.reported):
+            seen, other_box = self.reported[other]
+            if now - seen <= cfg["rearm_seconds"] and _box_iou(box, other_box) >= cfg["duplicate_box_iou"]:
+                return other
+        return None
 
     def finalize(self):
         self.states.clear()

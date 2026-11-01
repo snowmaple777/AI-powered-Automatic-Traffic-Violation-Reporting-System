@@ -100,10 +100,14 @@
   `weights`、`config` 等路徑相對於設定檔所在目錄解析，啟動時檢查檔案存在。
 - **快取／降頻語意**：降頻的模型在未推論的幀回傳上次結果並標記 `source_frame`（車輛是每筆紀錄的 `source_frame`；標線是 `artifacts["source_frame"]`）。
   車輛 `source_frame != 當幀` 時**不能作為新的車輛觀測**累積證據或觸發事件。
-  標線目前會由 `FrameProcessor` 推移到當幀再交給規則，來源保存在 `postprocessing.road_marking_source`；
-  這只是對齊當幀的估計，並非模型重新觀測。運動無效時仍沿用未推移遮罩（`warped=false`）。
-  **現有風險**：下游不一定對推移標線設置獨立確認閘門，不能宣稱所有 `confirmed` 都基於直接觀測標線；
-  interval 3 曾改變確認狀態，因此未採用（refactor_log 4j）。修改此語意屬於行為變更，需獨立驗證。
+  標線目前會由 `FrameProcessor` 推移到當幀再交給規則，來源每幀保存在 `postprocessing.road_marking_source`
+  （schema 1.8：`direct`、`aligned`、`age_frames`、`source_frame`；讀取一律用 `observation_schema.marking_evidence()`）。
+  推移只是對齊當幀的估計，並非模型重新觀測；運動無效時沿用未推移遮罩（`warped=false`、`aligned=false`）。
+  **證據閘門（refactor_log 4l）**：停止線補償、雙線、區域另計直接觀測（`direct_observed_frames`、`direct_rule_eligible`、
+  `geometry_source`、`marking_source`），闖紅燈與雙線的 `confirmed` 需要直接觀測的標線（`stop_line_direct_evidence`、
+  `direct_marking_evidence`）。推移資料仍可支持幾何對齊與疑似，不得增加確認所需的直接觀測次數。
+  1.8 以前的 JSONL 沒有直接觀測欄位，規則沿用原判定；需要閘門時以 `real_replay` 重播。
+  2026-11-01 Windows 驗證：interval 2 下 31 支影片的事件與關閉閘門時完全相同；interval 3／4 的評估須在閘門下重做。
 - 輸入是 `uint8 BGR`，輸出座標均為原圖像素；模型後端不可修改輸入 frame 或 upstream。
   `records` 必須可 JSON 序列化，遮罩等陣列留在 `artifacts`。跨影片須 `reset()`，結束須 `close()`。
 
@@ -111,10 +115,12 @@
 鏡頭運動（車輛偵測後即在背景執行緒估計）→ 標線推移（降頻時）→ 建立觀測紀錄 → 停止線補償 → 騎士配對 → 雙線 → 停等區／斑馬線區域。
 `run_pipeline` 的 `--save-masks` 存的是**處理後**的遮罩，離線重播才能逐位元重現。
 
-### 5.3 觀測紀錄（`observation_schema.py`，目前版本 1.7）
+### 5.3 觀測紀錄（`observation_schema.py`，目前版本 1.8）
 - 每幀一行 JSON，欄位與寫入者列在檔案開頭的說明；`validate_observation()` 檢查必要欄位。
 - **新增欄位**：更新該說明與版本紀錄、`SCHEMA_VERSION` 加一個小版本，舊紀錄必須仍可被讀取（讀取端要有退回值，參考 `core.motion.road_motion()`）。
 - 鏡頭運動一律以 `core.motion.road_motion(record)` 讀取、`core.motion.homography()` 驗證，不要直接讀欄位。
+- 標線來源一律以 `observation_schema.marking_evidence(record)` 讀取（舊紀錄退回「直接觀測」）。
+- 模型可透過 `FrameContext.motion_probe()` 取得本幀鏡頭運動（阻塞至背景估計完成；未提供時為 None），只在需要時呼叫。
 
 ### 5.4 規則
 - 介面：`ViolationRule.evaluate(observation) -> list[event]`、`finalize() -> list[event]`；`rule_id` 唯一；建構參數 `(context: RuleContext, **options)`。
@@ -123,7 +129,7 @@
 - 事件必要欄位：`event_id`、`rule_id`、`status`（`suspected`／`confirmed`）、`frame`、`timestamp_sec`、`object_id`、`conditions`（條件名 → bool）、`evidence`。
   `conditions` 同時含證據成立旗標與估計／預測旗標，不可用 `all(conditions.values())` 決定確認狀態。
   必須依各規則的確認條件判斷；新增放寬路徑只能支持 `suspected`。
-- `ViolationEngine` 會把同一車輛 3 秒內的停等區事件併入闖紅燈事件的 `merged_events`（停等區事件因此最多延後 3 秒輸出，帶 `released_timestamp_sec`）。
+- `ViolationEngine` 會把同一車輛的停等區事件併入闖紅燈事件的 `merged_events`：停等區事件至少保留 3 秒，車仍在畫面中（離開未滿 1 秒）或闖紅燈規則仍有它的待定事件時繼續保留；已報告闖紅燈的車，同片之後的停等區事件直接併入（延後輸出的事件帶 `released_timestamp_sec`，refactor_log 4n）。
 - 每幀診斷寫在 `rule.diagnostics`（阻擋原因），全片評估以此統計漏判原因；新規則也要提供。
 
 ### 5.5 燈號
@@ -138,7 +144,8 @@
 2. **快取資料不算證據**：見 5.1。
 3. **可重現**：同樣輸入必須得到同樣輸出。不要走訪無序集合後依順序產生結果（`tests/test_determinism.py` 以多個雜湊種子檢查）。
 4. **沒有數字不宣稱改善**：規則、後處理、模型的修改都要附評估結果（第 7 節），包括變差的部分；撤回的實驗也要記錄。
-5. **標註極少，不要對答案調參**：31 支評估影片只有 6 支有事件標註（約 7 個事件）。指標變動 1 個事件就是十幾個百分點，
+5. **標註極少，不要對答案調參**：2026-11-01 起 31 支評估影片全部 reviewed，共 34 個事件（來源 `input/違規參考.txt`），
+   但每條規則只有 5–14 個事件。指標變動 1 個事件就是 7–20 個百分點，
    報告時寫絕對數（TP／FP／FN），並逐片檢查變動的事件畫面，不要只看百分比。
 6. **權重不進 git**：`.pt`／`.pth`／`.onnx` 由 `.gitignore` 排除。更換模型時更新 `模型清單.txt`、`models/<類別>/metadata.json`（若有）、設定檔中的 `sha256`。
 7. **外部檔案視為不受信任**：核對交付來源、大小、SHA-256 與部署格式，再按既有受控載入流程處理；不要任意執行未知 pickle。`pickletools` 檢視不等於安全驗證。Git LFS 指標檔不是權重。
@@ -176,7 +183,7 @@
 指標摘要：`batch_eval.summarize(label)` 或 `eval/metrics.py`。影片層級＝該片是否輸出目標規則事件；事件層級只計 `reviewed: true` 的影片。
 
 ### 7.3 回報格式
-每次交付或整合，在 `docs/refactor_log.md` 新增一節（目前編號到 4j），包含：修改內容、原因、驗證方式、
+每次交付或整合，在 `docs/refactor_log.md` 新增一節（目前編號到 4s），包含：修改內容、原因、驗證方式、
 前後數字（影片層級、事件層級 TP／FP／FN、速度）、逐片變動的事件、已知副作用、是否採用。
 
 ---
@@ -198,9 +205,9 @@
 闖紅燈事件層級 TP 6／FP 3／FN 1，影片層級 7/8；停等區影片層級 3/5（無事件標註）；雙黃線 1/7；斑馬線 0/5；車牌完全正確 3/6。
 
 ### 已知問題
-- 標註不足：25 支影片沒有事件標註，停等區、斑馬線、雙線沒有事件層級指標。
+- 標註：2026-11-01 已補齊 31 支（34 個事件）；時間是約略區間，未列出的真實違規會被算成誤報。舊評估數字是在只有 6 支 reviewed 時算的，不能與新標註直接比較。
 - 雙線漏報主因在感知：遠處小車、彎道雙線分割不穩、鏡頭運動在 cdy05／cdy07 常無效。
-- 斑馬線規則多數被 `low_confidence` 阻擋（區域或車輛信心 < 0.5，尚未拆分原因）。
+- 斑馬線規則：`low_confidence` 只是表面原因；主因是車身遮住斑馬線、移動攝影機下停留判定漂移（refactor_log 4p、4q）。4q 後 TP 1 FP 3 FN 3，暫不看機車。
 - 燈號：遠處小號誌常被讀成黃燈，造成顏色衝突而判未知（ms03）；橘色招牌被讀成黃燈（ms02）。
 - 停等區在行車紀錄器上以「車頭朝遠離鏡頭」假設判定，橫向穿越的車方向不正確（只產生疑似）。
 - 闖紅燈誤報：ms02 同一時間兩台車的事件、mm01 14.9 秒事件，尚未逐片確認。
@@ -208,13 +215,14 @@
 ### 待辦（建議負責方）
 | 項目 | 負責 |
 | --- | --- |
-| 補完 `eval/ground_truth.json` 標註（人工；agent 可整理待看清單與片段） | 使用者／Astra |
-| 斑馬線 `low_confidence` 原因拆分與門檻 | Astra |
+| ~~補完 `eval/ground_truth.json` 標註~~（2026-11-01 完成；發現標註疑義時回報使用者，不自行改答案） | 使用者 |
+| ~~斑馬線 `low_confidence` 原因拆分與門檻~~（4p／4q 完成）；斑馬線遠處小車誤報（ms03）、更準確的接地／停止判斷 | Astra |
 | 闖紅燈誤報逐片分析與去重 | Astra |
 | 燈號主燈選擇（遠處小燈號、顏色衝突） | Astra 提案，Opus 整合 |
 | 標線模型 TensorRT／ONNX fp16 匯出（需逐像素驗證） | Opus |
 | 區域幾何加速（只在啟用區域規則時計算或降解析度） | Opus |
 | 剩餘 10 支影片以新標線模型完整評估 | Astra |
+| 標線證據閘門的真實影片影響、標線 interval 1/2/4 與運動失效重新推論評估（docs/handoff/marking_evidence_gate.md） | Astra 評估，Opus 決定預設 |
 
 ---
 

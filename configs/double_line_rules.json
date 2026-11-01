@@ -34,5 +34,6 @@
   "allow_motion_gaps": true,
   "max_motion_gap_sec": 1.0,
   "max_extrapolation_ratio": 0.5,
-  "max_line_handoff_px": 25.0
+  "max_line_handoff_px": 25.0,
+  "require_direct_marking_evidence": true
 }

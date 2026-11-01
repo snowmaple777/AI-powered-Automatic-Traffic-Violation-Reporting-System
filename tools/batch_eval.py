@@ -2,9 +2,14 @@
 
 模型只載入一次；每支影片輸出到 outputs/eval/<label>/<影片>/（含逐幀遮罩，供離線重播後處理與規則）。
 已完成的影片會略過（可中斷後續跑）。用法：python tools/batch_eval.py --label baseline
+比較不同模型設定時，每個設定使用不同的 label：
+  python tools/batch_eval.py --label marking_i4 --model-config configs/marking_interval_4_refresh.json
+done.json 記錄設定指紋（模型與規則設定檔的 SHA-256）；同一 label 下設定不同時拒絕續跑，避免混用結果。
 """
 import argparse
+import hashlib
 import json
+import subprocess
 import sys
 import time
 from collections import Counter
@@ -52,6 +57,30 @@ def diagnose(folder, video, category):
     return result
 
 
+FINGERPRINT_CONFIGS = ("configs/double_line_rules.json", "configs/area_rules.json",
+                       "configs/marking_compensation.json")
+
+
+def settings_fingerprint(model_config):
+    """影響輸出的設定檔內容雜湊；程式版本另記（commit 與是否有未提交修改），只作參考不參與比對。"""
+    path = Path(model_config).resolve()
+    name = path.relative_to(ROOT).as_posix() if path.is_relative_to(ROOT) else path.as_posix()
+    files = {name: path, **{item: ROOT / item for item in FINGERPRINT_CONFIGS}}
+    digest = {key: hashlib.sha256(value.read_bytes()).hexdigest() for key, value in sorted(files.items())}
+    return {"model_config": name, "sha256": digest}
+
+
+def code_version():
+    try:
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True,
+                              timeout=10).stdout.strip()
+        dirty = subprocess.run(["git", "--no-optional-locks", "status", "--porcelain", "--untracked-files=no"],
+                               cwd=ROOT, capture_output=True, text=True, timeout=30).stdout.strip() != ""
+        return {"commit": head or None, "dirty": dirty}
+    except (OSError, subprocess.SubprocessError):
+        return {"commit": None, "dirty": None}
+
+
 def summarize(label):
     from eval.metrics import evaluate, load_predictions
     out = EVAL_DIR / label
@@ -94,6 +123,8 @@ def main(argv=None):
     parser.add_argument("--only", nargs="*", help="只跑指定影片（例如 ms01 cdy02）")
     parser.add_argument("--max-frames", type=int, default=0)
     parser.add_argument("--summary-only", action="store_true", help="只重新產生摘要")
+    parser.add_argument("--model-config", type=Path, default=ROOT / "configs/default.json",
+                        help="模型設定檔（不同設定請用不同 --label）")
     args = parser.parse_args(argv)
     out = EVAL_DIR / args.label
     if not args.summary_only:
@@ -101,25 +132,38 @@ def main(argv=None):
         from model_library import ModelPipeline, load_config
         truth = json.loads((ROOT / "eval/ground_truth.json").read_text(encoding="utf-8-sig"))
         videos = {k: v for k, v in truth["videos"].items() if not args.only or k in args.only}
+        fingerprint = settings_fingerprint(args.model_config)
+        version = code_version()
         with ExitStack() as shared:
-            config = load_config(ROOT / "configs/default.json")
+            config = load_config(args.model_config)
             pipeline = shared.enter_context(ModelPipeline(config, run_pipeline.resolve_device("auto")))
             started = time.perf_counter()
             for n, (name, spec) in enumerate(videos.items(), 1):
                 folder = out / name
                 done = folder / "done.json"
                 if done.is_file():
-                    print(f"[{n}/{len(videos)}] {name} 已完成，略過", flush=True)
+                    previous = json.loads(done.read_text(encoding="utf-8"))
+                    if previous.get("settings") != fingerprint:
+                        raise SystemExit(f"{folder} 的 done.json 與本次設定不同（或沒有設定指紋），"
+                                         f"請改用新的 --label，不要混用不同設定的結果。")
+                    if previous.get("code") != version:
+                        print(f"[{n}/{len(videos)}] {name} 已完成（注意：當時的程式版本 {previous.get('code')} "
+                              f"與目前 {version} 不同）", flush=True)
+                    else:
+                        print(f"[{n}/{len(videos)}] {name} 已完成，略過", flush=True)
                     continue
                 print(f"[{n}/{len(videos)}] {name}（已用 {(time.perf_counter() - started) / 60:.1f} 分鐘）", flush=True)
                 argv_run = [str(ROOT / spec["file"]), "--output-dir", str(folder), "--rules", "all",
-                            "--no-violation-clips", "--save-masks", str(folder / "masks")]
+                            "--no-violation-clips", "--save-masks", str(folder / "masks"),
+                            "--model-config", str(args.model_config)]
                 if args.max_frames:
                     argv_run += ["--max-frames", str(args.max_frames)]
                 video_started = time.perf_counter()
                 with ExitStack() as resources:
                     run_pipeline.run(run_pipeline.parse_args(argv_run), resources, pipeline=pipeline)
-                done.write_text(json.dumps({"seconds": round(time.perf_counter() - video_started, 1)}), encoding="utf-8")
+                done.write_text(json.dumps({"seconds": round(time.perf_counter() - video_started, 1),
+                                            "settings": fingerprint, "code": version},
+                                           ensure_ascii=False), encoding="utf-8")
     print("\n" + summarize(args.label))
     print(f"\n摘要已存於 {out / 'summary.txt'}")
     return 0

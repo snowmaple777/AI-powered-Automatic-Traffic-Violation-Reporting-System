@@ -9,6 +9,11 @@
   "stationary_radius_px": 4.0,
   "max_observation_gap_sec": 0.3,
   "max_frame_gap_sec": 0.2,
+  "rearm_seconds": 5.0,
+  "duplicate_box_iou": 0.5,
+  "occlusion_gap_ratio": 0.25,
+  "stationary_radius_ratio": 0.2,
+  "crosswalk_two_wheelers": false,
   "geometry": {
     "close_gap_ratio": 0.025,
     "min_region_pixels": 120,

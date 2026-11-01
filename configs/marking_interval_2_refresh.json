@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "models": {
+    "vehicles": {
+      "backend": "perception_vehicle",
+      "params": {
+        "weights": "../models/vehicle/yolo26s.onnx",
+        "interval": 1
+      }
+    },
+    "traffic_lights": {
+      "backend": "yolo_light",
+      "params": {
+        "weights": "../models/traffic_light/traffic_light_best.pt",
+        "imgsz": 1280
+      }
+    },
+    "road_markings": {
+      "backend": "mmseg_marking",
+      "params": {
+        "weights": "../models/road_marking/segformer_b2_rlmd_best56000.pth",
+        "config": "../road_marking_config.py",
+        "sha256": "75ccd13c8efe31a0c1a76f22ddcd3867ebdd606287af3c39ae43b6c589d96b36",
+        "fast_attention": true,
+        "fp16": true,
+        "slide": {
+          "crop": [
+            1024,
+            1024
+          ],
+          "stride": [
+            683,
+            683
+          ]
+        },
+        "interval": 2,
+        "refresh_on_invalid_motion": true
+      }
+    },
+    "depth": {
+      "enabled": true,
+      "backend": "onnx_depth",
+      "params": {
+        "weights": "../models/depth/depth_anything_v2_metric_vkitti_vits.onnx",
+        "interval": 2
+      }
+    },
+    "plates": {
+      "enabled": true,
+      "backend": "perception_plate",
+      "params": {
+        "weights": "../models/plate/license-plate-finetune-v1s.onnx",
+        "max_distance": 22.0,
+        "stable_shapes": true
+      }
+    },
+    "ocr": {
+      "enabled": true,
+      "backend": "ppocrv6",
+      "params": {
+        "weights": "../models/ocr/PP-OCRv6_taiwan_infer",
+        "dict_path": "../models/ocr/ppocrv6_dict.txt",
+        "min_width": 58,
+        "max_distance": 22.0,
+        "device": "cpu"
+      }
+    }
+  }
+}

@@ -76,5 +76,106 @@ class RedLightRuleTests(unittest.TestCase):
         self.assertTrue(all(not e["conditions"]["before_line_observed"] for e in everything))
 
 
+class CrosswalkProxyTests(unittest.TestCase):
+    """某台車沒有重疊的真正停止線時，改用斑馬線近端邊緣作代理線（只產生疑似）。"""
+
+    def frames(self):
+        far_line = {"area": 2000, "bbox_xywh": [1500, 700, 300, 10], "line_xyxy": [1500, 705, 1800, 705],
+                    "centroid": [1650, 705]}  # 別的車道的停止線，不與車框重疊
+        frames = [frame(i, 760, [far_line]) for i in range(10)] + [frame(i, 640, [far_line]) for i in range(10, 15)]
+        for item in frames:
+            item["observations"]["traffic_regions"] = [{"region_id": "cw", "kind": "crosswalk", "predicted": False,
+                "polygon": [[850, 680], [1150, 680], [1150, 700], [850, 700]]}]
+        return frames
+
+    def run_rule(self, frames, **options):
+        rule = RedLightStopLineCrossingRule(RuleContext("t", 25, 1920, 1080), **options)
+        events = []
+        for item in frames:
+            events += rule.evaluate(item)
+        return events + rule.finalize()
+
+    def test_per_vehicle_proxy_is_used_when_no_stop_line_overlaps_the_vehicle(self):
+        events = self.run_rule(self.frames())
+        self.assertEqual([e["status"] for e in events], ["suspected"])
+        self.assertEqual(events[0]["evidence"]["stop_line"]["proxy"], "crosswalk_near_edge")
+        self.assertFalse(events[0]["conditions"]["stop_line_observed"])
+        # 舊行為：畫面上還有其他停止線時不使用代理線。
+        self.assertEqual(self.run_rule(self.frames(), crosswalk_proxy_mode="no_stop_line"), [])
+        with self.assertRaises(ValueError):
+            self.run_rule(self.frames(), crosswalk_proxy_mode="always")
+
+    def test_real_overlapping_stop_line_takes_precedence_over_the_proxy(self):
+        frames = self.frames()
+        for item in frames:
+            item["observations"]["road_markings"][0]["components"].append(dict(LINE_A))
+        events = self.run_rule(frames)
+        self.assertEqual([e["status"] for e in events], ["confirmed"])
+        self.assertIsNone(events[0]["evidence"]["stop_line"].get("proxy"))
+
+
+class SuspectedVetoTests(unittest.TestCase):
+    """疑似事件：越線前後 0.5 秒內出現綠燈、或越線後退回停止線前，都不輸出。"""
+
+    @staticmethod
+    def lights(frames, color, indices):
+        for item in frames:
+            if item["frame"]["index"] in indices:
+                item["observations"]["traffic_lights"] = [
+                    {"class_name": color, "confidence": .9, "bbox_xyxy": [100, 100, 120, 140]}]
+        return frames
+
+    def run_rule(self, frames, **options):
+        rule = RedLightStopLineCrossingRule(RuleContext("t", 25, 1920, 1080), **options)
+        events = []
+        for item in frames:
+            events += rule.evaluate(item)
+        return rule, events + rule.finalize()
+
+    def unknown_signal_crossing(self, after=(10, 15)):
+        # 燈號全程無法判定（沒有燈號框）：只能產生疑似事件。
+        frames = [frame(i, 760, [LINE_A]) for i in range(10)] + [frame(i, 640, [LINE_A]) for i in range(*after)]
+        for item in frames:
+            item["observations"]["traffic_lights"] = []
+        return frames
+
+    def test_baseline_unknown_signal_crossing_is_suspected(self):
+        _, events = self.run_rule(self.unknown_signal_crossing())
+        self.assertEqual([e["status"] for e in events], ["suspected"])
+
+    def test_green_shortly_after_crossing_cancels_pending_suspected(self):
+        frames = self.unknown_signal_crossing((10, 40))
+        rule, events = self.run_rule(self.lights(frames, "green", range(20, 40)))  # 25 fps：約 0.4 秒後轉綠
+        self.assertEqual(events, [])
+        _, kept = self.run_rule(self.lights(self.unknown_signal_crossing((10, 40)), "green", range(30, 40)),
+                                green_veto_seconds=0.5)  # 0.8 秒後才轉綠：保留
+        self.assertEqual([e["status"] for e in kept], ["suspected"])
+        _, disabled = self.run_rule(self.lights(self.unknown_signal_crossing((10, 40)), "green", range(20, 40)),
+                                    green_veto_seconds=0)
+        self.assertEqual([e["status"] for e in disabled], ["suspected"])
+
+    def test_green_just_before_crossing_blocks_suspected(self):
+        # 弱綠燈（信心 0.2）不會清除越線狀態，停用否決時會產生疑似；啟用時越線前 0.5 秒內有綠燈即不輸出。
+        frames = self.unknown_signal_crossing()
+        for item in frames:
+            if item["frame"]["index"] < 9:
+                item["observations"]["traffic_lights"] = [
+                    {"class_name": "green", "confidence": .2, "bbox_xyxy": [100, 100, 120, 140]}]
+        self.assertEqual([e["status"] for e in self.run_rule(frames, green_veto_seconds=0)[1]], ["suspected"])
+        self.assertEqual(self.run_rule(frames)[1], [])
+
+    def test_returning_behind_the_line_cancels_pending_suspected(self):
+        frames = self.unknown_signal_crossing() + [frame(i, 760, [LINE_A]) for i in range(15, 20)]
+        for item in frames:
+            item["observations"]["traffic_lights"] = []
+        rule, events = self.run_rule(frames)
+        self.assertEqual(events, [])
+
+    def test_confirmed_event_is_not_affected_by_later_green(self):
+        frames = [frame(i, 760, [LINE_A]) for i in range(10)] + [frame(i, 640, [LINE_A]) for i in range(10, 30)]
+        _, events = self.run_rule(self.lights(frames, "green", range(13, 30)))
+        self.assertEqual([e["status"] for e in events], ["confirmed"])
+
+
 if __name__ == "__main__":
     unittest.main()

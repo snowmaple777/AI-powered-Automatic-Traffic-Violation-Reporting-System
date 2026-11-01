@@ -46,6 +46,7 @@ class FrameProcessor:
         self.double_line_state = {}
         self.area_state = {}
         self._last_marking_mask = None  # 前一幀處理後的標線遮罩（標線降頻時推移用）
+        self._last_marking_aligned = True  # 前一幀處理後的遮罩是否對齊該幀（推移鏈中有一步失效即為 False）
 
     def start_motion(self, frame, frame_index, timestamp, vehicles):
         """提早啟動當幀的鏡頭運動估計；回傳 Future（未啟用鏡頭運動時為 None）。"""
@@ -68,15 +69,25 @@ class FrameProcessor:
     def _propagate_markings(self, marking, frame_index, motion):
         """標線降頻：沿用前一幀處理後的遮罩，以前幀→當幀的路面單應矩陣推移到當幀，並由遮罩重建標線紀錄。
 
-        鏡頭運動無效時沿用未推移的遮罩（warped=False）。回傳 (ModelResult, 來源資訊)。
+        鏡頭運動無效時沿用未推移的遮罩（warped=False、aligned=False）。回傳 (ModelResult, 來源資訊)。
+        推移結果只是對齊當幀的估計：來源資訊保留原始 source_frame，下游不得把它算成直接觀測。
         """
         from model_library.base import ModelResult
         from model_library.detectors import mask_components
         artifacts = marking.artifacts
+        motion_valid = None if motion is None else bool(motion.valid)
+        if "prealigned_source" in artifacts:
+            # 離線重播：遮罩已是當時推移後的結果，不再推移，沿用記錄的來源資訊。
+            recorded = artifacts["prealigned_source"]
+            info = dict(source_frame=artifacts["source_frame"], direct=False, propagated=True,
+                        warped=bool(recorded.get("warped")), aligned=bool(recorded.get("aligned")),
+                        age_frames=frame_index - artifacts["source_frame"], motion_valid=motion_valid)
+            return marking, info
         previous = self._last_marking_mask
+        aligned_before = self._last_marking_aligned
         if previous is None:
-            previous = artifacts["mask"]
-        warped = bool(motion is not None and motion.valid)
+            previous, aligned_before = artifacts["mask"], False
+        warped = bool(motion_valid)
         if warped:
             h, w = previous.shape
             mask = cv2.warpPerspective(previous, np.asarray(motion.matrix, dtype=np.float64), (w, h),
@@ -84,7 +95,9 @@ class FrameProcessor:
         else:
             mask = previous
         records = mask_components(mask, artifacts["classes"], artifacts["min_pixels"])
-        info = dict(source_frame=artifacts["source_frame"], propagated=True, warped=warped)
+        info = dict(source_frame=artifacts["source_frame"], direct=False, propagated=True, warped=warped,
+                    aligned=bool(warped and aligned_before), age_frames=frame_index - artifacts["source_frame"],
+                    motion_valid=motion_valid)
         return ModelResult(records, dict(artifacts, mask=mask)), info
 
     def process(self, frame, frame_index, timestamp, results, motion_future=None):
@@ -105,7 +118,12 @@ class FrameProcessor:
         if marking.artifacts.get("source_frame") not in (None, frame_index):
             with timer.measure("marking_propagation"):
                 marking, marking_source = self._propagate_markings(marking, frame_index, motion)
+        elif marking.artifacts.get("mask") is not None:
+            marking_source = dict(source_frame=frame_index, direct=True, propagated=False, warped=False,
+                                  aligned=True, age_frames=0,
+                                  motion_valid=None if motion is None else bool(motion.valid))
         self._last_marking_mask = marking.artifacts.get("mask")
+        self._last_marking_aligned = bool(marking_source is None or marking_source["aligned"])
         vehicles = [dict(item) for item in results["vehicles"].records]
         traffic_lights = results["traffic_lights"].records
         road_markings = marking.records
@@ -130,7 +148,8 @@ class FrameProcessor:
             with timer.measure("stop_line_compensation"):
                 compensation = self.compensator.process(
                     frame, frame_index=frame_index, timestamp_sec=timestamp,
-                    road_markings=road_markings, vehicles=vehicles, motion=motion)
+                    road_markings=road_markings, vehicles=vehicles, motion=motion,
+                    direct_observation=marking_source is None or marking_source["direct"])
                 # 原始／補償結果均保存；規則的 road_markings 入口只接收通過品質閘門者。
                 record = attach_compensation(record, compensation)
         if motion is not None:

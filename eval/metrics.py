@@ -2,6 +2,7 @@
 
 標註檔 eval/ground_truth.json（格式見 eval/README.md）。兩種層級：
   影片層級：videos.<名稱>.category 有填時，該片是否至少輸出一個同規則事件。
+  excluded=true 的影片（附 excluded_reason）兩種層級都不計。
   事件層級：reviewed=true 的影片，依規則與時間區間（±容許秒數）一對一配對，
             計算 TP／FP／FN、精確率、召回率；有標車牌時另算車牌完全正確率。
 用法：python eval/metrics.py outputs/verify/stage1 [其他資料夾 ...] [--min-status confirmed]
@@ -73,8 +74,8 @@ def evaluate(truth, predictions):
     per_rule = defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
     video_rows, plate_total, plate_correct = [], 0, 0
     for video, spec in sorted(truth["videos"].items()):
-        if video not in predictions:
-            continue  # 這次沒有處理的影片不列入計算
+        if video not in predictions or spec.get("excluded"):
+            continue  # 這次沒有處理的影片、或標註為暫時排除的影片（excluded）不列入計算
         events = predictions[video]
         category = spec.get("category")
         if category:
@@ -90,7 +91,15 @@ def evaluate(truth, predictions):
                 per_rule[gt["rule_id"]]["fn"] += 1
                 continue
             middle = (gt["start_sec"] + gt["end_sec"]) / 2
-            best = min(candidates, key=lambda e: abs(event_time(e) - middle))
+            expected = normalize_plate(gt.get("plate"))
+
+            def rank(e):
+                # 車牌相同者優先，其次車牌字元差異小者，最後才看時間；避免同一時段多台車時，
+                # 車牌正確的事件被時間較接近、卻沒有車牌的事件搶走而被算成誤報。
+                plate = normalize_plate(((e.get("evidence") or {}).get("vehicle") or {}).get("plate_text"))
+                distance = edit_distance(expected, plate) if expected and plate else len(expected or "") + 1
+                return (plate != expected if expected else True, distance, abs(event_time(e) - middle))
+            best = min(candidates, key=rank)
             unmatched.remove(best)
             per_rule[gt["rule_id"]]["tp"] += 1
             if gt.get("plate"):

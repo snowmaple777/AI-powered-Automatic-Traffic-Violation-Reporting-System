@@ -13,6 +13,7 @@ from signal_state import CombinedSignalState
 from core.continuity import is_continuous
 from core.motion import homography, road_motion
 from area_rules import AreaOccupancyRule
+from observation_schema import marking_evidence, marking_geometry_source
 from typing import Iterable
 
 
@@ -43,27 +44,45 @@ class ViolationEngine:
     """依序執行規則，並把同一台車的停等區事件併入闖紅燈事件。
 
     闖紅燈的車必然行經停等區，兩者是同一個違規行為，不分開報告。停等區事件可能早於闖紅燈事件
-    （ms01：2.0 秒 vs 3.4 秒），所以先保留 merge_window_seconds；期間同一台車出現闖紅燈事件時，
-    整筆停等區事件放進該事件的 merged_events，不再單獨輸出。闖紅燈事件在前時，之後窗口內的
-    停等區事件直接略過，記錄在停等區規則當幀的 diagnostics["merged_into"]。
+    （ms01：2.0 秒 vs 3.4 秒；ms05：1.4 秒 vs 6.6 秒），所以先保留：至少 merge_window_seconds，
+    且這台車仍在畫面中（最後出現後未超過 merge_track_gap_seconds）或闖紅燈規則仍有它的待定事件時繼續保留。
+    期間同一台車出現闖紅燈事件時，整筆停等區事件放進該事件的 merged_events，不再單獨輸出。
+    闖紅燈事件在前時，同一支影片中之後的停等區事件直接略過，記錄在停等區規則當幀的 diagnostics["merged_into"]。
     未啟用闖紅燈規則時不保留、不合併。
     """
     MERGE_INTO = {"car_motorcycle_waiting_area": "red_light_stop_line_crossing"}
 
-    def __init__(self, rules: Iterable[ViolationRule], merge_window_seconds=3.0):
+    def __init__(self, rules: Iterable[ViolationRule], merge_window_seconds=3.0, merge_track_gap_seconds=1.0):
         self.rules = list(rules)
         enabled = {rule.rule_id for rule in self.rules}
         self.merge = {source: target for source, target in self.MERGE_INTO.items()
                       if source in enabled and target in enabled}
         self.merge_window = merge_window_seconds
+        self.merge_track_gap = merge_track_gap_seconds
         self.pending = []      # (保留起始時間, 停等區事件)
-        self.reported = {}     # (目標規則, object_id) -> (時間, event_id)
+        self.reported = {}     # (目標規則, object_id) -> (時間, event_id)，整支影片有效
+        self.last_seen = {}    # object_id -> 最後出現的時間
 
     def evaluate(self, observation: dict) -> list[dict]:
         events = []
         for rule in self.rules:
             events.extend(rule.evaluate(observation))
-        return self._merge(events, observation["frame"]["timestamp_sec"])
+        now = observation["frame"]["timestamp_sec"]
+        items = observation.get("observations", {})
+        for group in ("vehicles", "rule_vehicles", "area_vehicles"):
+            for vehicle in items.get(group) or []:
+                if vehicle.get("object_id"):
+                    self.last_seen[vehicle["object_id"]] = now
+        return self._merge(events, now)
+
+    def _still_tracked(self, event, now):
+        """保留中的停等區事件是否還可能等到同一台車的闖紅燈事件。"""
+        identity = event.get("object_id")
+        seen = self.last_seen.get(identity)
+        if seen is not None and now - seen <= self.merge_track_gap:
+            return True
+        target = next((r for r in self.rules if r.rule_id == self.merge[event["rule_id"]]), None)
+        return identity in getattr(target, "pending_events", {})
 
     def finalize(self) -> list[dict]:
         events = []
@@ -89,7 +108,7 @@ class ViolationEngine:
                 output.append(event)
             elif rule_id in self.merge and identity:
                 earlier = self.reported.get((self.merge[rule_id], identity))
-                if earlier and at - earlier[0] <= self.merge_window:
+                if earlier:
                     rule = next(r for r in self.rules if r.rule_id == rule_id)
                     getattr(rule, "diagnostics", {}).setdefault("merged_into", []).append(
                         dict(event_id=event.get("event_id"), into_event_id=earlier[1]))
@@ -97,16 +116,17 @@ class ViolationEngine:
                 self.pending.append((at, event))
             else:
                 output.append(event)
-        released = [(t, e) for t, e in self.pending if now is None or now - t > self.merge_window]
-        self.pending = [(t, e) for t, e in self.pending if not (now is None or now - t > self.merge_window)]
-        for _, event in released:
+        due = [now is None or (now - t > self.merge_window and not self._still_tracked(e, now))
+               for t, e in self.pending]
+        released = [e for (_, e), go in zip(self.pending, due) if go]
+        self.pending = [item for item, go in zip(self.pending, due) if not go]
+        for event in released:
             if now is not None:
                 event["released_timestamp_sec"] = now  # 延後輸出；標註影片依此時間顯示
             output.append(event)
-        if now is not None:
-            self.reported = {k: v for k, v in self.reported.items() if now - v[0] <= self.merge_window}
-        else:
+        if now is None:
             self.reported.clear()
+            self.last_seen.clear()
         return output
 
 
@@ -128,10 +148,19 @@ class RedLightStopLineCrossingRule(ViolationRule):
                  min_line_stable_frames=5, crossing_direction="away",
                  max_crossing_gap_seconds=0.32, max_line_handoff_ratio=0.008,
                  weak_signal_evidence=True, signal_hold_seconds=3.0, crosswalk_proxy=True,
-                 require_red_for_suspected=False):
+                 require_red_for_suspected=False, require_direct_marking_evidence=True,
+                 green_veto_seconds=0.5, crosswalk_proxy_mode="per_vehicle"):
         """weak_signal_evidence／signal_hold_seconds／crosswalk_proxy 只讓事件成為「疑似」：
         「確認」仍要求強燈號證據（與先前相同）且觀測到真正的停止線。
-        require_red_for_suspected：疑似事件也必須在越線前後有紅燈證據（任何強度）。"""
+        require_red_for_suspected：疑似事件也必須在越線前後有紅燈證據（任何強度）。
+        require_direct_marking_evidence：「確認」的停止線必須由模型直接觀測累積（標線降頻時的推移遮罩
+        不計入次數）。補償層的線看 compensation.direct_rule_eligible；未啟用補償時看規則自己的直接觀測幀數。
+        green_veto_seconds：越線前後這段時間內觀測到綠燈（任何強度）時不輸出疑似事件——綠燈之後至少隔著
+        黃燈才會轉紅，紅燈結束則直接轉綠，因此越線前後 0.5 秒內出現綠燈，與「紅燈越線」矛盾。疑似事件在
+        影片結束才輸出，期間若出現綠燈或車輛退回停止線前，待定的疑似事件即取消。0 為停用。「確認」不受影響。
+        crosswalk_proxy_mode：斑馬線代理線的使用時機。"per_vehicle"（預設）每幀都產生代理線、獨立追蹤，
+        某台車沒有重疊的真正停止線時就改用代理線；"no_stop_line" 為舊行為（整個畫面沒有停止線候選時才用）。
+        代理線的事件一律只能是疑似（stop_line_observed=false）。"""
         self.context = context
         self.signal_confidence = signal_confidence
         self.line_margin = max(line_margin_pixels,
@@ -158,7 +187,14 @@ class RedLightStopLineCrossingRule(ViolationRule):
                                                   weak_evidence=weak_signal_evidence,
                                                   hold_seconds=signal_hold_seconds)
         self.crosswalk_proxy = crosswalk_proxy
+        if crosswalk_proxy_mode not in ("per_vehicle", "no_stop_line"):
+            raise ValueError("crosswalk_proxy_mode must be per_vehicle or no_stop_line")
+        self.crosswalk_proxy_mode = crosswalk_proxy_mode
         self.require_red_for_suspected = require_red_for_suspected
+        self.require_direct_marking_evidence = require_direct_marking_evidence
+        self.green_veto_frames = max(0, round(context.fps * green_veto_seconds))
+        self.last_green_frame = None
+        self._marking_evidence = marking_evidence({})
         self.diagnostics = {}
 
     @staticmethod
@@ -256,8 +292,11 @@ class RedLightStopLineCrossingRule(ViolationRule):
                     continue
                 item = dict(component)
                 item["angle_degrees"] = round(angle, 2)
+                item["direct_observation"] = bool(self._marking_evidence["direct"])
                 candidates.append(item)
-        if not candidates and self.crosswalk_proxy:
+        if self.crosswalk_proxy and self.crosswalk_proxy_mode == "per_vehicle":
+            candidates += self._crosswalk_proxy_lines(observations)
+        elif not candidates and self.crosswalk_proxy:
             candidates = self._crosswalk_proxy_lines(observations)
         return candidates
 
@@ -270,6 +309,8 @@ class RedLightStopLineCrossingRule(ViolationRule):
             best_id, best_distance = None, float("inf")
             for line_id in sorted(unused):
                 previous = self.line_tracks[line_id]
+                if bool(previous.get("proxy")) != bool(component.get("proxy")):
+                    continue  # 真正的停止線與斑馬線代理線分開追蹤
                 if frame_index - previous["last_frame"] > self.max_crossing_gap:
                     continue
                 distance = math.hypot(cx - previous["centroid"][0],
@@ -291,16 +332,22 @@ class RedLightStopLineCrossingRule(ViolationRule):
                         and overlap > 0
                         and angle_delta <= 15.0):
                     best_id, best_distance = line_id, normal_distance
+            direct = bool(component.get("direct_observation", False))
             if best_id is None:
                 best_id = self.next_line_id
                 self.next_line_id += 1
                 stable_frames = 1
+                direct_frames, last_direct = int(direct), (frame_index if direct else None)
             else:
                 unused.remove(best_id)
-                stable_frames = self.line_tracks[best_id]["stable_frames"] + 1
+                old = self.line_tracks[best_id]
+                stable_frames = old["stable_frames"] + 1
+                direct_frames = old.get("direct_frames", 0) + direct
+                last_direct = frame_index if direct else old.get("last_direct_frame")
             tracked = dict(component, marking_id=f"stopline-{best_id:04d}",
                            stable_frames=stable_frames,
-                           last_frame=frame_index)
+                           last_frame=frame_index, direct_frames=direct_frames,
+                           last_direct_frame=last_direct)
             self.line_tracks[best_id] = tracked
             # 補償層已驗證多幀，不再重複等待 5 幀而錯過短暫可見的停止線。
             if stable_frames >= self.min_line_stable_frames or component.get("compensation", {}).get("rule_eligible", False):
@@ -316,6 +363,8 @@ class RedLightStopLineCrossingRule(ViolationRule):
             candidates=[]
             x,_,width,_=current["bbox_xywh"]
             for old in self.line_tracks.values():
+                if bool(old.get("proxy")) != bool(current.get("proxy")):
+                    continue
                 if old["marking_id"] in active_ids or old["last_frame"]==frame_index:
                     continue
                 ox,_,ow,_=old["bbox_xywh"]
@@ -336,6 +385,19 @@ class RedLightStopLineCrossingRule(ViolationRule):
                         del self.crossing_states[(vehicle_id,line_id)]
         return updated
 
+    def _stop_line_direct_evidence(self, stop_line, index):
+        """停止線是否有足以支持「確認」的直接觀測（推移遮罩不計入）。"""
+        if stop_line.get("proxy"):
+            return False
+        compensation = stop_line.get("compensation")
+        if compensation:
+            if "direct_rule_eligible" in compensation:
+                return bool(compensation["direct_rule_eligible"])
+            return bool(compensation.get("rule_eligible"))  # 1.8 以前的紀錄沒有直接觀測欄位：沿用原判定
+        last = stop_line.get("last_direct_frame")
+        return bool(stop_line.get("direct_frames", 0) >= self.min_line_stable_frames and last is not None
+                    and index - last <= self.max_crossing_gap and self._marking_evidence["aligned"])
+
     @staticmethod
     def _covers_x(component, x):
         left, _, width, _ = component["bbox_xywh"]
@@ -355,6 +417,7 @@ class RedLightStopLineCrossingRule(ViolationRule):
         frame = observation["frame"]
         index = frame["index"]
         signal_state = self.signal_tracker.update(obs["traffic_lights"], index)
+        self._marking_evidence = marking_evidence(observation)
         # 只有強證據沿用原規則的所有判斷（含綠／黃燈清除狀態與「確認」）；弱證據與延續只支持疑似。
         strong_state = signal_state if self.signal_tracker.strength == "strong" else None
         self._project_line_tracks(observation)
@@ -366,6 +429,14 @@ class RedLightStopLineCrossingRule(ViolationRule):
         self.diagnostics = {"frame":index,"signal":dict(self.signal_tracker.evidence),
                             "usable_stop_lines":len(stop_components),"vehicles":[],
                             "skipped_vehicles":[]}
+        if signal_state == "green" and self.green_veto_frames:
+            self.last_green_frame = index
+            # 越線後不久就出現綠燈：取消這段期間的待定疑似事件。
+            for object_id, pending in list(self.pending_events.items()):
+                if index - pending["frame"] <= self.green_veto_frames:
+                    del self.pending_events[object_id]
+                    self.diagnostics.setdefault("cancelled_pending", []).append(
+                        dict(event_id=pending["event_id"], object_id=object_id, reason="green_after_crossing"))
         if strong_state in {"green", "yellow"}:
             self.crossing_states.clear()
             return []
@@ -394,11 +465,15 @@ class RedLightStopLineCrossingRule(ViolationRule):
                 x, y = vehicle["bottom_center"]
                 vehicle_box = [x, y, x, y]
             overlapping_lines = 0
-            for stop_line in stop_components:
+            overlapping = [line for line in stop_components
+                           if min(line["bbox_xywh"][0] + line["bbox_xywh"][2], vehicle_box[2])
+                           >= max(line["bbox_xywh"][0], vehicle_box[0])]
+            if any(not line.get("proxy") for line in overlapping):
+                # 有重疊的真正停止線時不使用斑馬線代理線（代理線只是備援）。
+                overlapping = [line for line in overlapping if not line.get("proxy")]
+            for stop_line in overlapping:
                 left, _, width, _ = stop_line["bbox_xywh"]
                 overlap_left, overlap_right = max(left, vehicle_box[0]), min(left+width, vehicle_box[2])
-                if overlap_right < overlap_left:
-                    continue
                 overlapping_lines += 1
                 # 遮擋時線段可能只露在車身一側：使用車框底邊與有限線段重疊位置。
                 # 不再要求中心 x 恰好落在線段內，也不把線無限延伸到其他車道。
@@ -422,6 +497,12 @@ class RedLightStopLineCrossingRule(ViolationRule):
                         "blocked_by":["cached_detection"]})
                     continue
                 if side == -1:
+                    pending = self.pending_events.get(object_id)
+                    if pending and pending["evidence"]["stop_line"].get("marking_id") == stop_line["marking_id"]:
+                        # 越線後又退回停止線前（多半是誤判或在線上來回的偵測）：取消待定的疑似事件。
+                        del self.pending_events[object_id]
+                        self.diagnostics.setdefault("cancelled_pending", []).append(
+                            dict(event_id=pending["event_id"], object_id=object_id, reason="returned_behind_line"))
                     state["before_count"] += 1
                     state["after_count"] = 0
                     state["before_frame"] = index
@@ -457,6 +538,9 @@ class RedLightStopLineCrossingRule(ViolationRule):
                     blocked_by.append("signal_identity_not_confirmed")
                 if state.get("line_reassociated_from"):
                     blocked_by.append("stop_line_reassociated")
+                direct_line = self._stop_line_direct_evidence(stop_line, index)
+                if self.require_direct_marking_evidence and not direct_line and not stop_line.get("proxy"):
+                    blocked_by.append("stop_line_not_directly_observed")
                 if object_id in self.reported:
                     blocked_by.append("already_reported")
                 self.diagnostics["vehicles"].append({"object_id":object_id,
@@ -468,6 +552,7 @@ class RedLightStopLineCrossingRule(ViolationRule):
                         and state.get("red_before_evidence", {}).get("signal_id") == self.signal_tracker.evidence.get("signal_id")
                         and not state.get("line_reassociated_from")
                         and not stop_line.get("proxy")
+                        and (direct_line or not self.require_direct_marking_evidence)
                         and object_id not in self.reported)
                 any_red = signal_state == "red" or (
                     state.get("any_red_before_frame") is not None
@@ -476,6 +561,11 @@ class RedLightStopLineCrossingRule(ViolationRule):
                              (state["after_count"] >= 1 and signal_state == "red"))
                 if self.require_red_for_suspected and not any_red:
                     suspected = False
+                green_nearby = (self.last_green_frame is not None and self.green_veto_frames
+                                and index - self.last_green_frame <= self.green_veto_frames)
+                if green_nearby:
+                    suspected = False
+                    blocked_by.append("green_near_crossing")
                 if object_id in self.reported or not (confirmed or suspected):
                     continue
                 conditions = {
@@ -491,6 +581,8 @@ class RedLightStopLineCrossingRule(ViolationRule):
                         state.get("red_before_evidence", {}).get("signal_id") == self.signal_tracker.evidence.get("signal_id"),
                     "same_stop_line": not state.get("line_reassociated_from"),
                 }
+                if self.require_direct_marking_evidence:
+                    conditions["stop_line_direct_evidence"] = direct_line
                 if confirmed:
                     behavior = "red_light_stop_line_crossing"
                     description = "車輛在紅燈期間由停止線前移至線後，符合目前紅燈越線規則。"
@@ -531,6 +623,7 @@ class RedLightStopLineCrossingRule(ViolationRule):
                         "reference_point": [reference_x, y],
                         "reference_point_method": "bbox_bottom_overlap",
                         "signed_distance_pixels": round(signed_distance, 2),
+                        "marking_evidence": dict(self._marking_evidence),
                     },
                 }
                 if confirmed:
@@ -572,10 +665,13 @@ class DoubleLineCrossingRule(ViolationRule):
         self.previous_frame = None
         self.motion_gap_started = None
         self.previous_lines = {}
+        self._frame_geometry = "direct"
 
     def evaluate(self, observation):
         frame = observation["frame"]
         items = observation.get("observations", {})
+        # 舊紀錄的雙線沒有 geometry_source 時，以本幀標線來源推定（見 marking_evidence 的退回規則）。
+        self._frame_geometry = marking_geometry_source(marking_evidence(observation))
         lines = [line for line in items.get("double_lines", [])
                  if line.get("class_name") == self.class_name]
         vehicles = items.get("rule_vehicles", items.get("vehicles", []))
@@ -714,6 +810,21 @@ class DoubleLineCrossingRule(ViolationRule):
         if mapping:
             self.diagnostics["line_handoffs"] = mapping
 
+    def _direct_marking_evidence(self, state, line):
+        """確認所需的直接觀測：推移（標線降頻）只對齊幾何，不能湊足觀測次數。
+
+        - 線本身至少 min_line_observations 次模型直接觀測（舊紀錄退回 observed_frames）；
+        - 越線前、越線後的樣本各至少一個落在直接觀測的幾何上；
+        - 越線前後與線帶內的樣本都不能落在未對齊的推移幾何上（鏡頭運動失效時沿用的遮罩）。
+        """
+        count = line.get("direct_observed_frames", line.get("observed_frames", 0))
+        before = [s.get("geometry", "direct") for s in state["before_path"]]
+        after = [s.get("geometry", "direct") for s in state["after_path"]]
+        transition = state.get("transition")
+        middle = [transition["double_line"].get("geometry_source", "direct")] if transition else []
+        return bool(count >= self.settings["min_line_observations"] and "direct" in before
+                    and "direct" in after and "stale" not in before + after + middle)
+
     @staticmethod
     def _snapshot(frame, vehicle, line, position):
         """只保存引用：這些物件每幀新建、之後不再修改；產生事件時 build_event 會完整拷貝證據。
@@ -765,7 +876,8 @@ class DoubleLineCrossingRule(ViolationRule):
                         self.states.pop(key)
                         self.diagnostics["skipped_vehicles"].append({"object_id": object_id, "reason": "box_jump"})
                         state = None
-                sample = {"time": now, "point": list(point)}
+                sample = {"time": now, "point": list(point),
+                          "geometry": line.get("geometry_source", self._frame_geometry)}
                 if state is None:
                     if side == 0:
                         continue  # Starting on a line cannot establish an origin side.
@@ -832,6 +944,8 @@ class DoubleLineCrossingRule(ViolationRule):
                                   line_observed_at_footprint=not state.get("extrapolated", False),
                                   same_line_track=not state.get("line_handoff", False),
                                   camera_motion_compensated=not state.get("motion_gap", False))
+                if cfg["require_direct_marking_evidence"]:
+                    conditions["direct_marking_evidence"] = self._direct_marking_evidence(state, line)
                 status = "confirmed" if all(conditions.values()) else "suspected"
                 maneuver, direction = classify_maneuver(state["before_path"], state["after_path"], position["tangent"], cfg)
                 crossing = state["transition"] or state["crossing"]
@@ -854,6 +968,7 @@ class DoubleLineCrossingRule(ViolationRule):
                         "；車輛處的雙線被遮擋，以可見線段延伸判斷，待覆核。" if not conditions["line_observed_at_footprint"] else
                         "；期間雙線追蹤編號中斷，依位置銜接，待覆核。" if not conditions["same_line_track"] else
                         "；期間鏡頭運動估計短暫失敗，未經運動補償，待覆核。" if not conditions["camera_motion_compensated"] else
+                        "；越線前後缺少直接觀測的雙線（只有推移估計），待覆核。" if not conditions.get("direct_marking_evidence", True) else
                         "；缺少線帶內觀測，待覆核。")
                     events.append(event)
                 state.update(phase="reported", destination=side, rearm_since=now)

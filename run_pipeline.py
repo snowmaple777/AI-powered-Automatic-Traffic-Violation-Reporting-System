@@ -131,6 +131,14 @@ def run(args, resources, pipeline=None):
                 pending_motion["frame"], pending_motion["index"], pending_motion["time"],
                 partial["vehicles"].records)
     pipeline.stage_callback = start_motion_after_vehicles
+
+    def probe_motion():
+        # 讓模型（標線 refresh_on_invalid_motion）查詢本幀鏡頭運動：阻塞到背景估計完成，不讀未完成的結果。
+        future = pending_motion.get("future")
+        if future is None:
+            return None
+        (motion, _), _ = future.result()
+        return motion
     writer = None
     if args.save_video:
         writer = cv2.VideoWriter(str(video_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
@@ -158,7 +166,7 @@ def run(args, resources, pipeline=None):
                 timestamp = frame_index / fps
                 pending_motion.update(frame=frame, index=frame_index, time=timestamp, future=None)
                 with timer.measure("models"):
-                    results = pipeline.infer(frame, FrameContext(frame_index, timestamp))
+                    results = pipeline.infer(frame, FrameContext(frame_index, timestamp, motion_probe=probe_motion))
                 result = processor.process(frame, frame_index, timestamp, results,
                                            motion_future=pending_motion["future"])
                 if args.save_masks is not None:
@@ -207,8 +215,10 @@ def run(args, resources, pipeline=None):
     timings = {"frames": frame_index, "wall_seconds": round(time.perf_counter() - started, 3),
                "ms_per_frame": timer.summary(frame_index)}
     marking_model = pipeline.models.get("road_markings")
-    if getattr(marking_model, "activity_boost", False):
-        timings["road_marking_schedule"] = marking_model.schedule_diagnostics
+    if getattr(marking_model, "schedule_enabled", False):
+        timings["road_marking_schedule"] = dict(
+            marking_model.schedule_diagnostics,
+            motion_wait_seconds=round(marking_model.schedule_diagnostics["motion_wait_seconds"], 3))
     (args.output_dir / f"{stem}_timings.json").write_text(json.dumps(timings, indent=2), encoding="utf-8")
     if rule_names and args.violation_clips:
         print("正在剪輯違規片段…", flush=True)

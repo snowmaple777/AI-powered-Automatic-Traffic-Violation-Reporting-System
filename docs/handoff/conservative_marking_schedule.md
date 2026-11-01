@@ -82,3 +82,14 @@ $env:PYTHONIOENCODING='utf-8'
 如果前置閘門尚未完成，只評估現有保守升頻版本，不擅自延長標線間隔。
 
 補充整合驗證：4 幀合成 MP4、假標線模型、實際 run_pipeline 解碼與輸出；關閉時模型呼叫 2 次且無新統計欄位，啟用時呼叫 4 次且統計 frames=4、inferences=4。皆成功寫出 JSONL/CSV/timings。此為流程驗證，非 GPU 或準確率測試。
+
+## Opus 整合回填（2026-11-01）
+
+- 「給 Opus 的 prompt」已實作，見 [marking_evidence_gate.md](marking_evidence_gate.md) 與 refactor_log 4l：schema 1.8 每幀記錄標線來源
+  （direct／aligned／age_frames），補償、雙線、區域另計直接觀測，闖紅燈與雙線的確認需要直接觀測的標線（預設啟用，只會降級確認）；
+  `real_replay` 不再把推移遮罩當成直接觀測；`refresh_on_invalid_motion`（預設關閉）在運動失效時重新推論；
+  `batch_eval --model-config` 與設定指紋；1/2/4 幀實驗設定。
+- 本文件的 4k 內容保留不變：`activity_boost` 行為未改，`road_marking_schedule` 統計一般化（`mode` 改為啟用選項的組合，新增 `motion_wait_seconds`）。
+- 前置證據閘門已完成；Astra 的評估請改用 marking_evidence_gate.md 第 9 節的 prompt（涵蓋本文件的動態取樣驗證）。
+- 檔名更正：上文的「影片疑似違規檢視.txt」在本機是 `input/違規參考.txt`。
+- 仍未執行真實影片評估與 GPU 速度量測；未提交、未推送。

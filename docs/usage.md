@@ -84,6 +84,8 @@ plates 需要 vehicles，ocr 需要 plates；停用 depth 後無法依估測距�
 - ocr.interval：尚未確認車牌的辨識間隔，預設 4。
 - road_markings.fast_attention：注意力層不回傳未使用的權重矩陣，改用融合注意力核心，預設 true。
 - road_markings.fp16：CUDA 上以半精度推論，預設 true。與 fast_attention 合用時，每幀約 322 → 145 ms，重點類別 IoU ≥ 0.996（見 docs/refactor_log.md）。
+- road_markings.interval：標線推論間隔，預設 2；中間幀依鏡頭運動推移前一幀遮罩，只當估計、不算直接觀測（見「標線證據閘門」）。
+- road_markings.refresh_on_invalid_motion：沿用快取的幀若鏡頭運動無效即重新推論，預設 false（實驗）。
 - plates.stable_shapes：車牌裁切固定為方形輸入，路面掃描改用獨立的 ONNX session，預設 true。onnxruntime CUDA 每次輸入形狀改變都有數十到數百毫秒的額外成本，固定形狀後每次推論約 10 ms。
 
 設定檔路徑均相對 JSON 所在目錄；每階段 enabled:false 可停用。
@@ -130,8 +132,11 @@ confirmed 需要：實際偵測到的停止線、強燈號證據（原本的燈�
 以下放寬條件只會產生 suspected，可在規則設定中關閉：
 - weak_signal_evidence（預設開）：燈號模型信心偏低（0.12–0.30）但 1 秒內持續一致時採用的弱紅燈證據。
 - signal_hold_seconds（預設 3）：紅燈暫時偵測不到、且畫面沒有綠／黃燈時，沿用最近的紅燈。
-- crosswalk_proxy（預設開）：沒有停止線時，以斑馬線近端邊緣代替停止線。
+- crosswalk_proxy（預設開）：以斑馬線近端邊緣作為代理停止線。crosswalk_proxy_mode 預設 per_vehicle：
+  某台車沒有重疊的真正停止線時就改用代理線（no_stop_line 為舊行為：整個畫面沒有停止線時才用）。
 - require_red_for_suspected（預設關）：開啟時，疑似事件也必須有紅燈證據。
+- green_veto_seconds（預設 0.5）：越線前後 0.5 秒內觀測到綠燈就不輸出疑似事件（綠燈後必有黃燈才轉紅，紅燈結束直接轉綠）；
+  疑似事件在影片結束才輸出，期間出現綠燈或車輛退回停止線前，待定事件即取消。0 為停用；確認事件不受影響。
 車框底邊僅為接地位置代理值；融合或漏檢延伸的機車框不等於輪胎偵測。
 
 從原影片與既有 JSONL 重算停止線補償：
@@ -373,13 +378,20 @@ method 記錄來源方法；信心不足、資料過期或缺少來源會中止�
 
 參數含 min_confidence、min_observations、intrusion_seconds、min_intrusion_length_px、
 overlap_ratio、stationary_seconds、stationary_radius_px、max_observation_gap_sec、max_frame_gap_sec、
-rearm_seconds、side_margin_ratio。
+rearm_seconds、side_margin_ratio、duplicate_box_iou。
 預設觀測間隔上限 0.3 秒、連續影片幀時間間隔上限 0.2 秒。快取車框不增加證據次數；
 未能可靠銜接的 ID 變化、缺區域、失去條件、來源不連續或運動失敗會清除或重新累積，影片結束不補發未完成事件。
-同一次連續成立只輸出一個事件；同一台車在 rearm_seconds（預設 2 秒）內持續侵入，
+同一次連續成立只輸出一個事件；同一台車在 rearm_seconds（預設 5 秒）內持續侵入，
 即使區域編號改變或量測短暫低於門檻也不重複輸出，離開超過該時間後重新符合才產生新事件。
-同時啟用闖紅燈規則時，同一台車 3 秒內的停等區事件併入闖紅燈事件的 merged_events，不單獨輸出；
-停等區事件因此最多延後 3 秒寫出（事件加上 released_timestamp_sec）。
+追蹤換號時，新編號的車框與 rearm_seconds 內已報告車輛的車框 IoU 達 duplicate_box_iou（預設 0.5）
+也視為同一台車而不重複輸出（只抑制重複報告，不會產生事件）。
+斑馬線規則另有：occlusion_gap_ratio（預設 0.25）——停在斑馬線上的車會遮住底下的條紋，區域一端止於車框時，
+沿斑馬線帶延伸到車框範圍再量重疊（事件條件 region_visible_at_footprint=false）；stationary_radius_ratio（預設 0.2）——
+停留半徑取 max(stationary_radius_px, 比例 × 車框寬)；crosswalk_two_wheelers（預設 false）——是否包含機車／自行車。
+車輛信心短暫低於門檻時，累積中的停留狀態保留到 max_observation_gap_sec，不會歸零。
+同時啟用闖紅燈規則時，同一台車的停等區事件併入闖紅燈事件的 merged_events，不單獨輸出：
+停等區事件至少保留 3 秒，且這台車仍在畫面中（離開未滿 1 秒）或闖紅燈規則仍有它的待定事件時繼續保留；
+同一支影片中已報告闖紅燈的車，之後的停等區事件直接併入。延後寫出的事件加上 released_timestamp_sec。
 初版全部為 suspected，沿用事件 JSONL、中文摘要及剪輯流程，包含車牌、前後快照、區域、
 重疊量／侵入量、持續時間及實際參數，供人工覆核。門檻是工程篩選設定，不代表法定標準。
 
@@ -486,7 +498,33 @@ road_markings.params.activity_boost 預設 false；啟用後偵測到任何車�
 activity_hold_seconds 預設 1.0 秒，為非負有限數值；活動消失後保持高頻，再回原 interval。
 首次、索引／時間不連續或尺寸改變時重新觀測。沒有活動仍維持原固定推論幀，不延長快取。
 這是排程與診斷的實驗基礎，可能變慢且可能改變事件；未宣稱加速或準確率改善。
-只讀取當幀模型輸出作排程提示，不會將快取框當成直接證據。未做場景切換／運動失效偵測。
+只讀取當幀模型輸出作排程提示，不會將快取框當成直接證據。運動失效時重新推論請見下方 refresh_on_invalid_motion。
 影片時間須有效；關閉時保留既有推論行為。各模型原始幀索引、觀測 schema 與規則不變。
 啟用時 *_timings.json 新增 road_marking_schedule，含 frames、inferences、extra_inferences、reasons。
 停用：改回 configs/default.json，或將 activity_boost 設為 false。實驗請使用獨立輸出目錄。
+
+標線證據閘門與降頻實驗（2026-11-01，schema 1.8）
+
+標線每 2 幀推論一次（road_markings.interval），中間幀是把前一幀遮罩依鏡頭運動推移的估計。
+紀錄每幀的 postprocessing.road_marking_source 標示來源：direct（模型直接觀測）、aligned（推移後
+是否仍對齊當幀；鏡頭運動失效時沿用的遮罩為 false）、age_frames（距實際推論幾幀）。
+推移估計不算直接觀測：
+- 停止線補償另計 compensation.direct_observed_frames，direct_rule_eligible 只依直接觀測判定；
+- 雙線另計 direct_observed_frames，每條線標記 geometry_source（direct／propagated／stale）；
+- 區域標記 marking_source，停等區／斑馬線事件新增條件 direct_region_observation（這兩條規則本來只輸出疑似）。
+規則的「確認」因此需要直接觀測的標線（放寬路徑與疑似事件不受影響）：
+- 闖紅燈新增條件 stop_line_direct_evidence，阻擋原因 stop_line_not_directly_observed；
+- 雙線新增條件 direct_marking_evidence（configs/double_line_rules.json 的 require_direct_marking_evidence，預設 true）。
+interval 1 時每幀都是直接觀測，結果與加入閘門前相同；interval 2 時確認可能延後或降為疑似。
+量測閘門本身的影響（同一份 JSONL，不重跑模型）：
+.venv\Scripts\python.exe tools\rule_eval.py --source outputs\eval\<label> --label <label>_no_gate --no-direct-marking-gate
+1.8 以前的 JSONL 沒有直接觀測欄位：規則沿用原判定，請用 tools\real_replay.py 重播或重跑辨識。
+
+road_markings.params.refresh_on_invalid_motion（預設 false）：原本要沿用快取的幀，若本幀鏡頭運動無效，
+改為重新推論，避免下游拿到未對齊的遮罩。判斷時需等待背景的鏡頭運動估計，可能變慢；
+*_timings.json 的 road_marking_schedule 會記錄 reasons（motion_invalid 等）與 motion_wait_seconds。
+
+降頻對照設定（實驗用，未改預設）：configs/marking_interval_1.json（每幀）、configs/default.json（每 2 幀）、
+configs/marking_interval_2_refresh.json、configs/marking_interval_4_refresh.json（每 4 幀＋運動失效重新推論）。
+全片評估可指定設定，不同設定必須使用不同 label；done.json 會記錄設定指紋，設定不同時拒絕續跑：
+.venv\Scripts\python.exe tools\batch_eval.py --label marking_i4 --model-config configs\marking_interval_4_refresh.json

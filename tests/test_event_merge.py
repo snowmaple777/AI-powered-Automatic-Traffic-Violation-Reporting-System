@@ -18,14 +18,17 @@ class StubRule:
         return []
 
 
-def run(waiting, red, frames=80, enable_red=True):
+def run(waiting, red, frames=80, enable_red=True, visible=None):
+    """visible：{object_id: (首幀, 末幀)}，這段期間該車出現在觀測紀錄中。"""
     rules = [StubRule("car_motorcycle_waiting_area", waiting)]
     if enable_red:
         rules.append(StubRule("red_light_stop_line_crossing", red))
     engine = ViolationEngine(rules)
     events, diagnostics = [], []
     for i in range(frames):
-        events += engine.evaluate({"frame": {"index": i, "timestamp_sec": i / 10}})
+        vehicles = [{"object_id": obj} for obj, (first, last) in (visible or {}).items() if first <= i <= last]
+        events += engine.evaluate({"frame": {"index": i, "timestamp_sec": i / 10},
+                                   "observations": {"rule_vehicles": vehicles}})
         diagnostics.append(rules[0].diagnostics)
     return events + engine.finalize(), diagnostics
 
@@ -60,6 +63,35 @@ class EventMergeTests(unittest.TestCase):
         events, _ = run({10: ["v1"]}, {}, enable_red=False)
         self.assertEqual(len(events), 1)
         self.assertNotIn("released_timestamp_sec", events[0])
+
+
+class TrackAwareMergeTests(unittest.TestCase):
+    def test_waiting_area_is_held_while_the_vehicle_is_still_in_view(self):
+        # ms05：停等區 1.4 秒、闖紅燈 6.6 秒，相隔超過 3 秒；車一直在畫面中就繼續保留並合併。
+        events, _ = run({14: ["v1"]}, {66: ["v1"]}, visible={"v1": (0, 79)})
+        self.assertEqual([e["rule_id"] for e in events], ["red_light_stop_line_crossing"])
+        self.assertEqual(len(events[0]["merged_events"]), 1)
+        # 車離開畫面超過 1 秒後才釋放（不無限延後）。
+        events, _ = run({14: ["v1"]}, {}, visible={"v1": (0, 40)})
+        self.assertAlmostEqual(events[0]["released_timestamp_sec"], 5.1)
+
+    def test_pending_red_light_candidate_keeps_the_waiting_event(self):
+        rules = [StubRule("car_motorcycle_waiting_area", {10: ["v1"]}), StubRule("red_light_stop_line_crossing", {})]
+        rules[1].pending_events = {"v1": {}}  # 闖紅燈的疑似事件在影片結束才輸出
+        engine = ViolationEngine(rules)
+        events = []
+        for i in range(80):
+            events += engine.evaluate({"frame": {"index": i, "timestamp_sec": i / 10}})
+        self.assertEqual(events, [])
+        rules[1].finalize = lambda: [dict(event_id="r", rule_id="red_light_stop_line_crossing", object_id="v1",
+                                          timestamp_sec=6.0, frame=60)]
+        final = engine.finalize()
+        self.assertEqual([len(e.get("merged_events", [])) for e in final], [1])
+
+    def test_red_light_earlier_in_the_video_suppresses_later_waiting_events(self):
+        events, diagnostics = run({70: ["v1"]}, {10: ["v1"]})
+        self.assertEqual([e["rule_id"] for e in events], ["red_light_stop_line_crossing"])
+        self.assertIn("merged_into", diagnostics[70])
 
 
 if __name__ == "__main__":

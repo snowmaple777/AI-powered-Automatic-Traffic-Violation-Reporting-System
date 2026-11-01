@@ -6,6 +6,7 @@ import numpy as np
 from pathlib import Path
 from unittest.mock import patch
 
+import area_rules
 from area_rules import (settings_for, front_overlap, polygon, geometry_options,
                         attach_area_geometry, extract_traffic_regions)
 from observation_schema import build_frame_observation
@@ -168,8 +169,10 @@ class AreaRuleTests(unittest.TestCase):
     def test_moving_short_stay_and_overlap_threshold(self):
         self.assertEqual(evaluate(records(moving=3)), [])
         self.assertEqual(evaluate(records(count=9)), [])
-        self.assertEqual(evaluate(records(), {"overlap_ratio": .8}), [])
+        self.assertEqual(evaluate(records(), {"overlap_ratio": .8, "occlusion_gap_ratio": 0}), [])
         self.assertEqual(len(evaluate(records(), {"overlap_ratio": .75})), 1)
+        # 區域左端落在車框內（可視為被車身遮住）：預設的遮擋延伸會把斑馬線帶延伸到車框，重疊達 0.8 以上。
+        self.assertEqual(len(evaluate(records(), {"overlap_ratio": .8})), 1)
 
     def test_waiting_area_red_front_only(self):
         rows = records("motorcycle_waiting_area", count=8)
@@ -257,6 +260,58 @@ class AreaRuleTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertTrue(events[0]["conditions"]["lane_matched"])
         self.assertTrue(events[0]["conditions"]["front_edge_from_lane"])
+
+    def test_tracker_id_switch_at_the_same_place_is_not_reported_again(self):
+        # 已報告的車在 rearm_seconds 內換了追蹤編號、車框仍在同一位置：視為同一台車，不再報告。
+        rows = records("motorcycle_waiting_area", count=30)
+        for i, row in enumerate(rows):
+            row["observations"]["vehicles"][0]["road_geometry"].pop("footprint")
+            if i >= 15:
+                row["observations"]["vehicles"][0]["object_id"] = "v2"
+        events = evaluate(rows)
+        self.assertEqual([e["object_id"] for e in events], ["v1"])
+        # 新編號的車框與已報告的車不重疊（IoU < duplicate_box_iou）時是另一台車，照常報告。
+        for row in rows[15:]:
+            box = row["observations"]["vehicles"][0]["bbox_xyxy"]
+            row["observations"]["vehicles"][0]["bbox_xyxy"] = [box[0] + 15, box[1], box[2] + 15, box[3]]
+        self.assertEqual([e["object_id"] for e in evaluate(rows)], ["v1", "v2"])
+        with self.assertRaises(ValueError):
+            evaluate(rows, {"duplicate_box_iou": 1.5})
+
+    def test_crosswalk_hidden_under_the_vehicle_is_extended_only_when_enabled(self):
+        # 斑馬線區域止於車框左緣（條紋被車身遮住），足跡在延伸的斑馬線帶上。
+        region = [[0, 100], [200, 100], [200, 140], [0, 140]]
+        footprint = np.asarray([[230, 105], [290, 105], [290, 135], [230, 135]], np.float32)
+        box = [210, 40, 310, 140]
+        self.assertGreater(area_rules.occluded_band_overlap(region, footprint, box, .25), .9)
+        self.assertEqual(area_rules.occluded_band_overlap(region, footprint, box, 0), 0.0)
+        # 區域離車框太遠（不是被這台車遮住）：不延伸。
+        self.assertEqual(area_rules.occluded_band_overlap(region, footprint, [300, 40, 400, 140], .25), 0.0)
+        # 斑馬線帶延伸後不穿過車框（車在斑馬線前方）：不延伸。
+        self.assertEqual(area_rules.occluded_band_overlap(region, footprint + [0, 100], [210, 160, 310, 260], .25), 0.0)
+
+    def test_crosswalk_rule_options_for_radius_two_wheelers_and_confidence_dips(self):
+        rows = records(count=15)
+        self.assertEqual(len(evaluate(rows)), 1)
+        for row in rows:
+            row["observations"]["vehicles"][0]["class_name"] = "motorcycle"
+        self.assertEqual(evaluate(rows), [])  # 預設不看機車（使用者決定，2026-11-02）
+        self.assertEqual(len(evaluate(rows, {"crosswalk_two_wheelers": True})), 1)
+        # 每幀移動 0.5 px：車框寬 20 px 時半徑仍是 4 px，1 秒內移動超過而重新計時；
+        # 車框放寬到 100 px 後半徑 = 0.1 × 100 = 10 px，可以累積到 1 秒。
+        drifting = records(count=15, moving=.5)
+        self.assertEqual(evaluate(drifting, {"stationary_radius_ratio": .1}), [])
+        for row in drifting:
+            v = row["observations"]["vehicles"][0]
+            v["bbox_xyxy"] = [v["bbox_xyxy"][0] - 40, v["bbox_xyxy"][1], v["bbox_xyxy"][2] + 40, v["bbox_xyxy"][3]]
+        self.assertEqual(len(evaluate(drifting, {"stationary_radius_ratio": .1})), 1)
+        self.assertEqual(evaluate(drifting, {"stationary_radius_ratio": 0}), [])
+        # 信心短暫低於門檻不會讓停留計時歸零。
+        dips = records(count=15)
+        dips[6]["observations"]["vehicles"][0]["confidence"] = .3
+        self.assertEqual(len(evaluate(dips)), 1)
+        with self.assertRaises(ValueError):
+            evaluate(rows, {"crosswalk_two_wheelers": 1})
 
     def test_missing_geometry_motion_staleness_and_id_switch(self):
         for change in ("geometry", "motion", "cached", "stale_region", "identity"):

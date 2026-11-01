@@ -14,6 +14,7 @@ from core.continuity import is_continuous
 from core.geometry import project_points  # noqa: F401  舊模組仍由此匯入
 from core.motion import homography, road_motion
 from core.fastcopy import clone
+from observation_schema import marking_evidence, marking_geometry_source
 
 
 DOUBLE_LINE_CLASSES = {"solid double yellow", "solid double white"}
@@ -34,8 +35,11 @@ RULE_DEFAULTS = dict(
     footprint_inset_ratio=.15,
     # 以下放寬條件只讓事件成為「疑似」：
     allow_motion_gaps=True, max_motion_gap_sec=1.0,  # 鏡頭運動短暫失敗時以「不動」近似，不清除候選
-    max_extrapolation_ratio=.5,
-    max_line_handoff_px=25.0)  # 雙線追蹤換編號時，依位置把候選轉移到新編號的距離上限（0＝停用）  # 車底超出雙線可見端點時，可沿端點方向外插（上限為車框高度的比例）
+    max_extrapolation_ratio=.5,  # 車底超出雙線可見端點時，可沿端點方向外插（上限為車框高度的比例）
+    max_line_handoff_px=25.0,  # 雙線追蹤換編號時，依位置把候選轉移到新編號的距離上限（0＝停用）
+    # 確認需要直接觀測的標線：線本身至少 min_line_observations 次直接觀測，越線前後各至少一個樣本
+    # 落在直接觀測的幾何上，且沒有樣本落在未對齊（鏡頭運動失效時沿用）的推移幾何上。不成立時最多為疑似。
+    require_direct_marking_evidence=True)
 
 
 def validate_rule_settings(overrides=None):
@@ -44,7 +48,7 @@ def validate_rule_settings(overrides=None):
         raise ValueError("Unknown double-line rule settings")
     settings = {**RULE_DEFAULTS, **overrides}
     for key, value in settings.items():
-        if key in ("emit_suspected", "allow_semantic_band", "allow_motion_gaps"):
+        if key in ("emit_suspected", "allow_semantic_band", "allow_motion_gaps", "require_direct_marking_evidence"):
             if type(value) is not bool:
                 raise ValueError(f"{key} must be boolean")
         elif type(value) not in (int, float) or not math.isfinite(value) or (value < 0 if key in ("footprint_inset_ratio", "max_extrapolation_ratio", "max_line_handoff_px") else value <= 0):
@@ -524,6 +528,10 @@ def attach_double_lines(record, mask, state):
         mask, reset_reason = None, "mask_shape_mismatch"
     lines = extract_double_lines(mask, observations.get("road_markings_raw",
                                                           observations.get("road_markings", [])))
+    # 標線降頻時本幀遮罩可能是推移估計：observed_frames 仍計入（追蹤品質，行為不變），
+    # direct_observed_frames 只計模型直接觀測，供規則的確認條件使用。
+    evidence = marking_evidence(record)
+    direct = bool(evidence["direct"])
     previous = [] if reset_reason else state.get("tracks", [])
     projected = []
     for track in previous:
@@ -561,10 +569,14 @@ def attach_double_lines(record, mask, state):
         unique = len(choices) == 1 and sum(choices[0] in others for others in matches) == 1
         if unique:
             old = projected[choices[0]][0]
-            line.update(track_id=old["track_id"], observed_frames=old["observed_frames"] + 1)
+            line.update(track_id=old["track_id"], observed_frames=old["observed_frames"] + 1,
+                        direct_observed_frames=old.get("direct_observed_frames", 0) + direct)
         else:
             state["next_id"] = state.get("next_id", 0) + 1
-            line.update(track_id=f"double-line-{state['next_id']}", observed_frames=1)
+            line.update(track_id=f"double-line-{state['next_id']}", observed_frames=1,
+                        direct_observed_frames=int(direct))
+        line.update(geometry_source=marking_geometry_source(evidence),
+                    marking_source_frame=evidence["source_frame"])
         uncompensated = motion_fallback or line.pop("_uncompensated_match", False)
         line.update(source_frame=frame["index"], tracking_status=(
             ("matched_without_motion" if uncompensated else "matched") if unique else "new"))
@@ -574,6 +586,7 @@ def attach_double_lines(record, mask, state):
         "version": 1, "status": "observed" if lines else
         ("geometry_unavailable" if mask is None else "no_double_lines"),
         "reset_reason": reset_reason, "motion_fallback": motion_fallback, "observed_count": len(lines),
+        "geometry_source": marking_geometry_source(evidence),
         "eligibility": "evaluated_by_rule",
         "motion_source": "ego_motion" if "ego_motion" in diagnostics else "road_marking_compensation"}
     state.update(frame=frame["index"], time=frame["timestamp_sec"],

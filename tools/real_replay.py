@@ -62,8 +62,13 @@ class RecordedPipeline:
         results = {name: R() for name in self.stages}
         results["vehicles"] = R(vehicles, {"track_mappings": {}})
         results["traffic_lights"] = R(obs["traffic_lights"])
-        results["road_markings"] = R(obs.get("road_markings_raw", obs["road_markings"]),
-                                     {"mask": mask, "palette": self.palette} if mask is not None else {})
+        artifacts = {"mask": mask, "palette": self.palette} if mask is not None else {}
+        source = record.get("postprocessing", {}).get("road_marking_source")
+        if mask is not None and isinstance(source, dict) and not source.get("direct", not source.get("propagated")):
+            # 記錄中這一幀的遮罩是推移估計：保留原始 source_frame，FrameProcessor 不再推移也不當成直接觀測。
+            from observation_schema import marking_evidence
+            artifacts.update(source_frame=source["source_frame"], prealigned_source=marking_evidence(record))
+        results["road_markings"] = R(obs.get("road_markings_raw", obs["road_markings"]), artifacts)
         results["depth"] = R(obs.get("depth", []))
         results["plates"] = R(obs.get("plates", []))
         results["ocr"] = R(obs.get("plates", []), {

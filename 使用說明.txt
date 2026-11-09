@@ -35,7 +35,8 @@
 
 configs/default.json 與 configs/full.json 目前內容相同，均啟用六階段：
 車輛、紅綠燈、道路標線、車距、車牌定位、OCR。
-「啟動辨識.cmd」使用 default；「啟動完整辨識.cmd」使用 full。
+「啟動辨識.cmd」預設使用 default；第一個參數加 full 改用 full，例如：
+.\啟動辨識.cmd full "input\影片.mp4" --save-video
 預設車輛使用 YOLO26s ONNX + ByteTrack，車輛及深度每 2 幀推論，中間影格使用快取。
 車牌使用車輛裁切及道路補漏，OCR 使用台灣微調 PP-OCRv6 獨立子程序。
 

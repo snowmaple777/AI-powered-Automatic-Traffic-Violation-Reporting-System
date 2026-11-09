@@ -203,7 +203,7 @@
 指標摘要：`batch_eval.summarize(label)` 或 `eval/metrics.py`。影片層級＝該片是否輸出目標規則事件；事件層級只計 `reviewed: true` 的影片。
 
 ### 7.3 回報格式
-每次交付或整合，在 `docs/refactor_log.md` 新增一節（目前編號到 4ab；4aa 保留給 Astra 的標線尺度實驗），包含：修改內容、原因、驗證方式、
+每次交付或整合，在 `docs/refactor_log.md` 新增一節（目前編號到 4ac；4aa 保留給 Astra 的標線尺度實驗），包含：修改內容、原因、驗證方式、
 前後數字（影片層級、事件層級 TP／FP／FN、速度）、逐片變動的事件、已知副作用、是否採用。
 
 ---

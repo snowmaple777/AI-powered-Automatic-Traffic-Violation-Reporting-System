@@ -169,6 +169,51 @@ class CrosswalkProxyTests(unittest.TestCase):
         self.assertIsNone(events[0]["evidence"]["stop_line"].get("proxy"))
 
 
+class ProxyRestrictionTests(unittest.TestCase):
+    """斑馬線代理線的疑似事件需要紅燈證據，且不能是橫向移動的車（2026-11-09 長片誤報修正）。"""
+
+    def frames(self, lights=True, shift=0):
+        frames = []
+        for i in range(15):
+            item = frame(i, 760 if i < 10 else 640, [])
+            vehicle = item["observations"]["vehicles"][0]
+            x = 900 + shift * i
+            vehicle["bbox_xyxy"] = [x, vehicle["bbox_xyxy"][1], x + 200, vehicle["bbox_xyxy"][3]]
+            vehicle["bottom_center"] = [x + 100, vehicle["bottom_center"][1]]
+            if not lights:
+                item["observations"]["traffic_lights"] = []
+            item["observations"]["traffic_regions"] = [{"region_id": "cw", "kind": "crosswalk", "predicted": False,
+                "polygon": [[0, 680], [1920, 680], [1920, 700], [0, 700]]}]
+            frames.append(item)
+        return frames
+
+    def run_rule(self, frames, **options):
+        rule = RedLightStopLineCrossingRule(RuleContext("t", 25, 1920, 1080), **options)
+        events = []
+        for item in frames:
+            events += rule.evaluate(item)
+        return rule, events + rule.finalize()
+
+    def test_proxy_with_red_and_forward_motion_is_suspected(self):
+        _, events = self.run_rule(self.frames())
+        self.assertEqual([e["status"] for e in events], ["suspected"])
+        self.assertEqual(events[0]["evidence"]["stop_line"]["proxy"], "crosswalk_near_edge")
+
+    def test_proxy_without_any_red_is_not_reported(self):
+        rule, events = self.run_rule(self.frames(lights=False))
+        self.assertEqual(events, [])
+        self.assertIn("proxy_without_red", rule.diagnostics["vehicles"][0]["blocked_by"])
+        _, legacy = self.run_rule(self.frames(lights=False), proxy_requires_red=False)
+        self.assertEqual([e["status"] for e in legacy], ["suspected"])
+
+    def test_laterally_moving_vehicle_is_not_reported_on_a_proxy(self):
+        rule, events = self.run_rule(self.frames(shift=30))
+        self.assertEqual(events, [])
+        self.assertIn("lateral_motion", rule.diagnostics["vehicles"][0]["blocked_by"])
+        _, legacy = self.run_rule(self.frames(shift=30), proxy_exclude_lateral=False)
+        self.assertEqual([e["status"] for e in legacy], ["suspected"])
+
+
 class SuspectedVetoTests(unittest.TestCase):
     """疑似事件：越線前後 0.5 秒內出現綠燈、或越線後退回停止線前，都不輸出。"""
 

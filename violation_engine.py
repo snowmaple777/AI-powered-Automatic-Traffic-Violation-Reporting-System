@@ -10,6 +10,7 @@ import numpy as np
 from double_lines import (validate_rule_settings, line_quality, vehicle_line_position,
                           project_points, classify_maneuver, resolve_rule_lines)
 from signal_state import CombinedSignalState
+from core.trajectory import TrackHistory
 from core.continuity import is_continuous
 from core.motion import homography, road_motion
 from area_rules import AreaOccupancyRule
@@ -150,7 +151,8 @@ class RedLightStopLineCrossingRule(ViolationRule):
                  weak_signal_evidence=True, signal_hold_seconds=3.0, crosswalk_proxy=True,
                  require_red_for_suspected=False, require_direct_marking_evidence=True,
                  green_veto_seconds=0.5, crosswalk_proxy_mode="per_vehicle",
-                 signal_selected_continuity=True, occluded_contact="skip"):
+                 signal_selected_continuity=True, occluded_contact="skip",
+                 proxy_requires_red=True, proxy_exclude_lateral=True):
         """weak_signal_evidence／signal_hold_seconds／crosswalk_proxy 只讓事件成為「疑似」：
         「確認」仍要求強燈號證據（與先前相同）且觀測到真正的停止線。
         require_red_for_suspected：疑似事件也必須在越線前後有紅燈證據（任何強度）。
@@ -167,7 +169,9 @@ class RedLightStopLineCrossingRule(ViolationRule):
         occluded_contact：車框底邊（接地點代理）被較近的車輛遮住時的處理。"skip"（預設）：該幀不算線前／線後
         觀測（同快取框）；"suspected"：照常累積但不得確認（條件 contact_point_visible）；"off"：舊行為。
         遮擋判定：另一台車（car／motorcycle／bus／truck，非同一 ID、非重複偵測）底邊比本車低、上緣高於本車底邊，
-        且與本車水平重疊至少本車寬的 30%。"""
+        且與本車水平重疊至少本車寬的 30%。
+        proxy_requires_red／proxy_exclude_lateral：斑馬線代理線的疑似事件必須在越線前後有紅燈證據（任何強度），
+        且車輛最近 2 秒不是橫向移動（水平位移 ≥ 車寬一半且 ≥ 底邊垂直位移 2 倍，多為橫越或轉彎的車）。"""
         self.context = context
         self.signal_confidence = signal_confidence
         self.line_margin = max(line_margin_pixels,
@@ -197,6 +201,9 @@ class RedLightStopLineCrossingRule(ViolationRule):
         if occluded_contact not in ("skip", "suspected", "off"):
             raise ValueError("occluded_contact must be skip, suspected or off")
         self.occluded_contact = occluded_contact
+        self.proxy_requires_red = proxy_requires_red
+        self.proxy_exclude_lateral = proxy_exclude_lateral
+        self.history = TrackHistory(seconds=2.0)
         self.crosswalk_proxy = crosswalk_proxy
         if crosswalk_proxy_mode not in ("per_vehicle", "no_stop_line"):
             raise ValueError("crosswalk_proxy_mode must be per_vehicle or no_stop_line")
@@ -237,6 +244,7 @@ class RedLightStopLineCrossingRule(ViolationRule):
                 raise ValueError("Invalid homography")
             return [(matrix[0][0]*x+matrix[0][1]*y+matrix[0][2])/scale,
                     (matrix[1][0]*x+matrix[1][1]*y+matrix[1][2])/scale]
+        self.history.project(lambda x, y: tuple(transform(x, y)))
         for key,track in list(self.line_tracks.items()):
             try:
                 x,y,w,h=track["bbox_xywh"]
@@ -465,6 +473,8 @@ class RedLightStopLineCrossingRule(ViolationRule):
         # 只有強證據沿用原規則的所有判斷（含綠／黃燈清除狀態與「確認」）；弱證據與延續只支持疑似。
         strong_state = signal_state if self.signal_tracker.strength == "strong" else None
         self._project_line_tracks(observation)
+        self.history.update(frame["timestamp_sec"], index, obs.get("rule_vehicles", obs["vehicles"]),
+                            lambda v: v.get("rider_group", {}).get("vehicle_bbox_xyxy") or v.get("bbox_xyxy"))
         stop_components = self._update_stop_lines(
             self._valid_stop_components(obs), index)
         # 只保留短時間連續軌跡；不能把數秒前的線前位置接成現在的越線。
@@ -625,6 +635,13 @@ class RedLightStopLineCrossingRule(ViolationRule):
                              (state["after_count"] >= 1 and signal_state == "red"))
                 if self.require_red_for_suspected and not any_red:
                     suspected = False
+                if stop_line.get("proxy") and suspected:
+                    if self.proxy_requires_red and not any_red:
+                        suspected = False
+                        blocked_by.append("proxy_without_red")
+                    elif self.proxy_exclude_lateral and self.history.lateral(object_id, frame["timestamp_sec"], 2.0):
+                        suspected = False
+                        blocked_by.append("lateral_motion")
                 green_nearby = (self.last_green_frame is not None and self.green_veto_frames
                                 and index - self.last_green_frame <= self.green_veto_frames)
                 if green_nearby:

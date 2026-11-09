@@ -17,6 +17,7 @@ from core.motion import homography, road_motion
 from core.fastcopy import clone
 from observation_schema import marking_evidence, marking_geometry_source
 from signal_state import CombinedSignalState, signal_lights
+from core.trajectory import TrackHistory
 
 
 AREA_RULES = {
@@ -28,10 +29,11 @@ DEFAULTS = dict(min_confidence=.5, min_observations=3, intrusion_seconds=.15,
                 min_intrusion_length_px=2., max_observation_gap_sec=.3,
                 max_frame_gap_sec=.2, rearm_seconds=5., side_margin_ratio=.02,
                 duplicate_box_iou=.5, occlusion_gap_ratio=.25, stationary_radius_ratio=.2,
-                crosswalk_two_wheelers=False)
+                crosswalk_two_wheelers=False, crosswalk_suppress_on_green=True, crosswalk_green_hold_seconds=3.,
+                crosswalk_exclude_lateral=True)
 # 允許為 0（停用）的數值設定；布林設定。其餘必須為正數。
-NONNEGATIVE = {"occlusion_gap_ratio", "stationary_radius_ratio"}
-BOOLEAN = {"crosswalk_two_wheelers"}
+NONNEGATIVE = {"occlusion_gap_ratio", "stationary_radius_ratio", "crosswalk_green_hold_seconds"}
+BOOLEAN = {"crosswalk_two_wheelers", "crosswalk_suppress_on_green", "crosswalk_exclude_lateral"}
 
 
 def settings_for(overrides=None):
@@ -500,7 +502,14 @@ class AreaOccupancyRule:
         # 已報告車輛的車框 IoU ≥ duplicate_box_iou 也視為同一台車（只抑制重複報告，不產生事件、不累積證據）。
         self.reported = {}
         # 沒有車道標定（行車紀錄器）時改用整個畫面的燈號；與闖紅燈規則相同的強／弱／延續證據。
-        self.signal = CombinedSignalState(context.fps) if self.kind == "motorcycle_waiting_area" else None
+        # 斑馬線：本車方向主燈號為綠燈時（車流通行、行人紅燈）不報告停留（crosswalk_suppress_on_green），
+        # 衝突時沿用主燈號（只會解出綠／黃）；停等區維持原本的燈號判定。
+        self.signal = (CombinedSignalState(context.fps) if self.kind == "motorcycle_waiting_area" else
+                       CombinedSignalState(context.fps, selected_continuity=True)
+                       if self.settings["crosswalk_suppress_on_green"] else None)
+        # 斑馬線：停留前 3 秒是橫向移動的車（橫越路口或轉彎）不是本車道的停留（crosswalk_exclude_lateral）。
+        self.history = TrackHistory(seconds=3.0) if self.kind == "crosswalk" else None
+        self.last_green_time = None
 
     def _red_signal(self, region, vehicle, index, cfg, frame_signal):
         """回傳 (lane_matched, strong)；沒有可用紅燈時拋出 ValueError。
@@ -529,6 +538,8 @@ class AreaOccupancyRule:
             # 每幀都要更新，燈號的時間窗口才連續（包括沒有區域的幀）。
             frame_signal = (self.signal.update(items.get("traffic_lights", []), index), self.signal.strength)
             self.diagnostics["signal"] = dict(self.signal.evidence)
+            if frame_signal == ("green", "strong"):
+                self.last_green_time = now
         if not is_continuous(self.previous_frame, frame, cfg["max_frame_gap_sec"]):
             self.states.clear()
             self.diagnostics["reset_reason"] = "discontinuous_input"
@@ -548,12 +559,16 @@ class AreaOccupancyRule:
                     raise ValueError("motion_unavailable")
                 for state in self.states.values():
                     state["anchor"] = project_points([state["anchor"]], matrix)[0]
+                if self.history is not None:
+                    self.history.project(lambda x, y: tuple(project_points([[x, y]], matrix)[0]))
             except (TypeError, ValueError):
                 self.states.clear()
                 self.diagnostics.update(status="blocked", reason="motion_unavailable")
                 return []
         events, retained = [], set()
         vehicles = items.get("area_vehicles", items.get("rule_vehicles", items.get("vehicles", [])))
+        if self.history is not None:
+            self.history.update(now, index, vehicles)
         region_ids = Counter(r.get("region_id") for r in regions)
         vehicle_ids = Counter(v.get("object_id") for v in vehicles)
         for region in regions:
@@ -653,6 +668,14 @@ class AreaOccupancyRule:
                         continue
                     if state["count"] < cfg["min_observations"] or now - state["since"] + 1e-6 < duration:
                         continue
+                    if self.kind == "crosswalk":
+                        # 綠燈後至少經過黃燈（約 3 秒）才會轉紅：最近 crosswalk_green_hold_seconds 內主燈號是綠燈時不報告。
+                        # 保留狀態：燈號轉紅後仍停留才報告。
+                        if (cfg["crosswalk_suppress_on_green"] and self.last_green_time is not None
+                                and now - self.last_green_time <= cfg["crosswalk_green_hold_seconds"]):
+                            raise ValueError("own_signal_green")
+                        if cfg["crosswalk_exclude_lateral"] and self.history.lateral(identity, now, 3.0):
+                            raise ValueError("lateral_motion")
                     self.reported[identity] = (now, list(vehicle["bbox_xyxy"]))
                     event = dict(event_id=f"{self.context.source_id}:{self.rule_id}:{identity}:{region_id}:{index}",
                                  rule_id=self.rule_id, source_id=self.context.source_id, status="suspected",

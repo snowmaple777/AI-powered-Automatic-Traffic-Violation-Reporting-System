@@ -14,6 +14,9 @@
   "occlusion_gap_ratio": 0.25,
   "stationary_radius_ratio": 0.2,
   "crosswalk_two_wheelers": false,
+  "crosswalk_suppress_on_green": true,
+  "crosswalk_green_hold_seconds": 3.0,
+  "crosswalk_exclude_lateral": true,
   "geometry": {
     "close_gap_ratio": 0.025,
     "min_region_pixels": 120,

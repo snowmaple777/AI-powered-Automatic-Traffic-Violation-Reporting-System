@@ -166,6 +166,29 @@ class AreaRuleTests(unittest.TestCase):
             self.assertEqual(events[0]["evidence"]["vehicle"]["plate_text"], "ABC-1234")
             json.dumps(events, allow_nan=False)
 
+    def test_crosswalk_not_reported_while_own_signal_is_green(self):
+        def green(rows, frames):
+            for i in frames:
+                rows[i]["observations"]["traffic_lights"] = [dict(class_name="green", confidence=.9,
+                                                                  bbox_xyxy=[10, 10, 20, 30])]
+            return rows
+        self.assertEqual(evaluate(green(records(), range(15))), [])
+        # 綠燈只在開頭 0.5 秒：3 秒內不報告，之後車仍停留才報告
+        events = evaluate(green(records(count=50), range(6)))
+        self.assertEqual(len(events), 1)
+        self.assertGreater(events[0]["timestamp_sec"], 3.4)
+        self.assertEqual(len(evaluate(green(records(), range(15)), {"crosswalk_suppress_on_green": False})), 1)
+
+    def test_crosswalk_vehicle_that_arrived_laterally_is_not_reported(self):
+        rows = records(count=25)
+        for i, row in enumerate(rows):
+            x = min(45, -55 + 10 * i)  # 前 10 幀由左側橫向駛入，之後停在斑馬線上
+            vehicle = row["observations"]["vehicles"][0]
+            vehicle["bbox_xyxy"] = [x, 20, x + 20, 70]
+            vehicle["road_geometry"]["footprint"] = [[x, 50], [x + 20, 50], [x + 20, 70], [x, 70]]
+        self.assertEqual(evaluate(rows), [])
+        self.assertEqual(len(evaluate(rows, {"crosswalk_exclude_lateral": False})), 1)
+
     def test_moving_short_stay_and_overlap_threshold(self):
         self.assertEqual(evaluate(records(moving=3)), [])
         self.assertEqual(evaluate(records(count=9)), [])

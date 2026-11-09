@@ -116,3 +116,8 @@ A1 整片穩定完成，顯存沒有持續上升；事件約每小時 93 筆，�
 接地點遮擋檢查（`occluded_contact`，預設 skip）與主燈號延續（`signal_selected_continuity`，預設開）已實作，未提交。短片 31 支事件逐筆不變；A5 事件 5→4、A1 41→24（闖紅燈 26→9，確認 1→0）。詳見 refactor_log 4ab。
 事件時間軸（含修正後狀態）：`outputs/analysis/long_video_20261108/fp_timeline/fp_timeline.html`／`.csv`。
 請 Astra 在 Windows 以 `rule_eval`（或 `real_replay`）對 A5、A1 重算確認與 Opus 的分段重算一致，再進行修正 3（代理線需紅燈證據）與 4aa 標線尺度實驗。
+
+### 7.4 修正 3、4 完成（4ac，2026-11-09，未提交）
+
+4t–4ab 已於本機提交（cced518）。4ac：斑馬線代理線需紅燈證據且排除橫向移動；斑馬線停留在主燈號綠燈後 3 秒內不報告、排除橫向駛入的車。
+短片闖紅燈 11/3/4 → 11/1/4（只消失 2 筆既有誤報）；A5 事件 5→1、A1 41→7。請 Astra 在 Windows 以 `rule_eval` 重算 A5、A1、31 支短片確認，再進行 4aa。

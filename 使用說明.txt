@@ -128,6 +128,8 @@ confirmed 需要：實際偵測到的停止線、強燈號證據（原本的燈�
   主燈號是紅燈仍判為未知。修正紅轉綠後主綠燈與側邊紅燈（行人／橫向號誌）並存時，起步的車被報成疑似闖紅燈。
 - occluded_contact（預設 skip）：車框底邊被較近的車輛遮住時（例如機車下半部被前車擋住），底邊不是接地點，
   該幀不算線前／線後觀測；suspected 為照常累積但不得確認（條件 contact_point_visible），off 為舊行為。
+- proxy_requires_red／proxy_exclude_lateral（預設開）：斑馬線代理線的疑似事件必須在越線前後有紅燈證據（任何強度），
+  且車輛最近 2 秒不是橫向移動（多為橫越路口或轉彎的車）。
 車框底邊僅為接地位置代理值；融合或漏檢延伸的機車框不等於輪胎偵測。
 
 從原影片與既有 JSONL 重算停止線補償：
@@ -357,6 +359,10 @@ rearm_seconds、side_margin_ratio、duplicate_box_iou。
 斑馬線規則另有：occlusion_gap_ratio（預設 0.25）——停在斑馬線上的車會遮住底下的條紋，區域一端止於車框時，
 沿斑馬線帶延伸到車框範圍再量重疊（事件條件 region_visible_at_footprint=false）；stationary_radius_ratio（預設 0.2）——
 停留半徑取 max(stationary_radius_px, 比例 × 車框寬)；crosswalk_two_wheelers（預設 false）——是否包含機車／自行車。
+以下兩項只會讓事件變少（2026-11-09，長片誤報修正）：crosswalk_suppress_on_green（預設 true）——本車方向主燈號
+在最近 crosswalk_green_hold_seconds（預設 3）秒內是綠燈時不報告（車流通行、行人紅燈；綠燈後要經過黃燈才轉紅），
+燈號轉紅後車仍停留才報告；crosswalk_exclude_lateral（預設 true）——停留前 3 秒是橫向移動（水平位移 ≥ 車寬一半且 ≥ 垂直位移 2 倍，
+已補償鏡頭運動）的車視為橫越或轉彎的車，不報告。
 車輛信心短暫低於門檻時，累積中的停留狀態保留到 max_observation_gap_sec，不會歸零。
 同時啟用闖紅燈規則時，同一台車的停等區事件併入闖紅燈事件的 merged_events，不單獨輸出：
 停等區事件至少保留 3 秒，且這台車仍在畫面中（離開未滿 1 秒）或闖紅燈規則仍有它的待定事件時繼續保留；

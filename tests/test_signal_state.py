@@ -27,6 +27,41 @@ class SignalStateTests(unittest.TestCase):
         self.assertIsNone(CombinedSignalState(10).update([light("arrow", 120)] , 0))
 
 
+class SelectedContinuityTests(unittest.TestCase):
+    """紅轉綠後主燈號變綠、側邊另有紅燈（行人／橫向號誌）：主燈號延續只會解出綠／黃，不會解出紅。"""
+
+    def run_sequence(self, continuity, after):
+        state = TemporalSignalState(10, selected_continuity=continuity)
+        for index in range(5):  # 只有主燈號：確立為紅燈並成為 selected
+            state.update([light("red", 100)], index)
+        result = None
+        for index in range(5, 15):
+            result = state.update(after, index)
+        return state, result
+
+    def test_main_signal_turning_green_beside_side_red_is_green(self):
+        state, result = self.run_sequence(True, [light("green", 100), light("red", 300, .6)])
+        self.assertEqual(result, "green")
+        self.assertEqual(state.evidence["reason"], "selected_signal_continuity")
+        self.assertEqual(state.evidence["conflicting_colors"], ["green", "red"])
+
+    def test_without_continuity_the_conflict_stays_unknown(self):
+        state, result = self.run_sequence(False, [light("green", 100), light("red", 300, .6)])
+        self.assertIsNone(result)
+        self.assertEqual(state.evidence["reason"], "conflicting_signal_tracks")
+
+    def test_red_main_signal_beside_side_green_stays_unknown(self):
+        # 主燈號仍是紅燈：不得用延續新增紅燈證據
+        state, result = self.run_sequence(True, [light("red", 100), light("green", 300, .6)])
+        self.assertIsNone(result)
+        self.assertEqual(state.evidence["reason"], "conflicting_signal_tracks")
+
+    def test_combined_state_passes_the_option_to_both_trackers(self):
+        state = CombinedSignalState(10, selected_continuity=True)
+        self.assertTrue(state.strong.selected_continuity and state.weak.selected_continuity)
+        self.assertFalse(CombinedSignalState(10).strong.selected_continuity)
+
+
 class YellowConfirmationTests(unittest.TestCase):
     # 30 fps、預設 0.2 秒 = 6 幀；強證據窗口 0.5 秒 = 15 幀。
     def test_brief_yellow_inside_red_keeps_red(self):

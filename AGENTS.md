@@ -108,6 +108,10 @@
   `direct_marking_evidence`）。推移資料仍可支持幾何對齊與疑似，不得增加確認所需的直接觀測次數。
   1.8 以前的 JSONL 沒有直接觀測欄位，規則沿用原判定；需要閘門時以 `real_replay` 重播。
   2026-11-01 Windows 驗證：interval 2 下 31 支影片的事件與關閉閘門時完全相同；interval 3／4 的評估須在閘門下重做。
+  **短暫運動失效容忍（refactor_log 4v，schema 1.9）**：`configs/marking_compensation.json` 的 `allow_motion_gaps`／
+  `max_motion_gap_seconds`（true／0.5）讓停止線補償在鏡頭運動失效 ≤ 0.5 秒時以「不動」近似保留軌跡、不重設；
+  期間輸出 `compensation.motion_gap=True`，未被觀測更新的線不提供給規則。闖紅燈條件 `camera_motion_compensated`
+  使這段期間的越線只能是疑似；斑馬線代理線仍在失效時清除。
 - 輸入是 `uint8 BGR`，輸出座標均為原圖像素；模型後端不可修改輸入 frame 或 upstream。
   `records` 必須可 JSON 序列化，遮罩等陣列留在 `artifacts`。跨影片須 `reset()`，結束須 `close()`。
 
@@ -115,7 +119,7 @@
 鏡頭運動（車輛偵測後即在背景執行緒估計）→ 標線推移（降頻時）→ 建立觀測紀錄 → 停止線補償 → 騎士配對 → 雙線 → 停等區／斑馬線區域。
 `run_pipeline` 的 `--save-masks` 存的是**處理後**的遮罩，離線重播才能逐位元重現。
 
-### 5.3 觀測紀錄（`observation_schema.py`，目前版本 1.8）
+### 5.3 觀測紀錄（`observation_schema.py`，目前版本 1.9）
 - 每幀一行 JSON，欄位與寫入者列在檔案開頭的說明；`validate_observation()` 檢查必要欄位。
 - **新增欄位**：更新該說明與版本紀錄、`SCHEMA_VERSION` 加一個小版本，舊紀錄必須仍可被讀取（讀取端要有退回值，參考 `core.motion.road_motion()`）。
 - 鏡頭運動一律以 `core.motion.road_motion(record)` 讀取、`core.motion.homography()` 驗證，不要直接讀欄位。
@@ -132,7 +136,22 @@
 - `ViolationEngine` 會把同一車輛的停等區事件併入闖紅燈事件的 `merged_events`：停等區事件至少保留 3 秒，車仍在畫面中（離開未滿 1 秒）或闖紅燈規則仍有它的待定事件時繼續保留；已報告闖紅燈的車，同片之後的停等區事件直接併入（延後輸出的事件帶 `released_timestamp_sec`，refactor_log 4n）。
 - 每幀診斷寫在 `rule.diagnostics`（阻擋原因），全片評估以此統計漏判原因；新規則也要提供。
 
-### 5.5 燈號
+### 5.5 事件車牌補充（4w；預設關閉）
+
+- 三個入口 `run_pipeline.py`、`evaluate_violations.py`、`tools/rule_eval.py` 共用 `plate_backfill.PlateBackfill`，
+  `--plate-backfill-seconds 0` 預設停用；停用仍產生頂層 `plate`（event_frame／none），不延遲事件、不建立暫存庫。
+- 補充只作用於引擎合併後的事件，不處理 `merged_events` 子事件，不改 `evidence`、狀態、條件、ID 與時間。
+  `plate` 欄位與來源契約見 [開發 prompt 第 2 節](docs/handoff/plate_backfill_and_diagnostics_prompt.md)。
+- 候選須同 ID、新觀測 `source_frame == frame.index`，信心至少 0.8；相鄰新觀測間隔不得超過 0.3 秒，
+  車框中心位移不得超過前框對角線 0.5 倍、IoU 至少 0.1。同字串在其他 ID 出現則拒絕，原牌衝突只標記而不覆寫。
+- 視窗內失去連續追蹤或新的候選彼此矛盾時保守不補充；後者沿用 `plate_conflict` 原因，
+  `conflict=true` 仍只表示與事件當下原牌不同。這些實驗策略交由 Opus 審查，不改規則的 confirmed 條件。
+- 啟用時以 SQLite 磁碟暫存精簡觀測（支援引擎延後到片尾才輸出的事件），關閉自動清除，頁面快取設定 2 MiB；
+  暫存磁碟用量隨影片長度增加。事件 FIFO 發布，片尾 flush；逐幀疊圖可先顯示未補充事件。
+- 消費端用 `event_plate_text()`：存在 `plate` 就取其 text（含 null），舊事件才退回原證據。
+  指標並列事件當下／含補充車牌，兩種配對分開計算；資訊卡與剪輯註明讀數延遲或原牌衝突。
+
+### 5.6 燈號
 `signal_state.CombinedSignalState`：`strong`（可支持確認）、`weak`／`held`（只支持疑似）。黃燈需持續 0.2 秒才中斷紅燈；
 `arrow` 類別不參與紅／綠／黃判定；多個穩定燈顏色衝突時回報未知（以主燈判定的嘗試已撤回，見 refactor_log 4g）。
 
@@ -178,12 +197,13 @@
 | 改後處理（補償、雙線、區域幾何、鏡頭運動、`frame_processing.py`） | `tools/real_replay.py outputs/eval/baseline --all --out outputs/eval/<名稱>`（不需 torch；`--recompute-motion` 重新估計鏡頭運動） |
 | 改模型或模型參數 | 只重跑該模型產生新 JSONL／遮罩，再用 `real_replay` 重播（做法見 refactor_log 4e、4h）；或重跑 `batch_eval` |
 | 重構（宣稱行為不變） | `tools/equivalence_harness.py`：以舊版（`git worktree add ..\old <commit>`）與新版各跑一次再 `compare`，輸出須逐位元相同 |
+| 標線取樣策略（排程） | `tools/simulate_sampling.py --source outputs/eval/sampling_20261102_i1 --out <資料夾> --policy fixed:2 --policy <策略>`：以每幀直接觀測的遮罩離線模擬，不需 GPU；與實際 interval 2／refresh 的推論次數、未對齊幀逐片相同（4v） |
 | 效能 | `tools/verify_stage.py --label <名稱>`（測試＋三支短片完整辨識＋分段耗時＋與前次比較）；GPU 不可同時有其他工作 |
 
 指標摘要：`batch_eval.summarize(label)` 或 `eval/metrics.py`。影片層級＝該片是否輸出目標規則事件；事件層級只計 `reviewed: true` 的影片。
 
 ### 7.3 回報格式
-每次交付或整合，在 `docs/refactor_log.md` 新增一節（目前編號到 4s），包含：修改內容、原因、驗證方式、
+每次交付或整合，在 `docs/refactor_log.md` 新增一節（目前編號到 4ab；4aa 保留給 Astra 的標線尺度實驗），包含：修改內容、原因、驗證方式、
 前後數字（影片層級、事件層級 TP／FP／FN、速度）、逐片變動的事件、已知副作用、是否採用。
 
 ---

@@ -31,10 +31,22 @@ postprocessing.road_marking_source  本幀標線遮罩的來源（FrameProcessor
 1.8 road_marking_source 改為每幀寫入並新增 direct／aligned／age_frames／motion_valid；
     標線衍生幾何新增直接觀測欄位：停止線補償 compensation.direct_observed_frames／last_direct_observed_frame／
     direct_rule_eligible，雙線 direct_observed_frames／geometry_source，區域 marking_source。
+1.9 停止線補償容忍鏡頭運動短暫失效（allow_motion_gaps）：postprocessing.road_marking_compensation 新增
+    motion_gap／motion_gap_seconds；失效期間輸出的停止線 compensation.motion_gap=True（規則只能據以產生疑似），
+    未被觀測更新的線 rule_eligible／direct_rule_eligible 一律為 False。舊紀錄沒有這些欄位，視為 False。
+
+事件輸出（*_violations.jsonl）另由 plate_backfill.PlateBackfill 新增頂層 plate；不改本模組的觀測版本 1.9。
+plate 包含 text、source（event_frame／same_track_after_event／none）、object_id、observed_frame、
+observed_timestamp_sec、delay_seconds、text_confidence、window_seconds、conflict、rejected。
+text 與讀數欄位允許 null；rejected 元素為 {text, frame, reason}。來源為補充時保留真實讀數時間，
+絕不改寫 evidence.vehicle.plate_text、原事件條件／狀態／時間／ID 或 merged_events。
+停用補充（window_seconds=0）仍輸出 plate，來源只會為 event_frame／none，不延遲事件。
+舊事件沒有 plate 時，消費端以 plate_backfill.event_plate_text() 退回 evidence.vehicle.plate_text；
+已有 plate 但 text=null 不退回其他來源。完整契約見 docs/handoff/plate_backfill_and_diagnostics_prompt.md 第 2 節。
 """
 import math
 
-SCHEMA_VERSION = "1.8"
+SCHEMA_VERSION = "1.9"
 
 
 def marking_evidence(record):

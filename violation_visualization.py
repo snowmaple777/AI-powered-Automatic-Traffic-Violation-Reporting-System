@@ -6,6 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+from plate_backfill import event_plate_text
 
 
 STATUS_COLORS = {"suspected": (0, 165, 255), "confirmed": (0, 0, 255)}
@@ -24,7 +25,7 @@ def find_event_vehicle(vehicles, event):
 
 
 def event_details(event, vehicle=None):
-    """Use current matched text when available, retaining evidence on track loss."""
+    """新事件依 plate 契約呈現；舊事件仍保留既有疊圖退回方式。"""
     evidence = event.get("evidence", {}).get("vehicle", {})
     vehicle = vehicle or {}
     confirmed = event.get("status") == "confirmed"
@@ -33,12 +34,23 @@ def event_details(event, vehicle=None):
         "已由停止線前移至線後；紅燈或越線證據尚未完整。")
     if not event.get("description") and event.get("rule_id") != "red_light_stop_line_crossing":
         reason = RULE_LABELS.get(event.get("rule_id"), event.get("rule_id")) or "未提供違規理由"
+    plate = event.get("plate")
+    note = ""
+    if isinstance(plate, dict):
+        text = event_plate_text(event)
+        if plate.get("source") == "same_track_after_event":
+            note = f"事件後 {plate['delay_seconds']:.1f} 秒同追蹤讀到"
+        if plate.get("conflict"):
+            alternatives = list(dict.fromkeys(r["text"] for r in plate.get("rejected", [])
+                                              if r.get("reason") == "plate_conflict"))
+            note = "車牌衝突；保留事件當下讀數；後續：" + "、".join(alternatives)
+    else:
+        text = vehicle.get("plate_text") or evidence.get("plate_text") or event.get("plate_text")
     return dict(status="規則確認・待覆核" if confirmed else "疑似違規・待覆核",
                 reason=reason,
                 vehicle_id=vehicle.get("source_object_id") or evidence.get("source_object_id")
                     or vehicle.get("object_id") or event.get("object_id") or "未提供",
-                plate=vehicle.get("plate_text") or evidence.get("plate_text")
-                    or event.get("plate_text") or "未辨識",
+                plate=text or "未辨識", plate_note=note,
                 event_id=event.get("event_id", "未提供"),
                 timestamp_sec=float(event.get("timestamp_sec", 0)))
 
@@ -49,6 +61,7 @@ def format_event_summary(event):
             f"違規理由：{info['reason']}\n"
             f"車輛編號：{info['vehicle_id']}\n"
             f"車牌號碼：{info['plate']}\n"
+            + (f"車牌來源：{info['plate_note']}\n" if info['plate_note'] else "") +
             f"事件時間：{info['timestamp_sec']:.2f} 秒\n"
             f"事件編號：{info['event_id']}\n")
 
@@ -111,7 +124,9 @@ def draw_violation_candidates(frame, vehicles, events, timestamp_sec, hold_secon
         title_color = (130,150,255) if status == "confirmed" else (100,205,255)
         lines = [(info['status'],title_color)]
         for label,value in (("違規理由",info['reason']), ("車輛編號",info['vehicle_id']),
-                            ("車牌號碼",info['plate'])):
+                            ("車牌號碼",info['plate']), ("車牌來源", info['plate_note'])):
+            if not value:
+                continue
             for text in _wrap(f"{label}：{value}",font,card_width-2*pad,
                               max_lines=3 if label=="違規理由" else 2):
                 lines.append((text,(245,245,245)))

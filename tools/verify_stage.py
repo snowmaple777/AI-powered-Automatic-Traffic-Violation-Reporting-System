@@ -15,6 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+from plate_backfill import event_plate_text
 VERIFY_DIR = ROOT / "outputs" / "verify"
 BASELINE = ROOT / "outputs" / "refactor_baseline" / "replay.json"
 # 影片, 最多幀數（0＝整支）。涵蓋紅燈、雙黃線、斑馬線三類規則。
@@ -98,7 +99,8 @@ def summarize_outputs(folder, stem):
         for line in violations.read_text(encoding="utf-8").splitlines():
             if line.strip():
                 event = json.loads(line)
-                events.append({key: event.get(key) for key in ("rule_id", "status", "object_id", "frame")})
+                events.append({**{key: event.get(key) for key in ("rule_id", "status", "object_id", "frame")},
+                               "plate": event_plate_text(event)})
     final_plates = {}
     for (object_id, text), _ in sorted(plates.items(), key=lambda item: item[1]):
         final_plates[object_id] = text
@@ -259,7 +261,7 @@ def format_report(report, previous):
         lines.append(f"評估（對照 eval/ground_truth.json）：{hits}")
         for rule, c in metrics["event_level"].items():
             lines.append(f"  {rule}: TP {c['tp']} FP {c['fp']} FN {c['fn']}")
-        lines.append(f"  車牌完全正確 {metrics['plate'][0]}/{metrics['plate'][1]}")
+        lines.append(f"  事件當下車牌 {metrics.get('plate_at_event', metrics['plate'])}；含補充 {metrics['plate']}")
     if previous:
         lines.append(f"比較對象：{previous['label']}")
     return "\n".join(lines)
@@ -291,9 +293,12 @@ def main(argv=None):
     if report["clips"]:
         from eval.metrics import evaluate, load_predictions
         truth = json.loads((ROOT / "eval/ground_truth.json").read_text(encoding="utf-8-sig"))
-        rows, per_rule, plate_total, plate_correct = evaluate(truth, load_predictions([out], "suspected"))
+        predictions = load_predictions([out], "suspected")
+        rows, per_rule, plate_total, plate_correct = evaluate(truth, predictions)
+        _, original_rules, original_total, original_correct = evaluate(truth, predictions, plate_at_event=True)
         report["metrics"] = {"video_hits": [[r[0], r[2]] for r in rows], "event_level": per_rule,
-                             "plate": [plate_correct, plate_total]}
+                             "plate": [plate_correct, plate_total], "plate_at_event": [original_correct, original_total],
+                             "event_level_at_event": original_rules}
     previous = previous_report(args.label, args.compare_to)
     if previous:
         for name in report["clips"]:

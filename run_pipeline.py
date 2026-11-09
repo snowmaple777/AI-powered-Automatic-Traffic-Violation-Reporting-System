@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import time
 from contextlib import ExitStack
 from pathlib import Path
@@ -15,6 +16,7 @@ from double_lines import double_line_rule_options
 from area_rules import AREA_RULES, area_rule_options, area_geometry_options
 from frame_processing import FrameProcessor
 from pipeline_outputs import DetectionCsv, annotate_frame
+from plate_backfill import PlateBackfill, add_plate_arguments, DEFAULT_WINDOW_SECONDS
 
 
 def parse_args(argv=None):
@@ -45,6 +47,7 @@ def parse_args(argv=None):
     parser.add_argument("--double-line-config", type=Path, default=ROOT / "configs/double_line_rules.json",
                         help="雙實線跨越規則參數 JSON；辨識與重算共用")
     add_clip_arguments(parser)
+    add_plate_arguments(parser)
     return parser.parse_args(argv)
 
 
@@ -88,6 +91,7 @@ def apply_overrides(config, args):
 def run(args, resources, pipeline=None):
     """pipeline：可傳入已載入的 ModelPipeline 供多支影片共用（批次評估）；會先 reset 追蹤狀態。"""
     validate_clip_options(args.clip_before, args.clip_after)
+    plate_backfill = resources.enter_context(PlateBackfill(getattr(args, "plate_backfill_seconds", DEFAULT_WINDOW_SECONDS)))
     if not args.input.is_file():
         raise SystemExit(f"找不到影片：{args.input}")
     if args.max_frames < 0:
@@ -117,8 +121,12 @@ def run(args, resources, pipeline=None):
     resources.callback(cap.release)
     if not cap.isOpened():
         raise SystemExit(f"無法開啟影片：{args.input}")
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    fps = cap.get(cv2.CAP_PROP_FPS)
     width, height = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    if not math.isfinite(fps) or fps <= 0 or width <= 0 or height <= 0:
+        raise ValueError("影片 FPS 或尺寸無效，無法建立可靠時間軸")
+    reported_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+    expected_frames = round(reported_frames) if math.isfinite(reported_frames) and reported_frames > 0 else None
     processor = FrameProcessor(fps, width, height, list(pipeline.models), compensator, area_config,
                                EgoMotionTracker(motion_config))
     resources.callback(processor.close)
@@ -156,12 +164,22 @@ def run(args, resources, pipeline=None):
     timer = processor.timer  # 主迴圈與逐幀後處理共用，輸出到 *_timings.json
     started, frame_index = time.perf_counter(), 0
     window_started = started
+    termination = None
+    masks_written = 0
     try:
         with jsonl_path.open("w", encoding="utf-8") as jsonl:
             while True:
+                if args.max_frames and frame_index >= args.max_frames:
+                    termination = "max_frames"
+                    break
                 with timer.measure("decode"):
                     ok, frame = cap.read()
-                if not ok or (args.max_frames and frame_index >= args.max_frames):
+                if not ok:
+                    if frame_index == 0:
+                        raise RuntimeError("影片未成功解碼任何影格")
+                    if expected_frames is not None and frame_index != expected_frames:
+                        raise RuntimeError(f"影片可能截斷或影格中繼資料不符：讀到 {frame_index} / {expected_frames} 幀")
+                    termination = "eof" if expected_frames is not None else "unverified_eof"
                     break
                 timestamp = frame_index / fps
                 pending_motion.update(frame=frame, index=frame_index, time=timestamp, future=None)
@@ -175,7 +193,10 @@ def run(args, resources, pipeline=None):
                         mask = result.marking_result.artifacts.get("mask")
                         if mask is not None:
                             args.save_masks.mkdir(parents=True, exist_ok=True)
-                            cv2.imwrite(str(args.save_masks / f"{frame_index:06d}.png"), mask)
+                            mask_path = args.save_masks / f"{frame_index:06d}.png"
+                            if not cv2.imwrite(str(mask_path), mask):
+                                raise OSError(f"遮罩寫入失敗：{mask_path}")
+                            masks_written += 1
                 record = result.record
                 with timer.measure("write_jsonl"):
                     jsonl.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -186,8 +207,9 @@ def run(args, resources, pipeline=None):
                                      timestamp-event.get("released_timestamp_sec", event.get(
                                          "confirmation_timestamp_sec", event["timestamp_sec"])) <= 1.0]
                     recent_events.extend(frame_events)
-                    all_events.extend(frame_events)
-                    for event in frame_events:
+                    completed_events = plate_backfill.update(record, frame_events)
+                    all_events.extend(completed_events)
+                    for event in completed_events:
                         violations_file.write(json.dumps(event, ensure_ascii=False) + "\n")
                     diagnostics_file.write(json.dumps({"frame":frame_index,
                         "rules":{rule.rule_id:getattr(rule,"diagnostics",{}) for rule in violation_engine.rules}},
@@ -208,12 +230,16 @@ def run(args, resources, pipeline=None):
                     window_started = now
     finally:
         if violations_file:
-            for event in violation_engine.finalize():
+            for event in plate_backfill.finalize(violation_engine.finalize()):
                 all_events.append(event)
                 violations_file.write(json.dumps(event, ensure_ascii=False) + "\n")
             violations_file.flush()
     timings = {"frames": frame_index, "wall_seconds": round(time.perf_counter() - started, 3),
-               "ms_per_frame": timer.summary(frame_index)}
+               "ms_per_frame": timer.summary(frame_index),
+               "plate_backfill_seconds": plate_backfill.seconds,
+               "completion": {"status": "complete" if termination == "eof" else "partial",
+                              "termination": termination, "expected_frames": expected_frames,
+                              "max_frames": args.max_frames, "masks_written": masks_written}}
     marking_model = pipeline.models.get("road_markings")
     if getattr(marking_model, "schedule_enabled", False):
         timings["road_marking_schedule"] = dict(
@@ -233,6 +259,7 @@ def run(args, resources, pipeline=None):
     if rule_names:
         print(f"違規候選事件：{violations_path}")
         print(f"逐幀規則診斷：{diagnostics_path}")
+    return timings
 
 
 if __name__ == "__main__":

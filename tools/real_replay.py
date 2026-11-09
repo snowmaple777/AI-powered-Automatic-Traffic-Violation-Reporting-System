@@ -6,6 +6,8 @@
 
   python tools/real_replay.py outputs/eval/baseline/ms01 --out /tmp/replay/ms01
   python tools/real_replay.py outputs/eval/baseline --all --out /tmp/replay   # 整個評估資料夾
+  python tools/real_replay.py outputs/eval/baseline --all --out /tmp/replay -- --marking-compensation-config my.json
+    （-- 之後的參數原樣傳給 run_pipeline）
 """
 import argparse
 import json
@@ -28,6 +30,21 @@ def _install_torch_stub():
         torch = types.ModuleType("torch")
         torch.cuda = types.SimpleNamespace(is_available=lambda: False, synchronize=lambda: None)
         sys.modules["torch"] = torch
+
+
+def read_mask(path):
+    """讀取遮罩 PNG；不存在回傳 None，存在但無法解碼則報錯（不可靜默當成沒有標線）。
+
+    Windows 的 cv2.imread 不支援非 ASCII 路徑（例如「新增資料夾」），會回傳 None；改用 np.fromfile＋imdecode。
+    """
+    import numpy as np
+    path = Path(path)
+    if not path.is_file():
+        return None
+    mask = cv2.imdecode(np.fromfile(str(path), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+    if mask is None:
+        raise ValueError(f"無法解碼遮罩：{path}")
+    return mask
 
 
 class RecordedPipeline:
@@ -57,7 +74,7 @@ class RecordedPipeline:
             raise ValueError("JSONL 與影片幀序不一致")
         obs = record["observations"]
         mask_path = self.mask_dir / f"{context.index:06d}.png"
-        mask = cv2.imread(str(mask_path), cv2.IMREAD_UNCHANGED) if mask_path.is_file() else None
+        mask = read_mask(mask_path)
         vehicles = [dict(v) for v in obs["vehicles"]]
         results = {name: R() for name in self.stages}
         results["vehicles"] = R(vehicles, {"track_mappings": {}})
@@ -133,8 +150,12 @@ def main(argv=None):
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--video", type=Path)
     parser.add_argument("--recompute-motion", action="store_true", help="重新估計鏡頭運動，不用記錄值")
-    parser.add_argument("extra", nargs="*", help="額外傳給 run_pipeline 的參數（放在 -- 之後）")
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # argparse 的 nargs="*" 位置參數無法接住 -- 之後以 - 開頭的參數，因此先自行切開。
+    extra = argv[argv.index("--") + 1:] if "--" in argv else []
+    argv = argv[:argv.index("--")] if "--" in argv else argv
     args = parser.parse_args(argv)
+    args.extra = extra
     folders = sorted(p for p in args.source.iterdir() if (p / f"{p.name}_detections.jsonl").is_file()) \
         if args.all else [args.source]
     for folder in folders:

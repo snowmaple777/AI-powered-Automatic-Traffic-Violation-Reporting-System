@@ -76,6 +76,61 @@ class RedLightRuleTests(unittest.TestCase):
         self.assertTrue(all(not e["conditions"]["before_line_observed"] for e in everything))
 
 
+def occluded(item, bottom):
+    """在車輛前方（較近）加入一台遮住其底邊的車。"""
+    blocker = {"object_id": "vehicle-000099", "class_name": "car", "confidence": .9,
+               "bbox_xyxy": [850, bottom - 100, 1150, bottom + 80], "bottom_center": [1000, bottom + 80],
+               "track_age_frames": 0, "source_frame": item["frame"]["index"]}
+    item["observations"]["vehicles"] = item["observations"]["vehicles"] + [blocker]
+    return item
+
+
+class OccludedContactTests(unittest.TestCase):
+    """車框底邊被較近的車遮住時，底邊不是接地點，不能用來判定越線。"""
+
+    def run_rule(self, frames, **options):
+        rule = RedLightStopLineCrossingRule(RuleContext("t", 25, 1920, 1080), **options)
+        events = []
+        for item in frames:
+            events += rule.evaluate(item)
+        return rule, events + rule.finalize()
+
+    def frames(self):
+        before = [frame(i, 760, [LINE_A]) for i in range(10)]
+        return before + [occluded(frame(i, 640, [LINE_A]), 640) for i in range(10, 15)]
+
+    def test_skip_mode_ignores_occluded_after_observations(self):
+        rule, events = self.run_rule(self.frames())
+        self.assertEqual(events, [])
+        self.assertIn("contact_point_occluded", rule.diagnostics["vehicles"][0]["blocked_by"])
+
+    def test_suspected_mode_blocks_confirmation(self):
+        _, events = self.run_rule(self.frames(), occluded_contact="suspected")
+        self.assertEqual([e["status"] for e in events], ["suspected"])
+        self.assertFalse(events[0]["conditions"]["contact_point_visible"])
+
+    def test_off_restores_previous_behavior_and_visible_contact_still_confirms(self):
+        _, events = self.run_rule(self.frames(), occluded_contact="off")
+        self.assertEqual([e["status"] for e in events], ["confirmed"])
+        frames = [frame(i, 760, [LINE_A]) for i in range(10)] + [frame(i, 640, [LINE_A]) for i in range(10, 15)]
+        _, events = self.run_rule(frames)
+        self.assertEqual([e["status"] for e in events], ["confirmed"])
+        self.assertTrue(events[0]["conditions"]["contact_point_visible"])
+
+    def test_duplicate_detection_and_far_vehicles_do_not_count_as_occluders(self):
+        box = [900, 490, 1100, 640]
+        same = {"object_id": "vehicle-000099", "class_name": "truck", "bbox_xyxy": [898, 492, 1102, 650]}
+        behind = {"object_id": "vehicle-000098", "class_name": "car", "bbox_xyxy": [850, 300, 1150, 600]}
+        person = {"object_id": "vehicle-000097", "class_name": "person", "bbox_xyxy": [850, 540, 1150, 720]}
+        self.assertFalse(RedLightStopLineCrossingRule._contact_occluded(box, "vehicle-000001", [same, behind, person]))
+        self.assertTrue(RedLightStopLineCrossingRule._contact_occluded(
+            box, "vehicle-000001", [{"object_id": "x", "class_name": "bus", "bbox_xyxy": [800, 560, 1000, 720]}]))
+
+    def test_invalid_option_is_rejected(self):
+        with self.assertRaises(ValueError):
+            RedLightStopLineCrossingRule(RuleContext("t", 25, 1920, 1080), occluded_contact="maybe")
+
+
 class CrosswalkProxyTests(unittest.TestCase):
     """某台車沒有重疊的真正停止線時，改用斑馬線近端邊緣作代理線（只產生疑似）。"""
 

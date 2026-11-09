@@ -149,7 +149,8 @@ class RedLightStopLineCrossingRule(ViolationRule):
                  max_crossing_gap_seconds=0.32, max_line_handoff_ratio=0.008,
                  weak_signal_evidence=True, signal_hold_seconds=3.0, crosswalk_proxy=True,
                  require_red_for_suspected=False, require_direct_marking_evidence=True,
-                 green_veto_seconds=0.5, crosswalk_proxy_mode="per_vehicle"):
+                 green_veto_seconds=0.5, crosswalk_proxy_mode="per_vehicle",
+                 signal_selected_continuity=True, occluded_contact="skip"):
         """weak_signal_evidence／signal_hold_seconds／crosswalk_proxy 只讓事件成為「疑似」：
         「確認」仍要求強燈號證據（與先前相同）且觀測到真正的停止線。
         require_red_for_suspected：疑似事件也必須在越線前後有紅燈證據（任何強度）。
@@ -160,7 +161,13 @@ class RedLightStopLineCrossingRule(ViolationRule):
         影片結束才輸出，期間若出現綠燈或車輛退回停止線前，待定的疑似事件即取消。0 為停用。「確認」不受影響。
         crosswalk_proxy_mode：斑馬線代理線的使用時機。"per_vehicle"（預設）每幀都產生代理線、獨立追蹤，
         某台車沒有重疊的真正停止線時就改用代理線；"no_stop_line" 為舊行為（整個畫面沒有停止線候選時才用）。
-        代理線的事件一律只能是疑似（stop_line_observed=false）。"""
+        代理線的事件一律只能是疑似（stop_line_observed=false）。
+        signal_selected_continuity：燈號顏色衝突時沿用先前的主燈號，但只在主燈號是綠／黃燈時（見
+        signal_state.TemporalSignalState）；紅轉綠後主綠燈與側邊紅燈並存時不再判成未知。只會減少事件。
+        occluded_contact：車框底邊（接地點代理）被較近的車輛遮住時的處理。"skip"（預設）：該幀不算線前／線後
+        觀測（同快取框）；"suspected"：照常累積但不得確認（條件 contact_point_visible）；"off"：舊行為。
+        遮擋判定：另一台車（car／motorcycle／bus／truck，非同一 ID、非重複偵測）底邊比本車低、上緣高於本車底邊，
+        且與本車水平重疊至少本車寬的 30%。"""
         self.context = context
         self.signal_confidence = signal_confidence
         self.line_margin = max(line_margin_pixels,
@@ -185,7 +192,11 @@ class RedLightStopLineCrossingRule(ViolationRule):
         self.signal_tracker = CombinedSignalState(context.fps, anchor_confidence=signal_confidence,
                                                   window_seconds=stable_signal_seconds,
                                                   weak_evidence=weak_signal_evidence,
-                                                  hold_seconds=signal_hold_seconds)
+                                                  hold_seconds=signal_hold_seconds,
+                                                  selected_continuity=signal_selected_continuity)
+        if occluded_contact not in ("skip", "suspected", "off"):
+            raise ValueError("occluded_contact must be skip, suspected or off")
+        self.occluded_contact = occluded_contact
         self.crosswalk_proxy = crosswalk_proxy
         if crosswalk_proxy_mode not in ("per_vehicle", "no_stop_line"):
             raise ValueError("crosswalk_proxy_mode must be per_vehicle or no_stop_line")
@@ -207,9 +218,16 @@ class RedLightStopLineCrossingRule(ViolationRule):
         """重用補償層提供的鏡頭變換，讓規則內的舊線也位於當幀座標。"""
         meta=observation.get("postprocessing", {}).get("road_marking_compensation", {})
         motion=road_motion(observation)
+        # 補償層容忍鏡頭運動短暫失效（allow_motion_gaps）時不重設；此期間的越線只支持疑似。
+        self._motion_gap = bool(meta.get("motion_gap"))
         if meta.get("reset_reason"):
             self.line_tracks.clear()
             self.crossing_states.clear()
+        elif self._motion_gap:
+            # 只有補償層的真正停止線容忍短暫失效；斑馬線代理線（備援）沿用舊行為，失效即清除。
+            proxies={track["marking_id"] for track in self.line_tracks.values() if track.get("proxy")}
+            self.line_tracks={key:track for key,track in self.line_tracks.items() if not track.get("proxy")}
+            self.crossing_states={key:state for key,state in self.crossing_states.items() if key[1] not in proxies}
         if not motion.get("valid") or motion.get("matrix") is None:
             return
         matrix=motion["matrix"]
@@ -404,6 +422,32 @@ class RedLightStopLineCrossingRule(ViolationRule):
         padding = max(30.0, width * 0.20)
         return left - padding <= x <= left + width + padding
 
+    OCCLUDER_CLASSES = {"car", "motorcycle", "bus", "truck"}
+
+    @classmethod
+    def _contact_occluded(cls, box, object_id, vehicles):
+        """車框底邊是否被較近的車輛遮住（此時底邊不是接地點，不能用來判定越線）。"""
+        x1, y1, x2, y2 = box
+        width, height = x2 - x1, y2 - y1
+        if width <= 0 or height <= 0:
+            return False
+        margin = max(4.0, height * 0.05)
+        for other in vehicles:
+            if other.get("object_id") == object_id or other.get("class_name") not in cls.OCCLUDER_CLASSES:
+                continue
+            ox1, oy1, ox2, oy2 = other.get("bbox_xyxy") or (0, 0, 0, 0)
+            if not (oy2 >= y2 + margin and oy1 < y2):
+                continue
+            overlap = min(x2, ox2) - max(x1, ox1)
+            if overlap < 0.3 * width:
+                continue
+            inter = overlap * max(0.0, min(y2, oy2) - max(y1, oy1))
+            union = width * height + (ox2 - ox1) * (oy2 - oy1) - inter
+            if union > 0 and inter / union >= 0.7:
+                continue  # 幾乎重合：同一台車的重複偵測，不是遮擋
+            return True
+        return False
+
     @staticmethod
     def _line_y(line, x):
         x1, y1, x2, y2 = line
@@ -464,6 +508,8 @@ class RedLightStopLineCrossingRule(ViolationRule):
             else:
                 x, y = vehicle["bottom_center"]
                 vehicle_box = [x, y, x, y]
+            contact_occluded = (self.occluded_contact != "off" and
+                                self._contact_occluded(vehicle_box, object_id, obs["vehicles"]))
             overlapping_lines = 0
             overlapping = [line for line in stop_components
                            if min(line["bbox_xywh"][0] + line["bbox_xywh"][2], vehicle_box[2])
@@ -487,6 +533,8 @@ class RedLightStopLineCrossingRule(ViolationRule):
                     "last_frame":index, "red_before":False, "before_frame":None,
                     "red_before_frame":None})
                 state["last_frame"] = index
+                if getattr(self, "_motion_gap", False) or stop_line.get("compensation", {}).get("motion_gap"):
+                    state["motion_gap"] = True
                 if vehicle.get("source_frame", index) != index:
                     # 降頻推論時沿用的上一幀車框不是新觀測：只讓狀態不過期，
                     # 不累積線前／線後次數，也不產生事件。
@@ -496,6 +544,16 @@ class RedLightStopLineCrossingRule(ViolationRule):
                         "after_count":state["after_count"],"red_before":state["red_before"],
                         "blocked_by":["cached_detection"]})
                     continue
+                if contact_occluded and self.occluded_contact == "skip":
+                    # 接地點被較近的車遮住：底邊位置不可信，不算新的線前／線後觀測（同快取框）。
+                    self.diagnostics["vehicles"].append({"object_id":object_id,
+                        "marking_id":stop_line["marking_id"],"signed_distance_pixels":round(signed_distance,2),
+                        "phase":state["phase"],"before_count":state["before_count"],
+                        "after_count":state["after_count"],"red_before":state["red_before"],
+                        "blocked_by":["contact_point_occluded"]})
+                    continue
+                if contact_occluded:
+                    state["contact_occluded"] = True
                 if side == -1:
                     pending = self.pending_events.get(object_id)
                     if pending and pending["evidence"]["stop_line"].get("marking_id") == stop_line["marking_id"]:
@@ -538,6 +596,10 @@ class RedLightStopLineCrossingRule(ViolationRule):
                     blocked_by.append("signal_identity_not_confirmed")
                 if state.get("line_reassociated_from"):
                     blocked_by.append("stop_line_reassociated")
+                if state.get("motion_gap"):
+                    blocked_by.append("camera_motion_gap")
+                if state.get("contact_occluded"):
+                    blocked_by.append("contact_point_occluded")
                 direct_line = self._stop_line_direct_evidence(stop_line, index)
                 if self.require_direct_marking_evidence and not direct_line and not stop_line.get("proxy"):
                     blocked_by.append("stop_line_not_directly_observed")
@@ -551,6 +613,8 @@ class RedLightStopLineCrossingRule(ViolationRule):
                 confirmed = (state["after_count"] >= 2 and state["red_before"] and strong_state == "red"
                         and state.get("red_before_evidence", {}).get("signal_id") == self.signal_tracker.evidence.get("signal_id")
                         and not state.get("line_reassociated_from")
+                        and not state.get("motion_gap")
+                        and not state.get("contact_occluded")
                         and not stop_line.get("proxy")
                         and (direct_line or not self.require_direct_marking_evidence)
                         and object_id not in self.reported)
@@ -580,6 +644,8 @@ class RedLightStopLineCrossingRule(ViolationRule):
                     "same_signal": bool(state.get("red_before_evidence", {}).get("signal_id")) and
                         state.get("red_before_evidence", {}).get("signal_id") == self.signal_tracker.evidence.get("signal_id"),
                     "same_stop_line": not state.get("line_reassociated_from"),
+                    "camera_motion_compensated": not state.get("motion_gap", False),
+                    "contact_point_visible": not state.get("contact_occluded", False),
                 }
                 if self.require_direct_marking_evidence:
                     conditions["stop_line_direct_evidence"] = direct_line

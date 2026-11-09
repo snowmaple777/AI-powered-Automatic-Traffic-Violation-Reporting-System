@@ -1,0 +1,221 @@
+{
+  "version": 1,
+  "description": "長片人工覆核結果（不屬於 ground_truth.json 的完整標註；只有列出的事件經過覆核，未列出的事件與漏報都未知）。",
+  "source_run": "outputs/analysis/long_video_20261108/run_01/phase1（4z，生產設定，HEAD 48875bc＋4t–4z 未提交修改）",
+  "videos": {
+    "A5": {
+      "file_sha256": "820e251a2c8982e2685d5a957b411c8742039e80642f7fdbf657ff8b48a35adb",
+      "reviewed_events": [
+        {
+          "event_id": "A5:crosswalk_stopping:vehicle-000098:area-000018:288",
+          "rule_id": "crosswalk_stopping",
+          "status": "suspected",
+          "frame": 288,
+          "timestamp_sec": 9.6,
+          "object_id": "vehicle-000098",
+          "judgement": "false_positive",
+          "reviewer": "user",
+          "date": "2026-11-09",
+          "note": "使用者：目前看到的都是誤報（依 Opus 提供的事件前後畫面判定）"
+        },
+        {
+          "event_id": "A5:crosswalk_stopping:vehicle-001893:area-000505:4696",
+          "rule_id": "crosswalk_stopping",
+          "status": "suspected",
+          "frame": 4696,
+          "timestamp_sec": 156.533,
+          "object_id": "vehicle-001893",
+          "judgement": "false_positive",
+          "reviewer": "user",
+          "date": "2026-11-09",
+          "note": "使用者：目前看到的都是誤報（依 Opus 提供的事件前後畫面判定）"
+        },
+        {
+          "event_id": "rlsl-000001",
+          "rule_id": "red_light_stop_line_crossing",
+          "status": "suspected",
+          "frame": 6182,
+          "timestamp_sec": 206.067,
+          "object_id": "vehicle-002574",
+          "judgement": "false_positive",
+          "reviewer": "user",
+          "date": "2026-11-09",
+          "note": "使用者：目前看到的都是誤報（依 Opus 提供的事件前後畫面判定）"
+        },
+        {
+          "event_id": "rlsl-000002",
+          "rule_id": "red_light_stop_line_crossing",
+          "status": "suspected",
+          "frame": 9940,
+          "timestamp_sec": 331.333,
+          "object_id": "vehicle-007210",
+          "judgement": "false_positive",
+          "reviewer": "user",
+          "date": "2026-11-09",
+          "note": "使用者：目前看到的都是誤報（依 Opus 提供的事件前後畫面判定）"
+        },
+        {
+          "event_id": "A5:crosswalk_stopping:vehicle-015057:area-002647:16229",
+          "rule_id": "crosswalk_stopping",
+          "status": "suspected",
+          "frame": 16229,
+          "timestamp_sec": 540.967,
+          "object_id": "vehicle-015057",
+          "judgement": "false_positive",
+          "reviewer": "user",
+          "date": "2026-11-09",
+          "note": "使用者：目前看到的都是誤報（依 Opus 提供的事件前後畫面判定）"
+        }
+      ]
+    },
+    "A1": {
+      "file_sha256": "c489a0c8fa9b55932bf59056ea1a971083ab1828d915026370f4564766bb19a3",
+      "reviewed_events": [
+        {
+          "event_id": "rlsl-000002",
+          "rule_id": "red_light_stop_line_crossing",
+          "status": "suspected",
+          "frame": 2945,
+          "timestamp_sec": 98.265,
+          "object_id": "vehicle-001551",
+          "judgement": "false_positive",
+          "reviewer": "user",
+          "date": "2026-11-09",
+          "note": "使用者：目前看到的都是誤報（依 Opus 提供的事件前後畫面判定）"
+        },
+        {
+          "event_id": "rlsl-000005",
+          "rule_id": "red_light_stop_line_crossing",
+          "status": "suspected",
+          "frame": 3049,
+          "timestamp_sec": 101.735,
+          "object_id": "vehicle-002401",
+          "judgement": "false_positive",
+          "reviewer": "user",
+          "date": "2026-11-09",
+          "note": "使用者：目前看到的都是誤報（依 Opus 提供的事件前後畫面判定）"
+        },
+        {
+          "event_id": "A1:crosswalk_stopping:vehicle-002489:area-000373:3717",
+          "rule_id": "crosswalk_stopping",
+          "status": "suspected",
+          "frame": 3717,
+          "timestamp_sec": 124.024,
+          "object_id": "vehicle-002489",
+          "judgement": "false_positive",
+          "reviewer": "user",
+          "date": "2026-11-09",
+          "note": "使用者：目前看到的都是誤報（依 Opus 提供的事件前後畫面判定）"
+        },
+        {
+          "event_id": "A1:crosswalk_stopping:vehicle-006039:area-000943:10490",
+          "rule_id": "crosswalk_stopping",
+          "status": "suspected",
+          "frame": 10490,
+          "timestamp_sec": 350.016,
+          "object_id": "vehicle-006039",
+          "judgement": "false_positive",
+          "reviewer": "user",
+          "date": "2026-11-09",
+          "note": "使用者：目前看到的都是誤報（依 Opus 提供的事件前後畫面判定）"
+        },
+        {
+          "event_id": "rlsl-000007",
+          "rule_id": "red_light_stop_line_crossing",
+          "status": "confirmed",
+          "frame": 11256,
+          "timestamp_sec": 375.575,
+          "object_id": "vehicle-008534",
+          "judgement": "false_positive",
+          "reviewer": "user",
+          "date": "2026-11-09",
+          "note": "使用者：目前看到的都是誤報（依 Opus 提供的事件前後畫面判定）"
+        },
+        {
+          "event_id": "rlsl-000009",
+          "rule_id": "red_light_stop_line_crossing",
+          "status": "suspected",
+          "frame": 11364,
+          "timestamp_sec": 379.179,
+          "object_id": "vehicle-008275",
+          "judgement": "false_positive",
+          "reviewer": "user",
+          "date": "2026-11-09",
+          "note": "使用者：目前看到的都是誤報（依 Opus 提供的事件前後畫面判定）"
+        },
+        {
+          "event_id": "rlsl-000013",
+          "rule_id": "red_light_stop_line_crossing",
+          "status": "suspected",
+          "frame": 15023,
+          "timestamp_sec": 501.267,
+          "object_id": "vehicle-006039",
+          "judgement": "false_positive",
+          "reviewer": "user",
+          "date": "2026-11-09",
+          "note": "使用者：目前看到的都是誤報（依 Opus 提供的事件前後畫面判定）"
+        },
+        {
+          "event_id": "rlsl-000015",
+          "rule_id": "red_light_stop_line_crossing",
+          "status": "suspected",
+          "frame": 22288,
+          "timestamp_sec": 743.676,
+          "object_id": "vehicle-016602",
+          "judgement": "false_positive",
+          "reviewer": "user",
+          "date": "2026-11-09",
+          "note": "使用者：目前看到的都是誤報（依 Opus 提供的事件前後畫面判定）"
+        },
+        {
+          "event_id": "A1:crosswalk_stopping:vehicle-016602:area-001526:25300",
+          "rule_id": "crosswalk_stopping",
+          "status": "suspected",
+          "frame": 25300,
+          "timestamp_sec": 844.177,
+          "object_id": "vehicle-016602",
+          "judgement": "false_positive",
+          "reviewer": "user",
+          "date": "2026-11-09",
+          "note": "使用者：目前看到的都是誤報（依 Opus 提供的事件前後畫面判定）"
+        },
+        {
+          "event_id": "rlsl-000016",
+          "rule_id": "red_light_stop_line_crossing",
+          "status": "suspected",
+          "frame": 27302,
+          "timestamp_sec": 910.977,
+          "object_id": "vehicle-022981",
+          "judgement": "false_positive",
+          "reviewer": "user",
+          "date": "2026-11-09",
+          "note": "使用者：目前看到的都是誤報（依 Opus 提供的事件前後畫面判定）"
+        },
+        {
+          "event_id": "rlsl-000021",
+          "rule_id": "red_light_stop_line_crossing",
+          "status": "suspected",
+          "frame": 30683,
+          "timestamp_sec": 1023.789,
+          "object_id": "vehicle-023974",
+          "judgement": "false_positive",
+          "reviewer": "user",
+          "date": "2026-11-09",
+          "note": "使用者：目前看到的都是誤報（依 Opus 提供的事件前後畫面判定）"
+        },
+        {
+          "event_id": "rlsl-000035",
+          "rule_id": "red_light_stop_line_crossing",
+          "status": "suspected",
+          "frame": 40589,
+          "timestamp_sec": 1354.32,
+          "object_id": "vehicle-034010",
+          "judgement": "false_positive",
+          "reviewer": "user",
+          "date": "2026-11-09",
+          "note": "使用者：目前看到的都是誤報（依 Opus 提供的事件前後畫面判定）"
+        }
+      ]
+    }
+  }
+}

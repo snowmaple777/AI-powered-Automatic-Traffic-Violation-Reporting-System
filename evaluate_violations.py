@@ -10,6 +10,7 @@ from violation_engine import RuleContext, ViolationEngine, create_rules
 from violation_clips import add_clip_arguments, validate_clip_options, export_violation_clips
 from double_lines import double_line_rule_options
 from area_rules import AREA_RULES, area_rule_options
+from plate_backfill import PlateBackfill, add_plate_arguments
 
 
 def main():
@@ -29,6 +30,7 @@ def main():
                         help="雙實線跨越規則參數 JSON")
     parser.add_argument("--video", type=Path, help="提供原影片以自動剪輯違規片段")
     add_clip_arguments(parser)
+    add_plate_arguments(parser)
     args = parser.parse_args()
     try:
         validate_clip_options(args.clip_before, args.clip_after)
@@ -59,19 +61,20 @@ def main():
         context = RuleContext(args.input.stem.removesuffix("_detections"), frame["fps"],
                               frame["width"], frame["height"])
         engine = ViolationEngine(create_rules(names, context, rule_options))
+        backfill = resources.enter_context(PlateBackfill(args.plate_backfill_seconds))
         diagnostics = resources.enter_context(args.diagnostics.open("w", encoding="utf-8")) if args.diagnostics else None
         with output.open("w", encoding="utf-8") as destination:
             observations = itertools.chain(
                 [first], (json.loads(line) for line in source))
             for observation in observations:
-                for event in engine.evaluate(observation):
+                for event in backfill.update(observation, engine.evaluate(observation)):
                     all_events.append(event)
                     destination.write(json.dumps(event, ensure_ascii=False) + "\n")
                 if diagnostics:
                     diagnostics.write(json.dumps({"frame":observation["frame"]["index"],
                         "rules":{rule.rule_id:getattr(rule,"diagnostics",{}) for rule in engine.rules}},
                         ensure_ascii=False)+"\n")
-            for event in engine.finalize():
+            for event in backfill.finalize(engine.finalize()):
                 all_events.append(event)
                 destination.write(json.dumps(event, ensure_ascii=False) + "\n")
     print(f"違規候選事件：{output}")

@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
 from violation_engine import RuleContext, ViolationEngine, create_rules  # noqa: E402
 from double_lines import double_line_rule_options  # noqa: E402
 from area_rules import area_rule_options  # noqa: E402
+from plate_backfill import event_plate_text
 
 DEFAULT_GLOBS = ("outputs/*_detections.jsonl",
                  "outputs/area_video_review/*/*_detections.jsonl",
@@ -32,10 +33,9 @@ def rule_options():
 
 
 def summarize(event):
-    vehicle = (event.get("evidence") or {}).get("vehicle") or {}
     return {"rule_id": event.get("rule_id"), "status": event.get("status"),
             "object_id": event.get("object_id"), "frame": event.get("frame"),
-            "behavior": event.get("behavior"), "plate": vehicle.get("plate_text")}
+            "behavior": event.get("behavior"), "plate": event_plate_text(event)}
 
 
 def replay(path, rules=("all",)):

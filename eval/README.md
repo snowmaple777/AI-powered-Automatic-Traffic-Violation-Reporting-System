@@ -27,3 +27,8 @@
 
 - 影片層級：有填 `category` 的影片是否至少輸出一個同規則事件。不需要時間標註就能使用。
 - 事件層級：只計 `reviewed=true` 的影片，依規則與時間（±`time_tolerance_sec`）配對，計算精確率、召回率與車牌完全正確率。
+
+## 長片人工覆核（long_video_review.json）
+
+長片（`input/行車紀錄器素材-*`）沒有完整標註，不放進 `ground_truth.json`。`long_video_review.json` 只記錄使用者看過的事件與判定（目前全部為 false_positive），
+用來量測規則修改能消除多少已知誤報；未列出的事件與漏報都是未知，不能據此計算召回率或整體精確率。事件以 `event_id`、幀號與時間對應來源執行（`source_run`）。

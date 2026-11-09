@@ -97,6 +97,10 @@ plates 需要 vehicles，ocr 需要 plates；停用 depth 後無法依估測距�
 片段遇到影片頭尾或 --max-frames 分析終點會自動縮短；目前輸出 MP4 不含音訊。
 預設越線方向 away 表示前方車輛遠離鏡頭，朝向鏡頭可用 --crossing-direction toward。
 停止線補償預設開啟，使用 --no-marking-compensation 可停用。
+鏡頭運動估計短暫失效（例如大車占滿畫面）時，補償層在 0.5 秒內以「鏡頭不動」近似保留停止線軌跡，不重設
+（configs/marking_compensation.json 的 allow_motion_gaps／max_motion_gap_seconds；false 為舊行為：失效即清除）。
+這段期間的越線缺少運動補償，闖紅燈條件 camera_motion_compensated 為 false，只能是疑似；未被觀測到的線不提供給規則，
+斑馬線代理線仍在失效時清除。紀錄 schema 1.9 起 postprocessing.road_marking_compensation 有 motion_gap／motion_gap_seconds。
 
 已有辨識 JSONL 時，不重跑模型就能重新判定：
 
@@ -119,6 +123,11 @@ confirmed 需要：實際偵測到的停止線、強燈號證據（原本的燈�
 - require_red_for_suspected（預設關）：開啟時，疑似事件也必須有紅燈證據。
 - green_veto_seconds（預設 0.5）：越線前後 0.5 秒內觀測到綠燈就不輸出疑似事件（綠燈後必有黃燈才轉紅，紅燈結束直接轉綠）；
   疑似事件在影片結束才輸出，期間出現綠燈或車輛退回停止線前，待定事件即取消。0 為停用；確認事件不受影響。
+以下兩項只會讓事件變少（2026-11-09，長片誤報修正）：
+- signal_selected_continuity（預設開）：畫面同時有多個顏色不同的燈號時，沿用先前確立的主燈號；只在主燈號是綠／黃燈時採用，
+  主燈號是紅燈仍判為未知。修正紅轉綠後主綠燈與側邊紅燈（行人／橫向號誌）並存時，起步的車被報成疑似闖紅燈。
+- occluded_contact（預設 skip）：車框底邊被較近的車輛遮住時（例如機車下半部被前車擋住），底邊不是接地點，
+  該幀不算線前／線後觀測；suspected 為照常累積但不得確認（條件 contact_point_visible），off 為舊行為。
 車框底邊僅為接地位置代理值；融合或漏檢延伸的機車框不等於輪胎偵測。
 
 從原影片與既有 JSONL 重算停止線補償：
@@ -455,3 +464,70 @@ road_markings.params.refresh_on_invalid_motion（預設 false）：原本要沿�
 configs/marking_interval_2_refresh.json、configs/marking_interval_4_refresh.json（每 4 幀＋運動失效重新推論）。
 全片評估可指定設定，不同設定必須使用不同 label；done.json 會記錄設定指紋，設定不同時拒絕續跑：
 .venv\Scripts\python.exe tools\batch_eval.py --label marking_i4 --model-config configs\marking_interval_4_refresh.json
+
+批次完整性與取樣比較（2026-11-02）
+
+batch_eval 現在以 done.json version 2 管理完成狀態。續跑必須匹配程式 commit＋Python 原始碼雜湊、
+模型／規則／追蹤設定、實際權重／字典、標註、輸入影片 SHA-256 及 max_frames，並驗證所有輸出雜湊。
+舊版 done.json 不能直接續跑；請另用新的 label，舊資料保留供離線分析。
+每支影片先寫入 <label>/.attempts/<影片>-<識別碼>，關閉所有資源、驗證幀序／JSONL／遮罩後才發布到正式目錄。
+失敗保留 failure.json 與部分輸出，不列入批次摘要；重新執行會建立新 attempt，不覆寫舊 attempt。
+--max-frames 達上限的結果標為 partial，不列入全片指標（即使剛好等於影片總幀數亦保守視為 partial）。
+零幀、提前讀取失敗、FPS／尺寸無效及遮罩寫入失敗會報錯。影片總幀數未知時不發布可驗證的全片結果。
+讀取失敗且幀數與中繼資料一致只能視為可驗證 EOF，不能保證所有影片編碼內容都無損。
+鎖檔 .run.lock 防止同 label 同時寫入；程序被強制終止時先確認沒有工作執行，再人工移除殘留鎖。
+辨識迴圈耗時在 timings.wall_seconds，done.seconds 另含收尾與發布前驗證，模型載入另記 model_load_seconds。
+發布紀錄 runtime_devices 檢查已建立 ONNX session 的 providers／PyTorch 模型參數裝置；OCR CPU 設定見模型設定。
+
+比較同集合的完整實驗：
+.venv\Scripts\python.exe tools/compare_sampling.py outputs/eval/<基準label> outputs/eval/<實驗label> --output outputs/patches/sampling_comparison.json
+會產生 JSON 與同名 TXT，包含事件列表、TP/FP/FN、車牌、迴圈耗時、標線直接觀測數、未對齊幀及資料年齡。
+比較器拒絕局部結果、不同影片集合、輸入內容、程式版本或幀數；使用目前 ground_truth 計分並記錄其雜湊。
+
+不跑 GPU 先比較標線排程：以每幀都直接推論的輸出（標線 interval 1，例如 outputs/eval/sampling_20261102_i1）離線模擬，
+非推論幀改用上一次推論的遮罩，依記錄的鏡頭運動推移（與實際降頻同一條程式路徑），再重跑後處理與規則：
+.venv\Scripts\python.exe tools\simulate_sampling.py --source outputs\eval\sampling_20261102_i1 --out outputs\eval\sim_sampling --policy fixed:2 --policy fixed:2+refresh_prev
+策略：fixed:N（同 interval N）、stationary:N:M（前一幀鏡頭靜止時遮罩可沿用到 M 幀）；修飾 +refresh_now（本幀運動無效時重算，
+同 refresh_on_invalid_motion，但不計等待）、+refresh_prev（前一幀運動無效時重算，不需等待）。只模擬標線；推論次數不等於實際時間。
+實驗期間不要修改 Python 程式、設定、權重或影片，否則該支影片不會發布完成。
+
+同追蹤的事件後車牌補充（4w，實驗功能，預設關閉）
+
+三個入口皆接受 --plate-backfill-seconds，預設 0；例如以既有觀測重算，不重跑模型：
+.venv\Scripts\python.exe tools\rule_eval.py --source outputs\eval\baseline_18 --label plate_4w_off --plate-backfill-seconds 0
+.venv\Scripts\python.exe tools\rule_eval.py --source outputs\eval\baseline_18 --label plate_4w_on --plate-backfill-seconds 1
+.venv\Scripts\python.exe evaluate_violations.py outputs\eval\baseline_18\ctm02\ctm02_detections.jsonl --output outputs\ctm02_backfill.jsonl --rules all --no-violation-clips --plate-backfill-seconds 1
+完整辨識可在 run_pipeline.py 原有命令後加入 --plate-backfill-seconds 1；0 停用，不延遲事件、不建立暫存庫。
+run_pipeline 的 timings 與 rule_eval 的 rule_options.json 記錄視窗值；每筆事件的 plate.window_seconds 亦記錄。
+
+事件新增頂層 plate：text（原字串或 null）、source（event_frame／same_track_after_event／none）、object_id、
+observed_frame、observed_timestamp_sec、delay_seconds、text_confidence、window_seconds、conflict、rejected。
+讀數欄位無資料時為 null；event_frame 來源的幀／時間等於原事件，delay_seconds=0。
+停用仍寫入 plate，但只會有 event_frame／none。原 evidence.vehicle.plate_text、事件狀態、條件、ID、時間、
+merged_events 全部保留；補充只作用於合併後事件，不修改子事件。觀測 schema 維持 1.9。
+
+補充視窗必須是有限非負秒數。候選只取同 object_id、source_frame 等於本幀 index 的新車輛觀測；
+相鄰新觀測間隔上限 0.3 秒，中心位移上限為前框對角線 0.5 倍，IoU 至少 0.1，文字信心至少 0.8。
+第一個通過的候選可補充；同字串在視窗內也出現於其他 ID（含快取紀錄）則不採用。
+事件當下已有車牌時永不覆寫，之後不同的文字會記 conflict；當下無車牌但新候選彼此不同則全部保守拒絕。
+追蹤在視窗結束前中斷超過上限時，因無法檢查完整視窗，不發布未核實的候選；片尾則以已取得的連續觀測收尾。
+rejected 記錄候選 text、frame、reason：track_gap、track_jump、plate_conflict、shared_with_other_track、
+low_confidence、after_window。快取框不當作新讀數；after_window 只記輸出當時已知的第一筆窗外讀數，不為診斷延後發布。
+
+啟用時事件保留到視窗結束或追蹤中斷，維持原引擎輸出順序；後面的事件可能等前一事件發布，片尾全部 flush。
+引擎可能在片尾才交出較早的事件，因此使用 SQLite 暫存整片精簡觀測，磁碟用量隨影片長度增加，關閉後自動刪除；
+SQLite 頁面快取設定 2 MiB（不是整個程序的記憶體上限）。不新增模型推論，也不把快取車牌出現次數當 OCR 投票。
+逐幀疊圖可先顯示未補充事件；輸出的事件 JSONL、剪輯資訊卡與文字摘要使用補充結果，註明「事件後 X.X 秒同追蹤讀到」。
+原牌衝突時保留原牌並顯示後續不同文字。舊事件沒有 plate 時退回 evidence.vehicle.plate_text；plate.text=null 不退回別的來源。
+eval/metrics.py 與評估摘要並列「事件當下」及「含補充」正確數。配對也採各自來源，因此分母與 TP/FP/FN 可能不同，
+JSON 同時保留 plate／plate_at_event、event_level／event_level_at_event。宣稱事件不變時仍需逐筆比較原事件欄位。
+
+長片壓測重跑與遮罩驗證（4z）
+
+批次完整性檢查與 real_replay 共用遮罩讀取函式，支援 Windows 中文絕對路徑；損壞的遮罩會使驗證失敗。
+長片壓測附件位於 outputs/analysis/long_video_20261108/run_01，未納入 git。
+progress.jsonl 記錄進度，report.md／report.json 彙整已驗證結果；只有 phase1_complete 表示階段 1 與 SQLite 對照完成。
+重新執行前確認沒有同組背景工作。既有 GPU 短段會重驗完整性後重用，失敗案例移至 _failed_N 保存。
+ROI 重播要求遮罩覆蓋所有影格，並檢查原始標線、規則用標線與直接觀測紀錄；不以零事件判定有效。
+階段 1 使用原生產設定與壓測專用深度尺寸，資源數據不代表即時能力或距離準確率。
+重現命令、限制與後續實驗順序見 docs/handoff/long_video_retest_4z.md。

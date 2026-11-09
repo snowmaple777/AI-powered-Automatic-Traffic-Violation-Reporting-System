@@ -38,6 +38,10 @@ class CompensationConfig:
     min_rule_support: float = 0.65
     max_uncertainty_ratio: float = 0.01
     max_frame_gap_seconds: float = 0.20
+    # 鏡頭運動估計短暫失敗（大車擋住畫面等）時，在此秒數內以「鏡頭不動」近似保留停止線軌跡，
+    # 不重設；期間的輸出標記 motion_gap，只支持「疑似」。預設關閉＝失敗即清除（舊行為）。
+    allow_motion_gaps: bool = False
+    max_motion_gap_seconds: float = 0.50
 
     def __post_init__(self):
         # 設定錯誤立即報錯，避免 NaN 或負期限悄悄使品質閘門失效。
@@ -45,6 +49,9 @@ class CompensationConfig:
             if key == "target_class":
                 if not isinstance(value, str) or not value.strip():
                     raise ValueError("target_class must be a nonempty string")
+            elif key == "allow_motion_gaps":
+                if not isinstance(value, bool):
+                    raise ValueError("allow_motion_gaps must be a boolean")
             elif isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{key} must be finite and positive")
         for key in ("motion_width", "motion_max_corners", "min_motion_points", "min_observations", "min_component_area"):

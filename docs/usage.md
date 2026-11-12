@@ -570,6 +570,11 @@ batch_eval 現在以 done.json version 2 管理完成狀態。續跑必須匹配
 .venv\Scripts\python.exe tools\simulate_sampling.py --source outputs\eval\sampling_20261102_i1 --out outputs\eval\sim_sampling --policy fixed:2 --policy fixed:2+refresh_prev
 策略：fixed:N（同 interval N）、stationary:N:M（前一幀鏡頭靜止時遮罩可沿用到 M 幀）；修飾 +refresh_now（本幀運動無效時重算，
 同 refresh_on_invalid_motion，但不計等待）、+refresh_prev（前一幀運動無效時重算，不需等待）。只模擬標線；推論次數不等於實際時間。
+
+進度回報用的展示成果（標註影片、違規片段、違規紀錄、動作備註與總覽頁）：
+執行 產生展示成果.cmd，或 .venv\Scripts\python.exe tools\make_showcase.py short --out outputs\showcase_<日期> 後接 index。
+以保存的感知結果（預設 outputs\eval\baseline_18）重播目前版本，不需要 GPU，可中斷後續做；long 步驟可用指定的違規紀錄剪出長片片段，
+encode 步驟以 ffmpeg 轉成 H.264。總覽為輸出資料夾的 index.html。
 實驗期間不要修改 Python 程式、設定、權重或影片，否則該支影片不會發布完成。
 
 同追蹤的事件後車牌補充（4w，實驗功能，預設關閉）
@@ -643,3 +648,32 @@ run_pipeline／rule_eval 額外輸出 <影片>_local_motion.jsonl 與 <影片>_m
 本次 31 片重播：23 個原事件全部欄位保留；12 筆紅燈事件只有 2 筆推估直行、10 筆未知。
 局部兩側走廊支援 73/43,975 個新車輛觀測（非精確率），12 筆紅燈事件都沒有兩側車道支援。
 左右轉目前僅通過合成測試，沒有真實轉彎正例驗證，請維持預設關閉。結果與接續 prompt 見 docs/handoff/local_lane_motion_4af.md。
+
+## 動作備註分層與有效區間（4ag）
+
+本節更新前述 4af 的備註語意；仍用 --motion-notes 啟用，預設關閉，不新增模型推論。
+motion_note.version 改為 2，新增 level、tentative_maneuver、observation、quality。既有文字與剪輯會自動顯示新的 text。
+
+level=classified：通過完整條件的動作推估，maneuver 寫 straight／left_turn／right_turn，仍待覆核。
+level=tentative：只在 tentative_maneuver 寫疑似動作，maneuver 保持 unknown，文字會說疑似與限制。
+level=observed：只能描述畫面中的位移，maneuver 保持 unknown、tentative_maneuver=null。
+level=unknown：沒有足夠穩定資料提供以上描述。這個層級與違規 status 的 suspected／confirmed 無關。
+
+例：觀察區間疑似直行（後續動作未定）；疑似左轉（尚不能排除變換車道或彎道）；
+行進動作未定，越線後在畫面中向右方移動（含鏡頭影響，不等於車輛轉向）。
+下游程式不可只看文字含「右轉」就當成正式動作；應先看 level，疑似值在 tentative_maneuver。
+
+分析選取涵蓋事件的連續有效區間，不因更早的失效否定全部，也不跨越缺幀、遮擋、跳框或無效鏡頭矩陣。
+投影改用事件幀為參考，quality 記錄原／選定區間、裁切原因、有效資料長度及投影尺度／異向拉伸。
+quality.classification_eligible 只代表通過投影品質閘門；長度、位移等最終條件仍須看 level。
+進入方向無法從低位移辨別時，不捏造左右轉；平滑不增加觀測數或確認證據。
+
+仍最多觀察事件後 3 秒，不增加 4af 的等待。缺資料、投影失效時只嘗試有明確鏡頭限制的畫面描述，
+片尾沒有後續影格時不外插。所有原事件狀態、條件、時間、ID、車牌保持原樣。
+
+本次驗證：完整測試 240 項通過；逐片結果、動作與疑似／畫面描述的分開統計見 docs/handoff/motion_layers_4ag.md。
+ms02 的右轉候選仍有歧義，不能當成已驗證的正確右轉。未知描述變少不等於動作辨識準確率提升。
+
+4ag 最終重播 31 片、9,411 幀：23 筆事件除 motion_note 外逐筆完全相同。
+12 筆紅燈為完整分類 2、疑似動作 3、畫面描述 6、無足夠描述 1；正式 maneuver 仍有 10 筆 unknown。
+CPU 備註計算在六個案例平均約 27–86 ms/事件，較 4af 增加；不是每幀成本或全流程 FPS。

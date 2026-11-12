@@ -56,6 +56,180 @@ def _angle(a, b):
     return math.degrees(math.atan2(a[0]*b[1] - a[1]*b[0], float(np.dot(a, b))))
 
 
+def _track_break(previous, current):
+    if current[1]-previous[1] > .3+1e-9:
+        return "track_gap"
+    a, b = previous[2]["box"], current[2]["box"]
+    shift = math.hypot((a[0]+a[2]-b[0]-b[2])/2, (a[1]+a[3]-b[1]-b[3])/2)
+    if shift > .5*math.hypot(a[2]-a[0], a[3]-a[1]):
+        return "track_jump"
+    return None
+
+
+def event_segment(rows, oid, event_frame, *, compensate):
+    """取包含事件的連續片段；不跨越缺幀、遮擋、ID 中斷或無效鏡頭矩陣。
+
+    無效 H 僅切斷到達該幀的連結；可以從該幀開始新的片段，不以單位矩陣補洞。
+    raw 片段不要求有效 H，只能描述畫面位移。
+    """
+    segments, current, previous_vehicle = [], [], None
+    issues = []
+    for row in rows:
+        i, t, body = row
+        vehicle = body["vehicles"].get(oid)
+        reasons = []
+        if current:
+            if i != current[-1][0]+1 or t-current[-1][1] > .3+1e-9:
+                reasons.append("frame_gap")
+            if compensate and body["matrix"] is None:
+                reasons.append("motion_gap")
+        if vehicle and vehicle.get("contact_occluded"):
+            reasons.append("contact_occluded")
+        if vehicle and previous_vehicle:
+            reason = _track_break(previous_vehicle, (i, t, vehicle))
+            if reason:
+                reasons.append(reason)
+        if reasons:
+            issues.extend(dict(frame=i, reason=r) for r in reasons)
+            if current:
+                segments.append(current)
+            current, previous_vehicle = [], None
+        if vehicle and vehicle.get("contact_occluded"):
+            continue
+        current.append(row)
+        if vehicle:
+            previous_vehicle = (i, t, vehicle)
+    if current:
+        segments.append(current)
+    chosen = next((s for s in segments if any(r[0] == event_frame for r in s)), [])
+    seen = [(i, t, body["vehicles"][oid]) for i, t, body in chosen if oid in body["vehicles"]]
+    if not any(r[0] == event_frame for r in seen):
+        return [], [], issues
+    chosen = [r for r in chosen if seen[0][0] <= r[0] <= seen[-1][0]]
+    return chosen, seen, issues
+
+
+def _interval(seen):
+    if not seen:
+        return None
+    return dict(start_frame=seen[0][0], end_frame=seen[-1][0], start_sec=seen[0][1],
+                end_sec=seen[-1][1], samples=len(seen))
+
+
+def _smooth(points, times):
+    """固定秒數的局部中位數去除框抖動，不增加新觀測、不外插。"""
+    p, t = np.asarray(points, float), np.asarray(times, float)
+    return np.asarray([np.median(p[np.abs(t-now) <= .1+1e-9], axis=0) for now in t])
+
+
+def image_movement(seen, event_time):
+    """即使補償失效也可描述『畫面』移動，絕不據此填車輛左／右轉。"""
+    post = [r for r in seen if r[1] >= event_time-1e-9]
+    if len(post) < 4 or post[-1][1]-post[0][1] < .2-1e-9:
+        return dict(kind="unavailable", text="", reason="short_image_track")
+    p = _smooth([r[2]["point"] for r in post], [r[1] for r in post])
+    width = float(np.median([r[2]["box"][2]-r[2]["box"][0] for r in post]))
+    # 時間分箱後再比較，避免高 FPS 小抖動被當作大量反向證據。
+    bins = np.floor((np.asarray([r[1] for r in post])-post[0][1])/.2+1e-6).astype(int)
+    centers = np.asarray([np.median(p[bins == k], axis=0) for k in sorted(set(bins))])
+    delta = p[-1]-p[0]
+    def axis_direction(axis, negative, positive):
+        if abs(delta[axis]) < max(4., width*.15):
+            return "unclear"
+        steps = np.diff(centers[:, axis])
+        steps = steps[np.abs(steps) >= max(.5, width*.01)]
+        if len(steps) and np.mean(steps*delta[axis] > 0) >= .7:
+            return negative if delta[axis] < 0 else positive
+        return "unclear"
+    horizontal = axis_direction(0, "left", "right")
+    vertical = axis_direction(1, "up", "down")
+    words = {"left": "左", "right": "右", "up": "上", "down": "下", "unclear": ""}
+    direction = words[horizontal]+words[vertical]
+    if direction:
+        text = "越線後在畫面中向"+direction+"方移動（含鏡頭影響，不等於車輛轉向）"
+    elif np.max(np.linalg.norm(p-p[0], axis=1)) < max(4., width*.15):
+        text = "越線後在畫面中的位移不明顯（不能據此判定車輛靜止）"
+    else:
+        return dict(kind="unavailable", text="", reason="unstable_image_direction")
+    return dict(kind="image_motion", text=text, horizontal=horizontal, vertical=vertical,
+                dx_px=round(float(delta[0]), 3), dy_px=round(float(delta[1]), 3),
+                includes_camera_motion=True, interval=_interval(post))
+
+
+def compensated_path(rows, seen, event_frame):
+    """以事件幀為共同參考，縮短投影鏈；局部縮放／異向拉伸只作拒絕與診斷。
+
+    不把矩陣 invertible 當成道路幾何可靠。檢查每個接地點的局部 Jacobian，
+    避免越過投影地平線或極端放大後還產生方向結論。
+    """
+    pos = next(k for k, r in enumerate(rows) if r[0] == event_frame)
+    transforms = {event_frame: np.eye(3)}
+    for k in range(pos-1, -1, -1):
+        transforms[rows[k][0]] = transforms[rows[k+1][0]] @ np.asarray(rows[k+1][2]["matrix"])
+    for k in range(pos+1, len(rows)):
+        inv = np.linalg.inv(np.asarray(rows[k][2]["matrix"]))
+        transforms[rows[k][0]] = transforms[rows[k-1][0]] @ inv
+    points, scales, anisotropy = [], [], []
+    for i, _, v in seen:
+        matrix = transforms[i]
+        if abs(matrix[2, 2]) > 1e-9:
+            matrix = matrix/matrix[2, 2]
+        transforms[i] = matrix
+        x, y = v["point"]
+        sample = np.asarray(project_points([[x, y], [x+1, y], [x, y+1]], matrix))
+        singular = np.linalg.svd(np.column_stack((sample[1]-sample[0], sample[2]-sample[0])), compute_uv=False)
+        if singular[-1] <= 1e-9:
+            raise ValueError("projection_scale_invalid")
+        scales.extend(singular.tolist())
+        anisotropy.append(float(singular[0]/singular[-1]))
+        points.append(sample[0].tolist())
+    quality = dict(reference_frame=event_frame, min_scale=min(scales), max_scale=max(scales),
+                   max_anisotropy=max(anisotropy), projection_valid=True)
+    quality["classification_eligible"] = .2 <= min(scales) and max(scales) <= 5 and max(anisotropy) <= 6
+    return points, transforms, quality
+
+
+def tentative_path(points, times, event_time, width):
+    """只產生額外疑似欄位，不放寬 maneuver 的正式分類門檻。"""
+    p, t = np.asarray(points, float), np.asarray(times, float)
+    pre, post = p[t <= event_time+1e-9], p[t >= event_time-1e-9]
+    if len(pre) < 3 or len(post) < 4 or event_time-t[0] < .2 or t[-1]-event_time < .25:
+        return None
+    incoming = np.median(pre[-3:], axis=0)-np.median(pre[:3], axis=0)
+    # 短片尾僅描述目前已看到的直線路徑，不能保證後來不轉彎。
+    centered = p-p.mean(0)
+    _, _, axes = np.linalg.svd(centered, full_matrices=False)
+    direction = axes[0]
+    if np.dot(p[-1]-p[0], direction) < 0:
+        direction = -direction
+    progress = centered @ direction
+    span = float(progress[-1]-progress[0])
+    residual = np.abs(centered @ np.array([-direction[1], direction[0]]))
+    if (span >= max(8., width*.5) and np.linalg.norm(post[-1]-post[0]) >= width*.2
+            and np.min(progress-np.maximum.accumulate(progress)) >= -width*.15
+            and np.percentile(residual, 95) <= min(width*.12, span*.08)):
+        return dict(maneuver="straight", reason="limited_linear_path",
+                    text="觀察區間疑似直行（後續動作未定，待覆核）")
+    # 起步前的微小抖動不能當進入方向來推斷左／右轉。
+    if np.linalg.norm(incoming) < max(6., width*.4) or t[-1]-event_time < .8:
+        return None
+    tail = p[t >= t[-1]-.8-1e-9]
+    if len(tail) < 5:
+        return None
+    mid = len(tail)//2
+    a, b = tail[mid]-tail[0], tail[-1]-tail[mid]
+    if min(np.linalg.norm(a), np.linalg.norm(b)) < max(2., width*.1) or abs(_angle(a, b)) > 25:
+        return None
+    turn = _angle(incoming, tail[-1]-tail[0])
+    normal = np.array([-incoming[1], incoming[0]])/np.linalg.norm(incoming)
+    offset = float(np.dot(p[-1]-pre[-1], normal)/width)
+    if 45 <= abs(turn) <= 125 and abs(offset) >= .5 and turn*offset > 0:
+        maneuver = "left_turn" if turn < 0 else "right_turn"
+        return dict(maneuver=maneuver, reason="partial_turn_evidence", angle_deg=round(turn, 3),
+                    text="疑似"+LABELS[maneuver]+"（尚不能排除變換車道或彎道，待覆核）")
+    return None
+
+
 def classify_path(points, times, event_time, lane, vehicle_width):
     """已補償至同一影像座標的接地軌跡；角度是影像估計，不是世界 yaw。
 
@@ -216,68 +390,92 @@ class MotionNotes:
 
     def _note(self, event):
         time, oid = event["timestamp_sec"], event.get("object_id")
-        note = dict(version=1, maneuver="unknown", text="行進動作：無法判定", reason="missing_track",
-                    method="local_lane_and_ego_compensated_track", estimated=True,
+        note = dict(version=2, maneuver="unknown", level="unknown", tentative_maneuver=None,
+                    text="行進動作：無法判定", reason="missing_track",
+                    method="image_motion_only", estimated=True,
                     window_before_seconds=LOOK_BEFORE, window_after_seconds=LOOK_AFTER,
-                    affects_violation=False, evidence={})
-        def fail(reason):
-            note["reason"] = reason
-            explanations = {"no_fresh_event_vehicle": "事件當下沒有新車框", "track_gap": "追蹤中斷",
-                            "track_jump": "車框跳動", "motion_gap_or_frame_gap": "鏡頭運動或影格不連續",
-                            "contact_occluded": "接地位置被遮擋"}
-            note["text"] = "行進動作：無法判定（" + explanations.get(reason, reason) + "）"
-            return note
+                    affects_violation=False, evidence={}, quality={}, observation={})
         rows = [(i, t, json.loads(body)) for i, t, body in self.db.execute(
             "SELECT i,t,body FROM frames WHERE t>=? AND t<=? ORDER BY i",
             (time-LOOK_BEFORE-1e-9, time+LOOK_AFTER+1e-9))]
-        seen = [(i, t, body["vehicles"][oid]) for i, t, body in rows if oid in body["vehicles"]]
-        if not seen:
+        event_row = next((r for r in rows if r[0] == event["frame"]), None)
+        vehicle = event_row[2]["vehicles"].get(oid) if event_row else None
+        if vehicle is None:
+            note["reason"] = "no_fresh_event_vehicle"
+            note["text"] = "行進動作：無法判定（事件當下沒有新車框）"
             return note
-        at_event = [r for r in seen if r[0] == event["frame"]]
-        if not at_event:
-            return fail("no_fresh_event_vehicle")
-        if any(v.get("contact_occluded") for _, _, v in seen):
-            return fail("contact_occluded")
-        anchor = next((r for r in reversed(seen) if time-.5 <= r[1] <= time and r[2]["lane"]), None)
-        note["evidence"].update(lane_frame=anchor[0] if anchor else None, lane_support=anchor is not None)
-        if anchor is None:
-            note["method"] = "ego_compensated_track_only"
-        # 不跨越 ID 的中斷，事件窗口中有跳框也不以其他車替補。
-        for previous, current in zip(seen, seen[1:]):
-            if current[1]-previous[1] > .3+1e-9:
-                return fail("track_gap")
-            a, b = previous[2]["box"], current[2]["box"]
-            shift = math.hypot((a[0]+a[2]-b[0]-b[2])/2, (a[1]+a[3]-b[1]-b[3])/2)
-            if shift > .5*math.hypot(a[2]-a[0], a[3]-a[1]):
-                return fail("track_jump")
-        # 裁到目標可見區間：離開畫面後的鏡頭失效不否定已觀察的完整動作。
-        rows = [r for r in rows if seen[0][0] <= r[0] <= seen[-1][0]]
-        transforms, cumulative = {}, np.eye(3)
-        for pos in range(len(rows)-1, -1, -1):
-            i, _, body = rows[pos]
-            transforms[i] = cumulative.copy()
-            if pos:
-                if i != rows[pos-1][0]+1 or body["matrix"] is None:
-                    return fail("motion_gap_or_frame_gap")
-                cumulative = cumulative @ np.asarray(body["matrix"])
-        try:
-            points = [project_points([v["point"]], transforms[i])[0] for i, _, v in seen]
-            lane = deepcopy(anchor[2]["lane"]) if anchor else None
-            if lane:
-                lane["polygon"] = project_points(lane["polygon"], transforms[anchor[0]])
-                lane["axis"] = project_points(lane["axis"], transforms[anchor[0]])
-                lane["width_px"] = float(np.linalg.norm(np.subtract(lane["polygon"][1], lane["polygon"][0])))
-            box = at_event[0][2]["box"]
-            endpoints = project_points([[box[0], box[3]], [box[2], box[3]]], transforms[event["frame"]])
-            width = float(np.linalg.norm(np.subtract(*endpoints)))
-            if (lane is not None and lane["width_px"] < 5) or width < 2:
-                return fail("projection_scale_invalid")
-            maneuver, reason, evidence = classify_path(points, [r[1] for r in seen], time, lane, width)
-        except (ValueError, OverflowError, FloatingPointError):
-            return fail("projection_invalid")
-        note.update(maneuver=maneuver, reason=reason,
-                    text="行進動作：" + LABELS[maneuver] + (("（車道與軌跡推估，待覆核）" if lane else
-                                                          "（僅軌跡推估，待覆核）") if maneuver != "unknown" else ""))
-        note["evidence"].update(evidence, local_lane=lane, reference_frame=seen[-1][0],
-                                sample_frames=[r[0] for r in seen], trajectory=points)
+        if vehicle.get("contact_occluded"):
+            note["reason"] = "contact_occluded"
+            note["text"] = "行進動作：無法判定（事件接地位置被遮擋）"
+            return note
+        raw_rows, raw_seen, raw_issues = event_segment(rows, oid, event["frame"], compensate=False)
+        selected, seen, issues = event_segment(raw_rows, oid, event["frame"], compensate=True)
+        quality = dict(raw_interval=_interval(raw_seen), selected_interval=_interval(seen),
+                       issues=raw_issues+issues, projection_valid=False, classification_eligible=False,
+                       unavailable_motion_frames=[i for i, _, body in raw_rows if body["matrix"] is None],
+                       missing_before_seconds=max(0., LOOK_BEFORE-(time-rows[0][1])),
+                       missing_after_seconds=max(0., LOOK_AFTER-(rows[-1][1]-time)))
+        note["quality"] = quality
+        note["observation"] = image_movement(raw_seen, time)
+        note["evidence"]["raw_sample_frames"] = [r[0] for r in raw_seen]
+        note["evidence"]["raw_trajectory"] = [r[2]["point"] for r in raw_seen]
+        lane = None
+        candidate = None
+        if seen:
+            times = [r[1] for r in seen]
+            quality.update(selected_before_seconds=time-times[0], selected_after_seconds=times[-1]-time,
+                           trimmed_before=seen[0][0] != raw_seen[0][0],
+                           trimmed_after=seen[-1][0] != raw_seen[-1][0])
+            anchor = next((r for r in reversed(seen) if time-.5 <= r[1] <= time and r[2]["lane"]), None)
+            note["evidence"].update(lane_frame=anchor[0] if anchor else None, lane_support=anchor is not None,
+                                    sample_frames=[r[0] for r in seen], reference_frame=event["frame"])
+            try:
+                points, transforms, projection = compensated_path(selected, seen, event["frame"])
+                quality.update(projection)
+                note["evidence"]["trajectory"] = points
+                if not quality["classification_eligible"]:
+                    note["reason"] = "projection_distortion"
+                else:
+                    lane = deepcopy(anchor[2]["lane"]) if anchor else None
+                    if lane:
+                        lane["polygon"] = project_points(lane["polygon"], transforms[anchor[0]])
+                        lane["axis"] = project_points(lane["axis"], transforms[anchor[0]])
+                        lane["width_px"] = float(np.linalg.norm(np.subtract(lane["polygon"][1], lane["polygon"][0])))
+                        if lane["width_px"] < 5:
+                            lane = None
+                    width = vehicle["box"][2]-vehicle["box"][0]  # 參考幀即事件幀，不必另投影車寬。
+                    smooth = _smooth(points, times)
+                    maneuver, reason, evidence = classify_path(smooth, times, time, lane, width)
+                    pre = smooth[np.asarray(times) <= time+1e-9]
+                    entry_span = float(np.max(np.linalg.norm(pre-pre[0], axis=1)))
+                    quality["entry_direction_available"] = entry_span >= max(4., width*.15)
+                    if maneuver != "unknown" and not quality["entry_direction_available"]:
+                        maneuver, reason = "unknown", "entry_direction_unavailable"
+                    note["method"] = "local_lane_and_ego_compensated_track" if lane else "ego_compensated_track_only"
+                    note["reason"] = reason
+                    note["evidence"].update(evidence, smoothed_trajectory=smooth.tolist(), local_lane=lane,
+                                            smoothing_radius_seconds=.1)
+                    # 未跨缺口，但事件後被缺口截短時，不能把短片段結果說成完整動作。
+                    future_cut = quality["trimmed_after"] or any(
+                        q["frame"] > event["frame"] for q in raw_issues)
+                    if maneuver != "unknown" and not future_cut:
+                        note.update(maneuver=maneuver, level="classified",
+                                    text="行進動作："+LABELS[maneuver]+("（車道與軌跡推估，待覆核）" if lane else "（僅軌跡推估，待覆核）"))
+                    else:
+                        if quality["entry_direction_available"]:
+                            candidate = tentative_path(smooth, times, time, width)
+                        if maneuver != "unknown" and future_cut:
+                            candidate = dict(maneuver=maneuver, reason="truncated_valid_track",
+                                             text="有效片段疑似"+LABELS[maneuver]+"（後續追蹤中斷，待覆核）")
+            except (ValueError, OverflowError, FloatingPointError, np.linalg.LinAlgError):
+                note["reason"] = "projection_invalid"
+                quality.update(projection_valid=False, classification_eligible=False)
+        if note["level"] != "classified":
+            if candidate:
+                note.update(level="tentative", tentative_maneuver=candidate["maneuver"], text=candidate["text"])
+                note["evidence"]["tentative"] = candidate
+            elif note["observation"].get("kind") == "image_motion":
+                note.update(level="observed", text="行進動作未定；"+note["observation"]["text"])
+            else:
+                note["text"] = "行進動作：無法判定（有效軌跡不足或不穩定）"
         return note

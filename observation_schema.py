@@ -52,6 +52,12 @@ affects_violation=false。reason 為診斷原因；evidence 記錄來源、樣�
 固定視窗為事件前 1.5 秒、後 3 秒；新增備註不改原事件時間／狀態／條件／證據。
 局部幾何與來源寫在獨立 *_local_motion.jsonl，不冒充觀測或確認證據；此檔不是 detections JSONL。
 備註的文字／剪輯讀取端為 violation_visualization，缺欄位保留舊呈現。
+
+4ag motion_note.version=2：新增 level=classified/tentative/observed/unknown、tentative_maneuver、
+observation、quality。maneuver 只保留完整分類；疑似結果只寫 tentative_maneuver，舊讀取端仍見 unknown。
+observation 是包含鏡頭影響的畫面位移，不是車輛道路方向；quality 記錄有效區間、缺口與投影品質。
+投影改以事件幀為參考，有限時域中位數平滑不增加新樣本。取涵蓋事件的連續區間，不補失效 H 或跨 ID。
+較短／部分證據只補疑似文字或畫面描述，不改任何違規狀態。level=classified 也仍為待覆核的推估。
 """
 import math
 

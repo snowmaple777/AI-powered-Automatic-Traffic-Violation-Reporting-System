@@ -103,7 +103,10 @@ class MotionNotesTests(unittest.TestCase):
         rows = [row(i) for i in range(41)]
         rows[20]["observations"]["vehicles"].append(dict(object_id="near", class_name="car",
             bbox_xyxy=[290, 270, 360, 350], source_frame=20))
-        self.assertEqual(collect(rows=rows)["motion_note"]["reason"], "contact_occluded")
+        note = collect(rows=rows)["motion_note"]
+        self.assertEqual(note["maneuver"], "unknown")
+        self.assertNotIn(20, note["evidence"]["sample_frames"])
+        self.assertIn("contact_occluded", [q["reason"] for q in note["quality"]["issues"]])
 
     def test_repeated_frames_rejected_and_missing_mask_is_not_hidden(self):
         with MotionNotes(True) as m:
@@ -127,7 +130,81 @@ class MotionNotesTests(unittest.TestCase):
             with self.subTest(failure=failure):
                 note = collect(rows=rows)["motion_note"]
                 self.assertEqual(note["maneuver"], "unknown")
-                self.assertIn(note["reason"], (failure, "motion_gap_or_frame_gap"))
+                self.assertIn(failure, [q["reason"] for q in note["quality"]["issues"]])
+                self.assertLess(note["quality"]["selected_interval"]["end_frame"], 20)
+
+    def test_valid_interval_recovers_without_bridging_old_motion_failure(self):
+        rows = [row(i) for i in range(41)]
+        rows[5]["postprocessing"]["ego_motion"]["valid"] = False
+        note = collect(rows=rows)["motion_note"]
+        self.assertEqual(note["maneuver"], "straight")
+        self.assertEqual(note["level"], "classified")
+        self.assertTrue(note["quality"]["trimmed_before"])
+        self.assertEqual(note["evidence"]["sample_frames"][0], 5)
+        self.assertEqual(note["evidence"]["reference_frame"], event()["frame"])
+
+    def test_short_valid_path_is_tentative_not_a_strong_maneuver(self):
+        note = collect(rows=[row(i) for i in range(17)])["motion_note"]
+        self.assertEqual(note["maneuver"], "unknown")
+        self.assertEqual(note["level"], "tentative")
+        self.assertEqual(note["tentative_maneuver"], "straight")
+        self.assertIn("後續動作未定", note["text"])
+
+    def test_invalid_motion_uses_only_explicit_image_description(self):
+        rows = [row(i, pan=3) for i in range(41)]
+        for r in rows:
+            r["postprocessing"]["ego_motion"]["valid"] = False
+        note = collect(rows=rows, pan=3)["motion_note"]
+        self.assertEqual(note["level"], "observed")
+        self.assertEqual(note["maneuver"], "unknown")
+        self.assertIsNone(note["tentative_maneuver"])
+        self.assertEqual(note["observation"]["horizontal"], "left")
+        self.assertTrue(note["observation"]["includes_camera_motion"])
+        self.assertIn("不等於車輛轉向", note["text"])
+
+    def test_projection_distortion_and_horizon_never_get_a_turn_label(self):
+        for matrix in ([[.01, 0, 0], [0, .01, 0], [0, 0, 1]],
+                       [[1, 0, 0], [0, 1, 0], [0, .01, 1]]):
+            rows = [row(i) for i in range(41)]
+            rows[12]["postprocessing"]["ego_motion"]["matrix"] = matrix
+            note = collect(rows=rows, masks=False)["motion_note"]
+            self.assertIn(note["reason"], ("projection_distortion", "projection_invalid"))
+            self.assertFalse(note["quality"]["classification_eligible"])
+            self.assertEqual(note["level"], "observed")
+            self.assertIsNone(note["tentative_maneuver"])
+
+    def test_entry_without_motion_is_not_invented_from_later_direction(self):
+        rows = [row(i, kind="stopped") for i in range(41)]
+        for r in rows:
+            i = r["frame"]["index"]
+            if i > 10:
+                b = r["observations"]["vehicles"][0]["bbox_xyxy"]
+                b[0] += (i-10)*3; b[2] += (i-10)*3
+        note = collect(rows=rows, masks=False)["motion_note"]
+        self.assertEqual(note["maneuver"], "unknown")
+        self.assertIsNone(note["tentative_maneuver"])
+        self.assertEqual(note["level"], "observed")
+        self.assertFalse(note["quality"]["entry_direction_available"])
+
+    def test_camera_pan_of_stationary_vehicle_is_not_left_turn(self):
+        note = collect("stopped", pan=3)["motion_note"]
+        self.assertEqual(note["maneuver"], "unknown")
+        self.assertIsNone(note["tentative_maneuver"])
+        self.assertEqual(note["observation"]["horizontal"], "left")
+
+    def test_short_track_stays_unknown_and_cannot_borrow_other_id(self):
+        rows = [row(i) for i in range(41)]
+        for r in rows[12:]:
+            r["observations"]["vehicles"][0]["object_id"] = "other"
+        note = collect(rows=rows)["motion_note"]
+        self.assertEqual(note["level"], "unknown")
+        self.assertEqual(note["quality"]["raw_interval"]["end_frame"], 11)
+
+    def test_observation_input_not_mutated(self):
+        record = row(0); original = deepcopy(record)
+        with MotionNotes(True) as m:
+            m.observe(record, mask_for())
+        self.assertEqual(record, original)
 
     def test_no_lane_fallback_is_explicit_and_short_eof_is_unknown(self):
         note = collect(masks=False)["motion_note"]

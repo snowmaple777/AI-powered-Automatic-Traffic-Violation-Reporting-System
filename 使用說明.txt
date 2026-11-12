@@ -66,6 +66,8 @@ plates 需要 vehicles，ocr 需要 plates；停用 depth 後無法依估測距�
 - vehicles.interval：車輛推論間隔，預設 1（每幀推論）。設為 2 以上時，中間幀沿用上一幀車框，規則不會把沿用的車框當成新觀測。
 - vehicles.tracker：可指定追蹤器檔案，預設使用 configs/bytetrack_perception.yaml。
 - depth.interval：深度推論間隔，預設 2。
+- depth.input_shape：模型實際輸入 [高度, 寬度]。內附深度權重固定為 [392, 700]，所有內附深度設定均明列此值；不能只依 ONNX 宣告的動態尺寸判斷。
+- 深度前處理維持長寬比縮放，以訓練平均色補邊；輸出先裁掉補邊，再還原原圖大小。4:3 不再拉伸，車框與深度圖使用同一原圖座標。自訂設定若使用內附權重，也須加入上述 input_shape；真正支援動態尺寸的其他權重可省略，沿用 input_size 計算尺寸。
 - plates.max_distance、ocr.max_distance：距離上限，預設 22 公尺，建議同步修改。
 - plates.road_scan：預設 true，可設 false 停用道路區域補漏。
 - ocr.min_width：車牌最小寬度，預設 58 像素。

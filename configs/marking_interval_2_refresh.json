@@ -42,6 +42,7 @@
       "backend": "onnx_depth",
       "params": {
         "weights": "../models/depth/depth_anything_v2_metric_vkitti_vits.onnx",
+        "input_shape": [392, 700],
         "interval": 2
       }
     },

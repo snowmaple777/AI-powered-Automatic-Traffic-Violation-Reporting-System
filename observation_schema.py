@@ -43,6 +43,15 @@ text 與讀數欄位允許 null；rejected 元素為 {text, frame, reason}。來
 停用補充（window_seconds=0）仍輸出 plate，來源只會為 event_frame／none，不延遲事件。
 舊事件沒有 plate 時，消費端以 plate_backfill.event_plate_text() 退回 evidence.vehicle.plate_text；
 已有 plate 但 text=null 不退回其他來源。完整契約見 docs/handoff/plate_backfill_and_diagnostics_prompt.md 第 2 節。
+
+4af 選用的事件 motion_note 由 motion_notes.MotionNotes 寫入，不改觀測 schema 1.9。
+--motion-notes 關閉時不新增欄位；開啟只註記頂層 red_light_stop_line_crossing，不改 merged_events。
+motion_note.version=1；maneuver=straight/left_turn/right_turn/unknown，text 是待覆核的動作備註；
+method 區分 local_lane_and_ego_compensated_track 與 ego_compensated_track_only，estimated=true、
+affects_violation=false。reason 為診斷原因；evidence 記錄來源、樣本幀、參考幀與影像座標軌跡。
+固定視窗為事件前 1.5 秒、後 3 秒；新增備註不改原事件時間／狀態／條件／證據。
+局部幾何與來源寫在獨立 *_local_motion.jsonl，不冒充觀測或確認證據；此檔不是 detections JSONL。
+備註的文字／剪輯讀取端為 violation_visualization，缺欄位保留舊呈現。
 """
 import math
 

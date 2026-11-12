@@ -11,6 +11,7 @@ from violation_clips import add_clip_arguments, validate_clip_options, export_vi
 from double_lines import double_line_rule_options
 from area_rules import AREA_RULES, area_rule_options
 from plate_backfill import PlateBackfill, add_plate_arguments
+from motion_notes import MotionNotes, add_motion_arguments, read_motion_mask, write_motion_summary
 
 
 def main():
@@ -31,7 +32,10 @@ def main():
     parser.add_argument("--video", type=Path, help="提供原影片以自動剪輯違規片段")
     add_clip_arguments(parser)
     add_plate_arguments(parser)
+    add_motion_arguments(parser, offline=True)
     args = parser.parse_args()
+    if args.motion_mask_dir is not None and not args.motion_mask_dir.is_dir():
+        parser.error("--motion-mask-dir 必須是存在的資料夾")
     try:
         validate_clip_options(args.clip_before, args.clip_after)
     except ValueError as exc:
@@ -39,6 +43,9 @@ def main():
     output = args.output or args.input.with_name(
         args.input.stem.removesuffix("_detections") + "_violations.jsonl")
     paths = [args.input.resolve(), output.resolve()]
+    if args.motion_notes:
+        paths.extend([output.with_name(output.stem + suffix).resolve()
+                      for suffix in ("_local_motion.jsonl", "_motion_notes.txt")])
     if args.diagnostics:
         paths.append(args.diagnostics.resolve())
     if args.video:
@@ -62,21 +69,27 @@ def main():
                               frame["width"], frame["height"])
         engine = ViolationEngine(create_rules(names, context, rule_options))
         backfill = resources.enter_context(PlateBackfill(args.plate_backfill_seconds))
+        motion = resources.enter_context(MotionNotes(args.motion_notes,
+            output.with_name(output.stem + "_local_motion.jsonl")))
         diagnostics = resources.enter_context(args.diagnostics.open("w", encoding="utf-8")) if args.diagnostics else None
         with output.open("w", encoding="utf-8") as destination:
             observations = itertools.chain(
                 [first], (json.loads(line) for line in source))
             for observation in observations:
-                for event in backfill.update(observation, engine.evaluate(observation)):
+                if motion.enabled:
+                    motion.observe(observation, read_motion_mask(observation, args.motion_mask_dir or args.input.parent / "masks"))
+                for event in motion.submit(backfill.update(observation, engine.evaluate(observation))):
                     all_events.append(event)
                     destination.write(json.dumps(event, ensure_ascii=False) + "\n")
                 if diagnostics:
                     diagnostics.write(json.dumps({"frame":observation["frame"]["index"],
                         "rules":{rule.rule_id:getattr(rule,"diagnostics",{}) for rule in engine.rules}},
                         ensure_ascii=False)+"\n")
-            for event in backfill.finalize(engine.finalize()):
+            for event in motion.submit(backfill.finalize(engine.finalize()), final=True):
                 all_events.append(event)
                 destination.write(json.dumps(event, ensure_ascii=False) + "\n")
+    if args.motion_notes:
+        write_motion_summary(output.with_name(output.stem + "_motion_notes.txt"), all_events)
     print(f"違規候選事件：{output}")
     if args.video and args.violation_clips:
         clips = export_violation_clips(args.video, args.input, all_events,

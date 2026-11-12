@@ -17,6 +17,8 @@ from area_rules import AREA_RULES, area_rule_options, area_geometry_options
 from frame_processing import FrameProcessor
 from pipeline_outputs import DetectionCsv, annotate_frame
 from plate_backfill import PlateBackfill, add_plate_arguments, DEFAULT_WINDOW_SECONDS
+from motion_notes import MotionNotes, add_motion_arguments, write_motion_summary
+from local_lanes import draw_local_motion
 
 
 def parse_args(argv=None):
@@ -48,6 +50,7 @@ def parse_args(argv=None):
                         help="雙實線跨越規則參數 JSON；辨識與重算共用")
     add_clip_arguments(parser)
     add_plate_arguments(parser)
+    add_motion_arguments(parser)
     return parser.parse_args(argv)
 
 
@@ -109,6 +112,8 @@ def run(args, resources, pipeline=None):
     device = resolve_device(args.device)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     stem = args.input.stem
+    motion_notes = resources.enter_context(MotionNotes(getattr(args, "motion_notes", False),
+        args.output_dir / f"{stem}_local_motion.jsonl"))
     video_path = args.output_dir / f"{stem}_annotated.mp4"
     jsonl_path = args.output_dir / f"{stem}_detections.jsonl"
     csv_path = args.output_dir / f"{stem}_detections.csv"
@@ -198,6 +203,9 @@ def run(args, resources, pipeline=None):
                                 raise OSError(f"遮罩寫入失敗：{mask_path}")
                             masks_written += 1
                 record = result.record
+                if motion_notes.enabled:
+                    with timer.measure("local_motion"):
+                        motion_notes.observe(record, result.marking_result.artifacts.get("mask"))
                 with timer.measure("write_jsonl"):
                     jsonl.write(json.dumps(record, ensure_ascii=False) + "\n")
                 rules_started = time.perf_counter()
@@ -207,7 +215,7 @@ def run(args, resources, pipeline=None):
                                      timestamp-event.get("released_timestamp_sec", event.get(
                                          "confirmation_timestamp_sec", event["timestamp_sec"])) <= 1.0]
                     recent_events.extend(frame_events)
-                    completed_events = plate_backfill.update(record, frame_events)
+                    completed_events = motion_notes.submit(plate_backfill.update(record, frame_events))
                     all_events.extend(completed_events)
                     for event in completed_events:
                         violations_file.write(json.dumps(event, ensure_ascii=False) + "\n")
@@ -219,7 +227,10 @@ def run(args, resources, pipeline=None):
                     detection_csv.write(frame_index, timestamp, result)
                 if writer:
                     with timer.measure("annotate_video"):
-                        writer.write(annotate_frame(frame, result, recent_events, timestamp, area_config is not None))
+                        annotated = annotate_frame(frame, result, recent_events, timestamp, area_config is not None)
+                        if motion_notes.enabled:
+                            draw_local_motion(annotated, motion_notes.diagnostic)
+                        writer.write(annotated)
                 frame_index += 1
                 if frame_index % 10 == 0:
                     now = time.perf_counter()
@@ -230,16 +241,20 @@ def run(args, resources, pipeline=None):
                     window_started = now
     finally:
         if violations_file:
-            for event in plate_backfill.finalize(violation_engine.finalize()):
+            for event in motion_notes.submit(plate_backfill.finalize(violation_engine.finalize()), final=True):
                 all_events.append(event)
                 violations_file.write(json.dumps(event, ensure_ascii=False) + "\n")
             violations_file.flush()
+    if motion_notes.enabled:
+        write_motion_summary(args.output_dir / f"{stem}_motion_notes.txt", all_events)
     timings = {"frames": frame_index, "wall_seconds": round(time.perf_counter() - started, 3),
                "ms_per_frame": timer.summary(frame_index),
                "plate_backfill_seconds": plate_backfill.seconds,
                "completion": {"status": "complete" if termination == "eof" else "partial",
                               "termination": termination, "expected_frames": expected_frames,
                               "max_frames": args.max_frames, "masks_written": masks_written}}
+    if motion_notes.enabled:
+        timings["motion_notes"] = {"enabled": True, "look_after_seconds": 3.0}
     marking_model = pipeline.models.get("road_markings")
     if getattr(marking_model, "schedule_enabled", False):
         timings["road_marking_schedule"] = dict(

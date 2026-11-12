@@ -48,6 +48,7 @@ def event_details(event, vehicle=None):
         text = vehicle.get("plate_text") or evidence.get("plate_text") or event.get("plate_text")
     return dict(status="規則確認・待覆核" if confirmed else "疑似違規・待覆核",
                 reason=reason,
+                motion_note=(event.get("motion_note") or {}).get("text", ""),
                 vehicle_id=vehicle.get("source_object_id") or evidence.get("source_object_id")
                     or vehicle.get("object_id") or event.get("object_id") or "未提供",
                 plate=text or "未辨識", plate_note=note,
@@ -59,6 +60,7 @@ def format_event_summary(event):
     info = event_details(event)
     return (f"{info['status']}\n"
             f"違規理由：{info['reason']}\n"
+            + (f"動作備註：{info['motion_note']}\n" if info['motion_note'] else "") +
             f"車輛編號：{info['vehicle_id']}\n"
             f"車牌號碼：{info['plate']}\n"
             + (f"車牌來源：{info['plate_note']}\n" if info['plate_note'] else "") +
@@ -124,7 +126,7 @@ def draw_violation_candidates(frame, vehicles, events, timestamp_sec, hold_secon
         title_color = (130,150,255) if status == "confirmed" else (100,205,255)
         lines = [(info['status'],title_color)]
         for label,value in (("違規理由",info['reason']), ("車輛編號",info['vehicle_id']),
-                            ("車牌號碼",info['plate']), ("車牌來源", info['plate_note'])):
+                            ("動作備註", info['motion_note']), ("車牌號碼",info['plate']), ("車牌來源", info['plate_note'])):
             if not value:
                 continue
             for text in _wrap(f"{label}：{value}",font,card_width-2*pad,

@@ -19,6 +19,7 @@ from violation_engine import RuleContext, ViolationEngine, create_rules  # noqa:
 from double_lines import double_line_rule_options  # noqa: E402
 from area_rules import area_rule_options  # noqa: E402
 from plate_backfill import PlateBackfill, add_plate_arguments, DEFAULT_WINDOW_SECONDS
+from motion_notes import MotionNotes, add_motion_arguments, read_motion_mask, write_motion_summary
 
 
 def rule_options(direct_marking_gate=True):
@@ -43,25 +44,31 @@ def git_state():
     return {"commit": git("rev-parse", "HEAD"), "dirty": None if status is None else bool(status)}
 
 
-def run_rules(jsonl, out_dir, name, rules=("all",), options=None, plate_backfill_seconds=DEFAULT_WINDOW_SECONDS):
+def run_rules(jsonl, out_dir, name, rules=("all",), options=None, plate_backfill_seconds=DEFAULT_WINDOW_SECONDS,
+              motion_notes=False, motion_mask_dir=None):
     options = rule_options() if options is None else options
     out_dir.mkdir(parents=True, exist_ok=True)
     events, engine = [], None
     with PlateBackfill(plate_backfill_seconds) as backfill, jsonl.open(encoding="utf-8") as source, \
+         MotionNotes(motion_notes, out_dir / f"{name}_local_motion.jsonl") as motion, \
          (out_dir / f"{name}_rule_diagnostics.jsonl").open("w", encoding="utf-8") as diagnostics:
         for line in source:
             observation = json.loads(line)
             if engine is None:
                 frame = observation["frame"]
                 engine = ViolationEngine(create_rules(list(rules), RuleContext(name, frame["fps"], frame["width"], frame["height"]), options))
-            events += backfill.update(observation, engine.evaluate(observation))
+            if motion.enabled:
+                motion.observe(observation, read_motion_mask(observation, motion_mask_dir or jsonl.parent / "masks"))
+            events += motion.submit(backfill.update(observation, engine.evaluate(observation)))
             diagnostics.write(json.dumps({"frame": observation["frame"]["index"],
                                           "rules": {r.rule_id: getattr(r, "diagnostics", {}) for r in engine.rules}},
                                          ensure_ascii=False) + "\n")
-        events += backfill.finalize(engine.finalize())
+        events += motion.submit(backfill.finalize(engine.finalize()), final=True)
     with (out_dir / f"{name}_violations.jsonl").open("w", encoding="utf-8") as target:
         for event in events:
             target.write(json.dumps(event, ensure_ascii=False) + "\n")
+    if motion_notes:
+        write_motion_summary(out_dir / f"{name}_motion_notes.txt", events)
     return events
 
 
@@ -75,15 +82,19 @@ def main(argv=None):
     parser.add_argument("--label", required=True)
     parser.add_argument("--only", nargs="*")
     add_plate_arguments(parser)
+    add_motion_arguments(parser, offline=True)
     parser.add_argument("--no-direct-marking-gate", action="store_true",
                         help="停用確認需直接觀測標線的閘門（對照用）")
     args = parser.parse_args(argv)
+    if args.motion_mask_dir is not None and not args.motion_mask_dir.is_dir():
+        parser.error("--motion-mask-dir 必須是存在的根目錄")
     options = rule_options(not args.no_direct_marking_gate)
     out = ROOT / "outputs/eval" / args.label
     out.mkdir(parents=True, exist_ok=True)
     (out / "rule_options.json").write_text(json.dumps(
         {"source": str(args.source), "only": args.only, "git": git_state(), "options": options,
-         "plate_backfill_seconds": args.plate_backfill_seconds},
+         "plate_backfill_seconds": args.plate_backfill_seconds,
+         "motion_notes": args.motion_notes, "motion_mask_dir": str(args.motion_mask_dir) if args.motion_mask_dir else None},
         ensure_ascii=False, indent=2), encoding="utf-8")
     changed = []
     for folder in sorted(p for p in args.source.iterdir() if (p / f"{p.name}_detections.jsonl").is_file()):
@@ -91,7 +102,8 @@ def main(argv=None):
         if args.only and name not in args.only:
             continue
         events = run_rules(folder / f"{name}_detections.jsonl", out / name, name, options=options,
-                           plate_backfill_seconds=args.plate_backfill_seconds)
+                           plate_backfill_seconds=args.plate_backfill_seconds, motion_notes=args.motion_notes,
+                           motion_mask_dir=args.motion_mask_dir / name / "masks" if args.motion_mask_dir else None)
         before = [json.loads(l) for l in (folder / f"{name}_violations.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
         if brief(before) != brief(events):
             changed.append((name, brief(before), brief(events)))

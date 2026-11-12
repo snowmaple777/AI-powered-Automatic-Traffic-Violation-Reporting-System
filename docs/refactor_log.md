@@ -841,3 +841,29 @@ A3 的 106 次 OCR 幀、原字串與信心完全相同，文字皆無車輛歸�
 初次 OCR 子程序在沙箱啟動失敗，保留輸出後改正常 Windows 環境完成，未安裝套件。所有模型／來源／設定指紋、逐幀資料與 OCR 裁切在 outputs/analysis/p0_20261110。
 交接：[4ae 深度補邊](handoff/depth_letterbox_4ae.md)。使用說明兩份同步；改預設是本次明確授權的崩潰修復，交 Opus 審查後再整合。
 4ad／4ae 分開提供增量差異於 outputs/patches；未修改 GT、long_video_review、third_party，未提交／推送／合併。下一編號 4af，4aa 仍保留給標線尺度。
+
+### 4af：局部車道與闖紅燈行進動作備註（Astra，2026-11-10）
+
+依使用者要求，新增預設關閉的 --motion-notes，沿用標線遮罩、同 ID 新車框與路面鏡頭補償，不新增模型。
+local_lanes.py 提供局部可見邊界與候選走廊；motion_notes.py 提供事件前 1.5／後 3 秒的共線／偏轉分析。
+輸出 straight／left_turn／right_turn／unknown，區分車道與軌跡支持、僅軌跡推估，文字明示待覆核。
+三入口共用實作：run_pipeline、evaluate_violations、rule_eval；新增診斷 sidecar、文字摘要、總覽幾何疊圖、剪輯備註。
+觀測 schema 維持 1.9；只有選用的頂層 motion_note，不改原事件狀態、條件、ID、時間、evidence、plate 或 merged_events。
+SQLite 精簡歷史支援引擎延後輸出，FIFO 等最多事件後 3 秒資料（原引擎／車牌補充延遲另計）；關閉不建庫、不延遲。
+
+驗證：基準 219 項、修改後 232 項全部通過（一般 Windows）；新增 13 項含左右轉、直行、鏡頭平移、來源與失敗反例、三入口一致性。
+沙箱基準曾有暫存檔發布權限錯誤；後測核准曾因額度無法執行，續行後完成，全程未安裝套件。
+31 片 9,411 幀、23 事件逐筆保留全部原欄位；final/report.json、report.md 附逐片表與逐事件 SHA-256，只排除 motion_note。
+另以正式 rule_eval 最終 CLI 重算 ctm01、s01、ms05、cdy02，與最終註記器結果逐位元相同（3 筆事件）。
+TP/FP/FN 不變：紅燈 11/1/4、停等區 5/1/2、斑馬線 1/3/3、雙黃線 1/0/7；車牌 6/15。
+
+紅燈 12 筆：ctm01 13.367 秒、s01 0.767 秒為直行，前後畫面抽查相符；其餘 10 筆未知（4 鏡頭／幀缺口、2 前後軌跡不足、3 動作歧義、1 位移不足）。
+左右轉只通過合成測試，無真實轉彎正例驗證。ms05 畫面可見直行，但補償軌跡彎折，保持未知，未針對答案放寬。
+兩側局部走廊僅支援 73/43,975 個新車輛觀測（約 0.166%）；12 筆紅燈均無車道支持。路邊停車區也可能形成候選，不是法定車道保證。
+
+獨立 CPU 模組量測（含幾何／SQLite／sidecar 寫入，排除 PNG 解碼與所有模型／規則）：cdy02、s01、ms05 的平均為 4.90、4.46、17.68 ms/幀，P95 9.69、17.12、25.85 ms。
+樣本為 218／226／301 幀，非完整流程 FPS；長片容量與 GPU／串流未驗證，不宣稱即時。完整參數及統計見 benchmark.json。
+
+採用決策：保留實驗、預設關閉。交接 local_lane_motion_4af.md 含 Opus 接手 prompt，優先補真實動作覆核與車道支援診斷，再考慮遮擋／虛線連接。
+使用說明兩份、schema 文件同步；保留 4ad／4ae 修改。未改 GT、long_video_review、third_party；未提交／推送／合併。
+增量差異 outputs/patches/4af_local_lane_motion.diff；分析附件 outputs/analysis/local_motion_4af。下一編號 4ag，4aa 仍保留給標線尺度。

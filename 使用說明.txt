@@ -539,3 +539,34 @@ progress.jsonl 記錄進度，report.md／report.json 彙整已驗證結果；�
 ROI 重播要求遮罩覆蓋所有影格，並檢查原始標線、規則用標線與直接觀測紀錄；不以零事件判定有效。
 階段 1 使用原生產設定與壓測專用深度尺寸，資源數據不代表即時能力或距離準確率。
 重現命令、限制與後續實驗順序見 docs/handoff/long_video_retest_4z.md。
+
+局部車道與闖紅燈動作備註（4af，實驗功能）
+
+三個入口 run_pipeline.py、evaluate_violations.py、tools/rule_eval.py 可加 --motion-notes，預設關閉。
+不新增模型；只補充闖紅燈事件的動作描述，不改違規狀態、條件、事件時間或車牌。
+
+.venv\Scripts\python.exe tools/rule_eval.py --source outputs/eval/baseline_18 --label motion_notes_demo --only ctm01 s01 --motion-notes
+.venv\Scripts\python.exe evaluate_violations.py outputs/eval/baseline_18/s01/s01_detections.jsonl --output outputs/s01_motion.jsonl --rules all --no-violation-clips --motion-notes
+
+完整辨識在原 run_pipeline 命令後加入 --motion-notes；--save-video 可另顯示局部邊界、候選走廊與補償位移箭頭。
+離線預設讀來源 JSONL 旁的 masks。--motion-mask-dir 在 evaluate 指單片遮罩資料夾，在 rule_eval 指含各影片/masks 的根目錄。
+缺少遮罩會記 missing_mask，仍可只用軌跡嘗試動作描述；損壞或尺寸不符的遮罩會報錯，不當成正常資料。
+
+啟用後事件多一個 motion_note：maneuver 為 straight／left_turn／right_turn／unknown，text 為中文備註。
+文字明示「車道與軌跡推估」或「僅軌跡推估」，均待人工覆核。reason、evidence 保存失效原因、來源及參考幀軌跡。
+方向是觀察到的行進動作，不是車頭朝向、世界角度或法定車道方向，也不另判轉彎違規。
+局部走廊只連接兩側可見標線；停車區、路邊邊界也可能形成候選，不能用它保證車道歸屬。
+
+固定看事件前 1.5 秒、後 3 秒；至少需要前 0.4 秒、後 1 秒同 ID 新觀測。快取框不當新證據。
+遮擋、跳框、追蹤／鏡頭運動中斷、位移不足或轉彎歧義時回無法判定。推移標線保留來源，不增加確認證據。
+啟用時按原順序等待最多事件後 3 秒資料，後面事件可能一起等待；引擎與車牌補充原有延遲另計。
+片尾資料不足不強行分類。SQLite 暫存精簡歷史、頁面快取 2 MiB，磁碟隨片長增加，結束自動刪除。
+
+run_pipeline／rule_eval 額外輸出 <影片>_local_motion.jsonl 與 <影片>_motion_notes.txt；evaluate 使用輸出檔 stem 作前綴。
+前者是局部幾何與來源診斷 sidecar，不是 detections JSONL；後者是闖紅燈事件文字摘要。
+最終事件 JSONL、文字摘要與匯出違規剪輯資訊卡會顯示備註；逐幀總覽事件卡可先顯示尚無備註的原事件，不回寫先前畫面。
+關閉時不新增上述欄位或檔案，不讀遮罩、不建註記暫存庫、不增加發布等待；既有檔案不自動刪除。
+
+本次 31 片重播：23 個原事件全部欄位保留；12 筆紅燈事件只有 2 筆推估直行、10 筆未知。
+局部兩側走廊支援 73/43,975 個新車輛觀測（非精確率），12 筆紅燈事件都沒有兩側車道支援。
+左右轉目前僅通過合成測試，沒有真實轉彎正例驗證，請維持預設關閉。結果與接續 prompt 見 docs/handoff/local_lane_motion_4af.md。

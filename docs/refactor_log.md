@@ -908,3 +908,23 @@ ms01／ms04／s02 已各分析原片全長 99／172／181 幀，沒有額外片�
 增量差異 outputs/patches/4ag_motion_layers.diff；分析附件 outputs/analysis/motion_layers_4ag。差異以 4af 工作目錄為底；refactor_log 額外保留 Opus 同期清理紀錄作為基準。
 使用說明兩份、schema 文件、AGENTS 同步；既有 4ad–4af 與 Opus 展示／清理修改全部保留。
 未改 GT、long_video_review、third_party 或設定；未提交／推送／合併。下一編號 4ah，4aa 仍保留給標線尺度。
+
+### 4ah：雙黃線漏報原因覆核（Astra，2026-11-11）
+
+依使用者要求覆核，不修改生產程式、門檻、模型或 GT。以目前 run_rules 重播 cdy01–07 全部 2,082 幀，8 筆 GT 的雙黃線仍 TP/FP/FN=1/0/7。
+只以 Python trace 讀原 vehicle_line_position 回傳時的 locals，拆解失敗分支；7 支的 2 筆全部規則事件與 4ag 排除 motion_note 後所有原欄位逐筆相同。
+另以保存遮罩重建現行 attach_double_lines，2,082 幀 double_lines 全相同；不是全套後處理或模型重推論。
+
+七筆漏報標註窗共 649 幀，634 幀目標 ID 存在。222 次合併拒絕碼實際是 219 次線段範圍不足、3 次端點太近、0 次無效框。
+範圍不足分近端外 125、遠端外 94；屬每車每線筆數，可同幀重複，不是互斥幀數。現行遠端外插不能解決所有近端問題。
+cdy02 f150 線段交接成功，f152／154 信心 0.28525／0.34847 低於 0.35 清除狀態；但整個 ID 只有 side -1／0，單純保留狀態也不足以完成跨越。
+cdy03 標註窗運動 79/79 有效，24 幀可量測中 23 次在線帶；彎道／車下分割中斷與有限支援為重點。
+cdy04 遠處起點不足，3.967 秒才 armed，整個 ID 無另一側證據。cdy05 前段首見原側僅 f159／160、約 0.033 秒，未達 0.15 秒即進入線帶。
+cdy05 後段 187/190 幀運動無效、147 幀硬阻擋；其餘 43 次量測亦被遠端支援拒絕，沒有可用足跡。
+cdy06 遮罩污染到機車／牌照、線段不穩，另有壓線與完整跨越語意差距；不修改原 GT。cdy07 111/121 幀運動無效但僅 9 幀硬阻擋，不能把失效數當全部停止數；線段不穩與缺少原側仍是限制。
+
+全部 8 筆各保存原片及幾何六幀圖板，共 16 張；agent 目視抽查不是新人工 GT。7 支逐事件雜湊、逐幀追蹤、統計及文字結果在 outputs/analysis/double_yellow_4ah。
+分析／文件任務未重跑單元測試、GPU 或 FPS；不引用 4ag 的 240 項作本次結果。
+建議先做預設關閉的持久診斷拆分，再獨立研究足跡／有限支援；壓線或首次可見已占錯側的 suspected 類型另提語意，不放寬 confirmed，不全域加大外插或運動容忍。
+交接：[double_yellow_miss_review_4ah.md](handoff/double_yellow_miss_review_4ah.md)，含 Opus 接續 prompt。AGENTS、索引與兩份使用說明同步。
+增量文件差異 outputs/patches/4ah_double_yellow_review.diff；保留所有既有修改，未提交／推送／合併。下一編號 4ai，4aa 仍保留給標線尺度。

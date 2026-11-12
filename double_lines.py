@@ -44,7 +44,15 @@ RULE_DEFAULTS = dict(
     # 使用時事件只能是疑似：延伸標記 line_observed_at_footprint=False，記憶標記 partial_support。
     curve_extrapolation=False,  # 被遮端點以二次曲線（x 對 y）沿彎道延伸；擬合不可靠時退回原本的直線外插
     extend_near_endpoint=False,  # 雙線近端（影像下方）端點落在同一台車的車框內時，也延伸到車底
-    line_memory_seconds=0.0)  # 已有候選的雙線短暫消失時，以運動補償後的最後幾何延續的秒數（0＝停用）
+    line_memory_seconds=0.0,  # 已有候選的雙線短暫消失時，以運動補償後的最後幾何延續的秒數（0＝停用）
+    # 4an 起點容忍（預設關閉；同樣不寫入預設設定）。建立起點（seeding／armed）期間，車底短暫落在線帶
+    # 邊緣（side 0，只限 seeding）或車輛信心短暫介於下限與 min_vehicle_confidence 之間時，不刪除候選；
+    # 中斷不計入穩定次數。用過容許的事件 stable_origin=False，只能是疑似。
+    max_origin_interruption_sec=0.0,  # 單次連續中斷的最長秒數（0＝停用）
+    origin_interruption_min_confidence=.25)  # 中斷期間可容許的車輛信心下限
+
+# 4an 選項：同 OCCLUSION_OPTION_KEYS，等於預設值時不放進規則設定。
+ORIGIN_OPTION_KEYS = ("max_origin_interruption_sec", "origin_interruption_min_confidence")
 
 # 4am 選項：等於預設值時不放進規則的設定字典（事件 evidence.parameters 不變）。
 OCCLUSION_OPTION_KEYS = ("curve_extrapolation", "extend_near_endpoint", "line_memory_seconds")
@@ -60,12 +68,13 @@ def validate_rule_settings(overrides=None):
                    "curve_extrapolation", "extend_near_endpoint"):
             if type(value) is not bool:
                 raise ValueError(f"{key} must be boolean")
-        elif type(value) not in (int, float) or not math.isfinite(value) or (value < 0 if key in ("footprint_inset_ratio", "max_extrapolation_ratio", "max_line_handoff_px", "line_memory_seconds") else value <= 0):
+        elif type(value) not in (int, float) or not math.isfinite(value) or (value < 0 if key in ("footprint_inset_ratio", "max_extrapolation_ratio", "max_line_handoff_px", "line_memory_seconds", "max_origin_interruption_sec") else value <= 0):
             raise ValueError(f"{key} must be finite and positive")
     for key in ("min_line_observations", "stable_observations"):
         if type(settings[key]) is not int or settings[key] < 2:
             raise ValueError(f"{key} must be an integer >= 2")
-    for key in ("min_vehicle_confidence", "heading_consistency", "min_longitudinal_alignment"):
+    for key in ("min_vehicle_confidence", "heading_consistency", "min_longitudinal_alignment",
+                "origin_interruption_min_confidence"):
         if settings[key] > 1:
             raise ValueError(f"{key} must be <= 1")
     if not 0 < settings["max_lane_change_angle_deg"] < settings["min_uturn_angle_deg"] <= 180:

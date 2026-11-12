@@ -1,9 +1,9 @@
-"""4am：雙線曲線延伸、近端延伸與線段記憶（皆預設關閉，使用時事件只能是疑似）。"""
+"""4am／4an：雙線遮擋延伸、線段記憶與起點容忍（皆預設關閉，使用時事件只能是疑似）。"""
 import unittest
 
 import numpy as np
 
-from double_lines import OCCLUSION_OPTION_KEYS, _extend_line, validate_rule_settings
+from double_lines import ORIGIN_OPTION_KEYS, OCCLUSION_OPTION_KEYS, _extend_line, validate_rule_settings
 from violation_engine import RuleContext, create_rules
 from test_double_line_rules import LANE_CHANGE, run_records, sequence
 
@@ -89,6 +89,49 @@ class OcclusionOptionTests(unittest.TestCase):
         for record in records[2:]:
             record["observations"]["double_lines"] = []
         self.assertEqual(run_records(records, settings={"line_memory_seconds": 2.0}), [])
+
+
+class OriginInterruptionTests(unittest.TestCase):
+    TOLERANT = {"max_origin_interruption_sec": .1}
+    TAIL = LANE_CHANGE[4:]  # 線帶內→另一側
+
+    @staticmethod
+    def statuses(events):
+        return [(e["status"], e["missing_conditions"]) for e in events]
+
+    def test_defaults_stay_out_of_settings(self):
+        rule = create_rules(["double_yellow_line_crossing"], RuleContext("test", 10, 400, 300))[0]
+        self.assertFalse(set(ORIGIN_OPTION_KEYS) & set(rule.settings))
+        for bad in ({"max_origin_interruption_sec": -.1}, {"origin_interruption_min_confidence": 1.5}):
+            with self.assertRaises(ValueError):
+                validate_rule_settings(bad)
+
+    def test_brief_band_edge_during_seeding_is_tolerated_as_suspected(self):
+        points = [(125, 200), (152, 196), (125, 192), (125, 190), (140, 185)] + self.TAIL
+        self.assertEqual(run_records(sequence(points)), [])
+        self.assertEqual(self.statuses(run_records(sequence(points), settings=self.TOLERANT)),
+                         [("suspected", ["stable_origin"])])
+        # 連續中斷超過時限仍刪除候選。
+        longer = [(125, 200), (152, 197), (152, 195), (152, 193), (125, 192), (125, 190), (140, 185)] + self.TAIL
+        self.assertEqual(run_records(sequence(longer), settings=self.TOLERANT), [])
+
+    def test_brief_low_confidence_during_seeding_respects_floor(self):
+        points = [(125, 200), (125, 197), (125, 193), (125, 190), (140, 185)] + self.TAIL
+
+        def records(confidence):
+            items = sequence(points)
+            items[1]["observations"]["vehicles"][0]["confidence"] = confidence
+            return items
+
+        self.assertEqual(run_records(records(.3)), [])
+        self.assertEqual(self.statuses(run_records(records(.3), settings=self.TOLERANT)),
+                         [("suspected", ["stable_origin"])])
+        self.assertEqual(run_records(records(.2), settings=self.TOLERANT), [])
+        self.assertEqual(run_records(records(.3), settings={**self.TOLERANT, "origin_interruption_min_confidence": .32}), [])
+
+    def test_uninterrupted_crossing_stays_confirmed_with_tolerance_enabled(self):
+        events = run_records(sequence(LANE_CHANGE), settings=self.TOLERANT)
+        self.assertEqual([e["status"] for e in events], ["confirmed"])
 
 
 if __name__ == "__main__":

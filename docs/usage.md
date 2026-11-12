@@ -282,8 +282,10 @@ rearm_seconds 後才可重新建立起始側，辨識下一次反向跨越。
 | curve_extrapolation | false | 被車身遮住的端點以二次曲線沿彎道延伸，擬合不可靠時退回直線（4am 實驗選項；事件只能是疑似） |
 | extend_near_endpoint | false | 雙線近端端點落在同一台車的車框內時也延伸到車底（4am 實驗選項；事件只能是疑似） |
 | line_memory_seconds | 0 | 已有候選的雙線短暫消失時，以運動補償後的最後幾何延續並轉交給新編號的秒數（0＝停用；4am 實驗選項；事件只能是疑似） |
+| max_origin_interruption_sec | 0 | 建立起點時，車底短暫落在線帶邊緣或車輛信心短暫偏低的最長容許秒數，中斷不計入穩定次數（0＝停用；4an 實驗選項；事件標 stable_origin=False，只能是疑似） |
+| origin_interruption_min_confidence | 0.25 | 上述容許期間的車輛信心下限（低於此值照常刪除候選） |
 
-4am 的三個選項在 31 支評估影片上沒有改變任何事件（見 refactor_log 4am），因此預設關閉；
+4am 的三個選項與 4an 的起點容忍在 31 支評估影片上都沒有改變任何事件（見 refactor_log 4am、4an），因此預設關閉；
 維持預設值時不寫入事件 parameters 與診斷 settings，輸出與未加入選項前逐位元相同。
 
 建議先查看診斷的 blocked_lines、skipped_vehicles、reset_reason 與 states，再調整對應門檻。

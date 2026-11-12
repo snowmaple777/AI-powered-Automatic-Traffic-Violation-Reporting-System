@@ -10,7 +10,7 @@ import numpy as np
 from double_lines import (validate_rule_settings, line_quality, vehicle_line_position,
                           project_points, classify_maneuver, resolve_rule_lines,
                           project_line_geometry, RULE_DEFAULTS as DOUBLE_LINE_DEFAULTS,
-                          OCCLUSION_OPTION_KEYS)
+                          OCCLUSION_OPTION_KEYS, ORIGIN_OPTION_KEYS)
 from signal_state import CombinedSignalState
 from core.trajectory import TrackHistory
 from core.continuity import is_continuous
@@ -748,7 +748,7 @@ class DoubleLineCrossingRule(ViolationRule):
         # 診斷控制不進入原 settings／事件 evidence.parameters，停用時序列化保持原樣。
         self.detailed_diagnostics = self.settings.pop("detailed_diagnostics")
         # 4am 選項維持預設（關閉）時不留在 settings，事件參數與診斷與先前逐位元相同。
-        for key in OCCLUSION_OPTION_KEYS:
+        for key in OCCLUSION_OPTION_KEYS + ORIGIN_OPTION_KEYS:
             if self.settings[key] == DOUBLE_LINE_DEFAULTS[key]:
                 del self.settings[key]
         self.memory_seconds = self.settings.get("line_memory_seconds", 0.0)
@@ -1031,6 +1031,19 @@ class DoubleLineCrossingRule(ViolationRule):
         self.diagnostics["remembered_lines"] = [line["track_id"] for line in extra]
         return extra
 
+    def _origin_interruption(self, state, now):
+        """起點容忍（4an）：本次中斷仍在 max_origin_interruption_sec 內則標記並回傳 True。"""
+        limit = self.settings.get("max_origin_interruption_sec", 0.0)
+        if limit <= 0:
+            return False
+        since = state.get("origin_interrupted_since")
+        if since is None:
+            state["origin_interrupted_since"] = since = now
+        if now - since > limit:
+            return False
+        state["origin_interrupted"] = True
+        return True
+
     def _direct_marking_evidence(self, state, line):
         """確認所需的直接觀測：推移（標線降頻）只對齊幾何，不能湊足觀測次數。
 
@@ -1064,8 +1077,14 @@ class DoubleLineCrossingRule(ViolationRule):
                     {"car", "truck", "bus", "motorcycle", "bicycle"} or
                     not isinstance(vehicle.get("confidence"), (int, float)) or
                     not math.isfinite(vehicle["confidence"]) or vehicle["confidence"] < cfg["min_vehicle_confidence"]):
+                confidence = vehicle.get("confidence")
+                tolerable = (object_id and vehicle.get("class_name") in {"car", "truck", "bus", "motorcycle", "bicycle"}
+                             and isinstance(confidence, (int, float)) and math.isfinite(confidence)
+                             and confidence >= cfg.get("origin_interruption_min_confidence", DOUBLE_LINE_DEFAULTS["origin_interruption_min_confidence"]))
                 for key in [key for key in self.states if key[0] == object_id]:
-                    confidence = vehicle.get("confidence")
+                    if (tolerable and self.states[key]["phase"] in ("seeding", "armed")
+                            and self._origin_interruption(self.states[key], now)):
+                        continue  # 4an：建立起點時的短暫低信心不刪除候選，也不計入穩定次數
                     reason = ("low_confidence" if isinstance(confidence, (int, float))
                               and math.isfinite(confidence) and confidence < cfg["min_vehicle_confidence"] else "invalid_vehicle")
                     self._diagnose_state(key, reason, confidence=confidence if isinstance(confidence, (int, float)) and math.isfinite(confidence) else None)
@@ -1133,7 +1152,8 @@ class DoubleLineCrossingRule(ViolationRule):
                     elif now - state["rearm_since"] >= cfg["rearm_seconds"]:
                         self._diagnose_state(key, "rearmed", action="reset")
                         state.update(phase="seeding", origin=side, origin_since=now,
-                                     before_path=[], after_path=[], crossing=None, transition=None, position_gap=False)
+                                     before_path=[], after_path=[], crossing=None, transition=None, position_gap=False,
+                                     origin_interrupted=False, origin_interrupted_since=None)
                     else:
                         continue
                     if state["phase"] == "reported":
@@ -1148,6 +1168,7 @@ class DoubleLineCrossingRule(ViolationRule):
                         self._diagnose_state(key, "returned_to_origin", action="reset")
                         state.update(phase="seeding", origin_since=now, before_path=[],
                                      after_path=[], crossing=None, transition=None, position_gap=False)
+                    state["origin_interrupted_since"] = None
                     path = state["before_path"]
                     path.append(sample)
                     path[:] = [s for s in path if now - s["time"] <= max(cfg["heading_window_sec"], cfg["stable_seconds"])]
@@ -1156,6 +1177,8 @@ class DoubleLineCrossingRule(ViolationRule):
                         state["phase"] = "armed"
                     continue
                 if state["phase"] == "seeding":
+                    if side == 0 and self._origin_interruption(state, now):
+                        continue  # 4an：短暫落在線帶邊緣，不刪除起點也不計入穩定次數
                     self._diagnose_state(key, "origin_not_stable")
                     del self.states[key]
                     continue
@@ -1177,7 +1200,8 @@ class DoubleLineCrossingRule(ViolationRule):
                 if (state["destination_count"] < cfg["stable_observations"] or
                         now - state["destination_since"] < cfg["stable_seconds"]):
                     continue
-                conditions = dict(stable_origin=True, stable_destination=True, complete_band_crossing=True,
+                conditions = dict(stable_origin=not state.get("origin_interrupted", False),
+                                  stable_destination=True, complete_band_crossing=True,
                                   continuous_tracks=True, geometry_verified=True,
                                   uninterrupted_positions=not state.get("position_gap", False),
                                   directly_observed_pair=not state.get("inferred_geometry", False),

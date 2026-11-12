@@ -279,6 +279,12 @@ rearm_seconds 後才可重新建立起始側，辨識下一次反向跨越。
 | allow_motion_gaps / max_motion_gap_sec | true / 1.0 | 鏡頭運動估計短暫失敗時以「不動」近似、保留候選的最長時間（事件只能是疑似） |
 | max_extrapolation_ratio | 0.5 | 雙線遠端被車身遮住時，沿端點外插的上限（車框高度比例；0＝停用；事件只能是疑似） |
 | max_line_handoff_px | 25 | 雙線追蹤換編號時，依位置把候選轉移到新編號的距離上限（0＝停用；事件只能是疑似） |
+| curve_extrapolation | false | 被車身遮住的端點以二次曲線沿彎道延伸，擬合不可靠時退回直線（4am 實驗選項；事件只能是疑似） |
+| extend_near_endpoint | false | 雙線近端端點落在同一台車的車框內時也延伸到車底（4am 實驗選項；事件只能是疑似） |
+| line_memory_seconds | 0 | 已有候選的雙線短暫消失時，以運動補償後的最後幾何延續並轉交給新編號的秒數（0＝停用；4am 實驗選項；事件只能是疑似） |
+
+4am 的三個選項在 31 支評估影片上沒有改變任何事件（見 refactor_log 4am），因此預設關閉；
+維持預設值時不寫入事件 parameters 與診斷 settings，輸出與未加入選項前逐位元相同。
 
 建議先查看診斷的 blocked_lines、skipped_vehicles、reset_reason 與 states，再調整對應門檻。
 若一直無法取得 paired 或追蹤 ID 持續改變，僅降低規則門檻不能補回缺失幾何。

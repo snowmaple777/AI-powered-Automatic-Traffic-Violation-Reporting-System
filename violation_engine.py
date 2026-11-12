@@ -8,7 +8,9 @@ from core.fastcopy import clone
 from functools import partial
 import numpy as np
 from double_lines import (validate_rule_settings, line_quality, vehicle_line_position,
-                          project_points, classify_maneuver, resolve_rule_lines)
+                          project_points, classify_maneuver, resolve_rule_lines,
+                          project_line_geometry, RULE_DEFAULTS as DOUBLE_LINE_DEFAULTS,
+                          OCCLUSION_OPTION_KEYS)
 from signal_state import CombinedSignalState
 from core.trajectory import TrackHistory
 from core.continuity import is_continuous
@@ -745,6 +747,12 @@ class DoubleLineCrossingRule(ViolationRule):
         self.settings = validate_rule_settings(settings)
         # 診斷控制不進入原 settings／事件 evidence.parameters，停用時序列化保持原樣。
         self.detailed_diagnostics = self.settings.pop("detailed_diagnostics")
+        # 4am 選項維持預設（關閉）時不留在 settings，事件參數與診斷與先前逐位元相同。
+        for key in OCCLUSION_OPTION_KEYS:
+            if self.settings[key] == DOUBLE_LINE_DEFAULTS[key]:
+                del self.settings[key]
+        self.memory_seconds = self.settings.get("line_memory_seconds", 0.0)
+        self.remembered_lines = {}
         self._side_history = {} if self.detailed_diagnostics else None
         self.final_diagnostics = None
         self.states = {}
@@ -805,6 +813,7 @@ class DoubleLineCrossingRule(ViolationRule):
             self._diagnose_all_states("motion_unavailable")
             self.states.clear()
             self.line_memory.clear()
+            self.remembered_lines.clear()
             self.diagnostics.update(status="blocked", reset_reason="motion_unavailable")
             return []
         error = float(motion.get("reprojection_error_px", 0))  # 已由 homography() 驗證
@@ -812,6 +821,7 @@ class DoubleLineCrossingRule(ViolationRule):
             self._diagnose_all_states("discontinuous_input")
             self.states.clear()
             self.line_memory.clear()
+            self.remembered_lines.clear()
             self.diagnostics["reset_reason"] = reset
         lines = resolve_rule_lines(lines, self.line_memory, matrix, frame, self.settings, vehicles)
         usable = []
@@ -823,8 +833,11 @@ class DoubleLineCrossingRule(ViolationRule):
                 self.diagnostics["blocked_lines"].append({"track_id": line.get("track_id"), "reason": reason})
             else:
                 usable.append(line)
+        if self.memory_seconds > 0:
+            usable = usable + self._remember_lines(usable, matrix, frame)
+        else:
+            self._hand_off_lines(usable, matrix)
         valid_ids = {line["track_id"] for line in usable}
-        self._hand_off_lines(usable, matrix)
         vehicle_ids = {v.get("object_id") for v in vehicles}
         for key, state in list(self.states.items()):
             if (key[1] not in valid_ids or
@@ -958,6 +971,66 @@ class DoubleLineCrossingRule(ViolationRule):
         if mapping:
             self.diagnostics["line_handoffs"] = mapping
 
+    @staticmethod
+    def _row_distance(path, target):
+        """兩條線在共同影像列（至少 20 列）上的平均水平距離；沒有足夠重疊時回傳 None。"""
+        low, high = max(path[:, 1].min(), target[:, 1].min()), min(path[:, 1].max(), target[:, 1].max())
+        if high - low < 20 or np.any(np.diff(path[:, 1]) <= 0) or np.any(np.diff(target[:, 1]) <= 0):
+            return None
+        rows = np.linspace(low, high, 8)
+        return float(np.mean(np.abs(np.interp(rows, path[:, 1], path[:, 0]) -
+                                    np.interp(rows, target[:, 1], target[:, 0]))))
+
+    def _remember_lines(self, usable, matrix, frame):
+        """線段記憶（line_memory_seconds > 0 時取代逐幀交接）。
+
+        每條可用雙線保存最後一次的幾何，之後每幀以鏡頭運動帶到目前影像座標。線消失期間：
+        - 新出現的線與記憶幾何重疊（max_line_handoff_px 內）時，把候選轉移過去（line_handoff）；
+        - 仍有候選的線以記憶幾何繼續量測（partial_support、remembered），不建立新候選；
+        超過 line_memory_seconds 或投影失敗即丟棄。回傳本幀要補上的記憶線。
+        """
+        now, limit = frame["timestamp_sec"], self.settings["max_line_handoff_px"]
+        current = {line["track_id"] for line in usable}
+        kept = {}
+        for track, entry in self.remembered_lines.items():
+            if track in current or now - entry["last_seen"] > self.memory_seconds:
+                continue
+            try:
+                kept[track] = dict(entry, line=project_line_geometry(entry["line"], matrix))
+            except (ValueError, KeyError):
+                continue
+        new = [line for line in usable if line["track_id"] not in self.remembered_lines]
+        mapping = {}
+        if limit > 0:
+            for track, entry in kept.items():
+                path = np.asarray(entry["line"]["centerline"], dtype=float)
+                best = None
+                for line in new:
+                    distance = self._row_distance(path, np.asarray(line["centerline"], dtype=float))
+                    if distance is not None and distance <= limit and (best is None or distance < best[0]):
+                        best = (distance, line["track_id"])
+                if best:
+                    mapping[track] = best[1]
+        for (object_id, track), state in list(self.states.items()):
+            if track in mapping and (object_id, mapping[track]) not in self.states:
+                self._diagnose_state((object_id, track), "line_handoff", action="transferred", new_line_id=mapping[track])
+                if self.detailed_diagnostics and (object_id, track) in self._side_history:
+                    self._side_history[(object_id, mapping[track])] = self._side_history.pop((object_id, track))
+                state["line_handoff"] = True
+                self.states[(object_id, mapping[track])] = self.states.pop((object_id, track))
+        if mapping:
+            self.diagnostics["line_handoffs"] = mapping
+        for track in mapping:
+            kept.pop(track)
+        waiting = {key[1] for key in self.states}
+        extra = [dict(entry["line"], source_frame=frame["index"], partial_support=True, remembered=True,
+                      geometry_source="remembered", remembered_seconds=now - entry["last_seen"])
+                 for track, entry in kept.items() if track in waiting]
+        self.remembered_lines = kept
+        self.remembered_lines.update({line["track_id"]: {"line": clone(line), "last_seen": now} for line in usable})
+        self.diagnostics["remembered_lines"] = [line["track_id"] for line in extra]
+        return extra
+
     def _direct_marking_evidence(self, state, line):
         """確認所需的直接觀測：推移（標線降頻）只對齊幾何，不能湊足觀測次數。
 
@@ -1001,6 +1074,8 @@ class DoubleLineCrossingRule(ViolationRule):
                 continue
             for line in lines:
                 key = (object_id, line["track_id"])
+                if line.get("remembered") and key not in self.states:
+                    continue  # 記憶幾何只延續既有候選，不建立新的起點
                 if self.detailed_diagnostics:
                     detail = {}
                     position = vehicle_line_position(vehicle, line, cfg, motion_error, diagnostics=detail)
@@ -1150,6 +1225,7 @@ class DoubleLineCrossingRule(ViolationRule):
             self._side_history.clear()
         self.states.clear()
         self.line_memory.clear()
+        self.remembered_lines.clear()
         self.previous_frame = None
         return []
 

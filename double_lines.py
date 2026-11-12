@@ -39,7 +39,15 @@ RULE_DEFAULTS = dict(
     max_line_handoff_px=25.0,  # 雙線追蹤換編號時，依位置把候選轉移到新編號的距離上限（0＝停用）
     # 確認需要直接觀測的標線：線本身至少 min_line_observations 次直接觀測，越線前後各至少一個樣本
     # 落在直接觀測的幾何上，且沒有樣本落在未對齊（鏡頭運動失效時沿用）的推移幾何上。不成立時最多為疑似。
-    require_direct_marking_evidence=True, detailed_diagnostics=False)
+    require_direct_marking_evidence=True, detailed_diagnostics=False,
+    # 4am 遮擋延伸與線段記憶（預設關閉；關閉時不寫入規則設定與事件參數，輸出與先前逐位元相同）。
+    # 使用時事件只能是疑似：延伸標記 line_observed_at_footprint=False，記憶標記 partial_support。
+    curve_extrapolation=False,  # 被遮端點以二次曲線（x 對 y）沿彎道延伸；擬合不可靠時退回原本的直線外插
+    extend_near_endpoint=False,  # 雙線近端（影像下方）端點落在同一台車的車框內時，也延伸到車底
+    line_memory_seconds=0.0)  # 已有候選的雙線短暫消失時，以運動補償後的最後幾何延續的秒數（0＝停用）
+
+# 4am 選項：等於預設值時不放進規則的設定字典（事件 evidence.parameters 不變）。
+OCCLUSION_OPTION_KEYS = ("curve_extrapolation", "extend_near_endpoint", "line_memory_seconds")
 
 
 def validate_rule_settings(overrides=None):
@@ -48,10 +56,11 @@ def validate_rule_settings(overrides=None):
         raise ValueError("Unknown double-line rule settings")
     settings = {**RULE_DEFAULTS, **overrides}
     for key, value in settings.items():
-        if key in ("emit_suspected", "allow_semantic_band", "allow_motion_gaps", "require_direct_marking_evidence", "detailed_diagnostics"):
+        if key in ("emit_suspected", "allow_semantic_band", "allow_motion_gaps", "require_direct_marking_evidence", "detailed_diagnostics",
+                   "curve_extrapolation", "extend_near_endpoint"):
             if type(value) is not bool:
                 raise ValueError(f"{key} must be boolean")
-        elif type(value) not in (int, float) or not math.isfinite(value) or (value < 0 if key in ("footprint_inset_ratio", "max_extrapolation_ratio", "max_line_handoff_px") else value <= 0):
+        elif type(value) not in (int, float) or not math.isfinite(value) or (value < 0 if key in ("footprint_inset_ratio", "max_extrapolation_ratio", "max_line_handoff_px", "line_memory_seconds") else value <= 0):
             raise ValueError(f"{key} must be finite and positive")
     for key in ("min_line_observations", "stable_observations"):
         if type(settings[key]) is not int or settings[key] < 2:
@@ -267,6 +276,38 @@ def line_quality(line, settings):
     return None
 
 
+def project_line_geometry(line, matrix):
+    """把一條雙線（含 members）的所有路徑以單應矩陣帶到目前影像座標；回傳新物件。
+
+    投影後非單調或沒有共同支援時丟 ValueError。端點只修剪到共同範圍，不延伸。
+    """
+    anchor = clone(line)
+    for part in [anchor] + anchor.get("members", []):
+        for key in ("centerline", "left_boundary", "right_boundary"):
+            part[key] = project_points(part[key], matrix)
+            path = np.asarray(part[key])
+            if np.any(np.diff(path[:, 1]) < -.5):
+                raise ValueError("Non-monotone projection")
+            # Pixel-quantized edges can swap adjacent rows by a fraction
+            # of a pixel after homography; canonicalize that ordering.
+            _, unique = np.unique(path[:, 1], return_index=True)
+            part[key] = path[unique].tolist()
+    # Perspective rotation moves boundary endpoints to different rows.
+    # Trim all paths to shared support instead of extending endpoints.
+    parts = [anchor] + anchor.get("members", [])
+    paths = [np.asarray(part[key]) for part in parts
+             for key in ("centerline", "left_boundary", "right_boundary")]
+    low, high = max(p[0, 1] for p in paths), min(p[-1, 1] for p in paths)
+    if high <= low:
+        raise ValueError("No common projected support")
+    for part in parts:
+        for key in ("centerline", "left_boundary", "right_boundary"):
+            p = np.asarray(part[key])
+            ys = np.unique(np.r_[low, p[(p[:, 1] > low) & (p[:, 1] < high), 1], high])
+            part[key] = np.column_stack((np.interp(ys, p[:, 1], p[:, 0]), ys)).tolist()
+    return anchor
+
+
 def resolve_rule_lines(lines, memory, matrix, frame, settings, vehicles=()):
     """Maintain finite observed support through matching collinear fragments.
 
@@ -279,32 +320,8 @@ def resolve_rule_lines(lines, memory, matrix, frame, settings, vehicles=()):
     current = [clone(line) for line in lines if line.get("source_frame") == frame["index"]]
     anchors = []
     for old in memory.values():
-        anchor = clone(old)
         try:
-            for part in [anchor] + anchor.get("members", []):
-                for key in ("centerline", "left_boundary", "right_boundary"):
-                    part[key] = project_points(part[key], matrix)
-                    path = np.asarray(part[key])
-                    if np.any(np.diff(path[:, 1]) < -.5):
-                        raise ValueError("Non-monotone projection")
-                    # Pixel-quantized edges can swap adjacent rows by a fraction
-                    # of a pixel after homography; canonicalize that ordering.
-                    _, unique = np.unique(path[:, 1], return_index=True)
-                    part[key] = path[unique].tolist()
-            # Perspective rotation moves boundary endpoints to different rows.
-            # Trim all paths to shared support instead of extending endpoints.
-            parts = [anchor] + anchor.get("members", [])
-            paths = [np.asarray(part[key]) for part in parts
-                     for key in ("centerline", "left_boundary", "right_boundary")]
-            low, high = max(p[0, 1] for p in paths), min(p[-1, 1] for p in paths)
-            if high <= low:
-                raise ValueError("No common projected support")
-            for part in parts:
-                for key in ("centerline", "left_boundary", "right_boundary"):
-                    p = np.asarray(part[key])
-                    ys = np.unique(np.r_[low, p[(p[:, 1] > low) & (p[:, 1] < high), 1], high])
-                    part[key] = np.column_stack((np.interp(ys, p[:, 1], p[:, 0]), ys)).tolist()
-            anchors.append(anchor)
+            anchors.append(project_line_geometry(old, matrix))
         except (ValueError, KeyError):
             continue
     candidates = []
@@ -394,10 +411,40 @@ def resolve_rule_lines(lines, memory, matrix, frame, settings, vehicles=()):
     return output
 
 
-def _extend_line(line, y_target, max_extension):
-    """沿可見端點的方向，把中心線與兩側邊界線性外插到 y_target（只用於遠端）。
+def _curve_extension(paths, y_target, below):
+    """以端點附近的中心線擬合 x = a*y^2 + b*y + c，延伸到 y_target；不可靠時回傳 None。
 
-    超出 max_extension 像素、或端點附近不足以估計方向時回傳 None。只用於車身遮擋雙線的情況。
+    只用端點側最多 12 個取樣點（至少 4 點、跨 12 列以上）；殘差均方根超過 1.5 px、或延伸段的
+    斜率 dx/dy 與端點處相差超過 1（彎得比可見部分急很多）時不採用。兩側邊界沿用端點處相對
+    中心線的水平偏移，延伸段每 4 列加一個點，避免以一條弦代替曲線。
+    """
+    center = paths["centerline"]
+    tail = center[-12:] if below else center[:12]
+    if len(tail) < 4 or np.ptp(tail[:, 1]) < 12:
+        return None
+    coeffs = np.polyfit(tail[:, 1], tail[:, 0], 2)
+    if np.sqrt(np.mean((np.polyval(coeffs, tail[:, 1]) - tail[:, 0]) ** 2)) > 1.5:
+        return None
+    end_y = center[-1, 1] if below else center[0, 1]
+    slope = np.polyder(coeffs)
+    if abs(np.polyval(slope, y_target) - np.polyval(slope, end_y)) > 1:
+        return None
+    count = max(1, int(np.ceil(abs(y_target - end_y) / 4)))
+    ys = np.linspace(end_y, y_target, count + 1)[1:]
+    xs = np.polyval(coeffs, ys)
+    extension = {}
+    for key, path in paths.items():
+        offset = np.interp(end_y, path[:, 1], path[:, 0]) - np.polyval(coeffs, end_y)
+        points = np.column_stack((xs + offset, ys))
+        extension[key] = (np.vstack([path, points]) if below else np.vstack([points[::-1], path])).tolist()
+    return extension
+
+
+def _extend_line(line, y_target, max_extension, curve=False):
+    """沿可見端點的方向，把中心線與兩側邊界外插到 y_target（只用於被車身遮住的端點）。
+
+    預設為直線外插；curve 為 True 時先嘗試二次曲線（見 _curve_extension），不可靠時退回直線。
+    超出 max_extension 像素、或端點附近不足以估計方向時回傳 None。
     """
     paths = {key: np.asarray(line[key], dtype=float) for key in ("centerline", "left_boundary", "right_boundary")}
     top, bottom = paths["centerline"][0, 1], paths["centerline"][-1, 1]
@@ -407,6 +454,11 @@ def _extend_line(line, y_target, max_extension):
     if beyond > max_extension:
         return None
     extended = dict(line)
+    if curve:
+        curved = _curve_extension(paths, y_target, y_target > bottom)
+        if curved is not None:
+            extended.update(curved, curve_extrapolated=True)
+            return extended
     for key, path in paths.items():
         tail = path[-5:] if y_target > bottom else path[:5]
         if len(tail) < 2 or np.ptp(tail[:, 1]) < 1:
@@ -485,11 +537,20 @@ def vehicle_line_position(vehicle, line, settings, motion_error=0, *, diagnostic
             top_x, top_y = center[0]
             width = x2 - x1  # 透視下車身側面也會遮住鄰近的雙線，水平方向放寬一個車寬
             occluded_by_vehicle = x1 - width <= top_x <= x2 + width and y1 <= top_y <= y2 + margin
+            curve = settings.get("curve_extrapolation", False)
             if occluded_by_vehicle and y2 < top_y + margin:
                 target = y2 - margin
-                extended = _extend_line(line, target, ratio * (y2 - y1) + margin)
+                extended = _extend_line(line, target, ratio * (y2 - y1) + margin, curve)
                 if extended is not None and extended is not line:
                     line, extrapolated = extended, True
+            elif settings.get("extend_near_endpoint", False):
+                # 近端：車身遮住雙線往鏡頭方向的延續（斜向雙線從車後方穿過時常見），端點必須落在
+                # 同一台車的車框列範圍內，且水平方向同樣放寬一個車寬；延伸到車底下方一個邊距。
+                bottom_x, bottom_y = center[-1]
+                if x1 - width <= bottom_x <= x2 + width and y1 <= bottom_y < y2 + margin:
+                    extended = _extend_line(line, y2 + margin, ratio * (y2 - y1) + margin, curve)
+                    if extended is not None and extended is not line:
+                        line, extrapolated = extended, True
     inset = (x2 - x1) * settings["footprint_inset_ratio"]
     points = [[x1 + inset, y2], [(x1 + x2) / 2, y2], [x2 - inset, y2]]
     sides, measurements = [], []

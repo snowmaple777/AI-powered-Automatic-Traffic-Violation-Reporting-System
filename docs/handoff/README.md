@@ -17,5 +17,6 @@
 | 4af | [local_lane_motion_4af.md](local_lane_motion_4af.md) | 局部車道與動作備註（預設關） | 未提交，待 Opus 審查 |
 | 4ag | [motion_layers_4ag.md](motion_layers_4ag.md) | 分層動作備註 | 未提交，待 Opus 審查 |
 | 4ah | [double_yellow_miss_review_4ah.md](double_yellow_miss_review_4ah.md) | 雙黃線漏報逐片覆核與修正順序 | 分析完成，未改規則 |
+| 4ai | [double_line_diagnostics_4ai.md](double_line_diagnostics_4ai.md)、[原始 prompt](double_line_diagnostics_prompt.md) | 雙線持久診斷拆分（預設關）；33 片事件逐位元不變 | 驗證完成，未提交，待 Opus 審查／整合 |
 
 展示成果：`產生展示成果.cmd`／`tools/make_showcase.py`，最新輸出 `outputs/showcase_20261110`（不進 git）。

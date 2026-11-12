@@ -938,3 +938,37 @@ cdy06 遮罩污染到機車／牌照、線段不穩，另有壓線與完整跨�
 - cdy05 前段、cdy07：原側證據太短或被車身遮住，線段歷史記憶可能增加可量測幀，但不保證追回；cdy05 後段不可救。
 - 修正對「車道／方向功能可減少漏報」的估計：雙黃線 7 筆中，幾何（曲線延伸＋線段記憶＋車身遮罩排除）較可能追回 cdy03，可能追回 cdy06（需壓線決定）、cdy05 前段或 cdy07 其一；cdy02、cdy04 取決於新語意。
 - 建議順序：4ah 的持久診斷（Astra）→ 曲線延伸與線段記憶（雙線後處理，預設關、以全部影片與長片驗證誤報）→ 車身內標線像素排除 → 語意決定後再做新疑似類型。
+
+### 4ai：雙線持久診斷拆分（Astra，2026-11-11 實作／11-12 完成交接）
+
+新增 detailed_diagnostics（預設 false），同時支援雙黃／雙白線與 run_pipeline、evaluate_violations、rule_eval。
+vehicle_line_position 保留原幾何、回傳與門檻；可選診斷記錄 invalid_bbox、outside_near_support、outside_far_support、endpoint_margin，
+另有無法投影的 unsupported_line_projection；保留舊合併碼，附失敗點、實際／原線段端點、外插預算及需要的 y 支援距離與框高比例。
+比例及安全墊只描述原算式，不代表允許近端外插。invalid_bbox 的兩個原分支用 bbox_reason 再拆分。
+
+所有候選刪除、clear、重新武裝、返回原側、線段換號均在原變動之前記錄狀態與原因；低信心附實際 confidence。
+獨立保存 first/last side、各側幀數／秒數與每次有效新量測 positions，包含 side=0 尚未形成候選；不把診斷資料寫進規則 state 或事件。
+側別摘要屬短期量測段，不等於候選有效證據；整片 ID 以 positions 彙總。過期歷史先供清除摘要使用，再由新量測重建，記憶體不隨影片 ID 總數增加。
+原規則 settings 移出診斷開關，避免漏入事件 evidence.parameters；不改事件或觀測 schema 1.9。
+三入口共用片尾 writer，僅開啟時在既有診斷檔追加 finalize:true 清除列；batch_eval 彙總與完整性讀取同步，不將此列當新幀，並拒絕不完整幀序、重複片尾或片尾後資料。
+
+驗證：修改前一般 Windows 完整 240 項通過（62.981 秒）；修改後完整 **253 項通過（56.417 秒）**。
+新增診斷 12 項及批次相容 1 項；涵蓋拒絕分支、狀態生命週期、開關事件相同、三入口事件與診斷 bytes 相同、舊彙總相容。
+初次沙箱暫存檔替換 WinError 5 以一般 Windows 重跑排除；中途 Mock 片尾資料誤判及測試新側別寫死均已修正，最終全綠。
+
+不使用 trace 的正式診斷重現 4ah：7 筆漏報窗內近端外 125、遠端外 94、端點太近 3；cdy02 f152／154 低信心 0.28525／0.34847 清除；
+cdy02／cdy04 全 ID 無 +1 側；cdy05 前段 +1 只在 f159／160。各值是每車每線量測筆數，不是互斥幀數或新增命中。
+正式 CLI 自訂設定已通過，cdy02 事件與診斷 bytes 等同共用 run_rules；7 支雙黃線的新舊彙總結果也相同。
+
+全片驗證完成。初次未固定雜湊種子的診斷因原 line_handoffs 字典順序而有 bytes 差異（事件相同），
+因此改以 PYTHONHASHSEED=0 依序重跑修改前快照、關閉、開啟三組，各為 31 支短片＋A5＋A1；不修改原排序／判定來消除差異。
+三組各完成 33 片、74,981 幀、31 筆事件。ON/OFF 事件全檔逐位元相同，無排除欄位；OFF 與修改前快照的事件及診斷也全檔逐位元相同。
+ON 的原逐幀彙總欄位不變。report.md 提供逐片比較表，comparison.json 保存完整 SHA-256；未固定種子的先導輸出保留於 uncontrolled_seed，不作最後等價及效能結論。
+A1 全片單次 CPU 重算：規則 evaluate CPU 977.422→983.953 秒（+6.531 秒，+0.67%），牆鐘 1,076.247→1,069.368 秒（−0.64%）；
+含 JSONL I/O 的總時間 1,116.002→1,115.185 秒。牆鐘微降視為單次波動，不能宣稱診斷加速；非 GPU 或即時 FPS。
+診斷檔 321,754,182→602,911,814 bytes（+281,157,632，+87.38%）。保留工具、預設關閉；沒有新增命中或改善準確率的宣稱。
+
+交接：[double_line_diagnostics_4ai.md](handoff/double_line_diagnostics_4ai.md)；分析附件 outputs/analysis/double_diagnostics_4ai；
+增量差異 outputs/patches/4ai_double_line_diagnostics.diff（相對本輪開始時的 dirty 工作目錄）。兩份使用說明、AGENTS、handoff 索引同步。
+保留既有 4ad–4ah 及 Opus 清理／展示修改。未改 GT、long_video_review、third_party、幾何或 confirmed；未提交／推送／合併。
+本項完成後交接停止，不接著做幾何或新疑似類型；cdy06 壓線與錯側占用仍待使用者決定。下一一般編號 4aj，4aa 保留標線尺度。

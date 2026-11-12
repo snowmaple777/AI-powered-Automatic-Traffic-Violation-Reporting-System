@@ -8,7 +8,7 @@ from contextlib import ExitStack
 
 from violation_engine import RuleContext, ViolationEngine, create_rules
 from violation_clips import add_clip_arguments, validate_clip_options, export_violation_clips
-from double_lines import double_line_rule_options
+from double_lines import double_line_rule_options, write_final_double_line_diagnostics
 from area_rules import AREA_RULES, area_rule_options
 from plate_backfill import PlateBackfill, add_plate_arguments
 from motion_notes import MotionNotes, add_motion_arguments, read_motion_mask, write_motion_summary
@@ -88,6 +88,7 @@ def main():
             for event in motion.submit(backfill.finalize(engine.finalize()), final=True):
                 all_events.append(event)
                 destination.write(json.dumps(event, ensure_ascii=False) + "\n")
+            write_final_double_line_diagnostics(diagnostics, engine.rules)
     if args.motion_notes:
         write_motion_summary(output.with_name(output.stem + "_motion_notes.txt"), all_events)
     print(f"違規候選事件：{output}")

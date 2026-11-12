@@ -16,17 +16,17 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from violation_engine import RuleContext, ViolationEngine, create_rules  # noqa: E402
-from double_lines import double_line_rule_options  # noqa: E402
+from double_lines import double_line_rule_options, write_final_double_line_diagnostics  # noqa: E402
 from area_rules import area_rule_options  # noqa: E402
 from plate_backfill import PlateBackfill, add_plate_arguments, DEFAULT_WINDOW_SECONDS
 from motion_notes import MotionNotes, add_motion_arguments, read_motion_mask, write_motion_summary
 
 
-def rule_options(direct_marking_gate=True):
+def rule_options(direct_marking_gate=True, double_line_config=None):
     options = {"red_light_stop_line_crossing": {"crossing_direction": "away",
                                                 "require_direct_marking_evidence": direct_marking_gate}}
     options.update(area_rule_options(ROOT / "configs/area_rules.json"))
-    options.update(double_line_rule_options(ROOT / "configs/double_line_rules.json"))
+    options.update(double_line_rule_options(double_line_config or ROOT / "configs/double_line_rules.json"))
     if not direct_marking_gate:
         for name in ("double_yellow_line_crossing", "double_white_line_crossing"):
             options[name]["settings"]["require_direct_marking_evidence"] = False
@@ -64,6 +64,7 @@ def run_rules(jsonl, out_dir, name, rules=("all",), options=None, plate_backfill
                                           "rules": {r.rule_id: getattr(r, "diagnostics", {}) for r in engine.rules}},
                                          ensure_ascii=False) + "\n")
         events += motion.submit(backfill.finalize(engine.finalize()), final=True)
+        write_final_double_line_diagnostics(diagnostics, engine.rules)
     with (out_dir / f"{name}_violations.jsonl").open("w", encoding="utf-8") as target:
         for event in events:
             target.write(json.dumps(event, ensure_ascii=False) + "\n")
@@ -81,6 +82,8 @@ def main(argv=None):
     parser.add_argument("--source", type=Path, default=ROOT / "outputs/eval/baseline")
     parser.add_argument("--label", required=True)
     parser.add_argument("--only", nargs="*")
+    parser.add_argument("--double-line-config", type=Path, default=ROOT / "configs/double_line_rules.json",
+                        help="雙線設定；detailed_diagnostics 預設 false")
     add_plate_arguments(parser)
     add_motion_arguments(parser, offline=True)
     parser.add_argument("--no-direct-marking-gate", action="store_true",
@@ -88,7 +91,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.motion_mask_dir is not None and not args.motion_mask_dir.is_dir():
         parser.error("--motion-mask-dir 必須是存在的根目錄")
-    options = rule_options(not args.no_direct_marking_gate)
+    options = rule_options(not args.no_direct_marking_gate, args.double_line_config)
     out = ROOT / "outputs/eval" / args.label
     out.mkdir(parents=True, exist_ok=True)
     (out / "rule_options.json").write_text(json.dumps(

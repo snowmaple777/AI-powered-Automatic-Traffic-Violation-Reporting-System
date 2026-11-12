@@ -743,6 +743,10 @@ class DoubleLineCrossingRule(ViolationRule):
         self.label = "跨越雙黃線" if color == "yellow" else "跨越雙白線"
         self.diagnostics = {}
         self.settings = validate_rule_settings(settings)
+        # 診斷控制不進入原 settings／事件 evidence.parameters，停用時序列化保持原樣。
+        self.detailed_diagnostics = self.settings.pop("detailed_diagnostics")
+        self._side_history = {} if self.detailed_diagnostics else None
+        self.final_diagnostics = None
         self.states = {}
         self.line_memory = {}
         self.previous_frame = None
@@ -769,6 +773,15 @@ class DoubleLineCrossingRule(ViolationRule):
             "blocked_lines": [], "skipped_vehicles": [], "reset_reason": None,
             "settings": self.settings,
         }
+        if self.detailed_diagnostics:
+            self._diagnostic_frame = dict(frame)
+            self.diagnostics["details"] = {"version": 1, "position_failures": [],
+                "positions": [], "state_changes": [], "candidates": []}
+            # 只保留短期量測段；每個量測均寫檔，可離線按 object_id 彙總整片，記憶體不隨片長增加。
+            for key, summary in list(self._side_history.items()):
+                if key not in self.states and (frame["timestamp_sec"]-summary["last_timestamp_sec"] > self.settings["max_observation_gap_sec"]
+                        or frame["index"] <= summary["last_frame"]):
+                    del self._side_history[key]
         motion = road_motion(observation)
         reset = None
         if not is_continuous(self.previous_frame, frame, self.settings["max_frame_gap_sec"]):
@@ -789,12 +802,14 @@ class DoubleLineCrossingRule(ViolationRule):
         else:
             self.motion_gap_started = None
         if matrix is None:
+            self._diagnose_all_states("motion_unavailable")
             self.states.clear()
             self.line_memory.clear()
             self.diagnostics.update(status="blocked", reset_reason="motion_unavailable")
             return []
         error = float(motion.get("reprojection_error_px", 0))  # 已由 homography() 驗證
         if reset:
+            self._diagnose_all_states("discontinuous_input")
             self.states.clear()
             self.line_memory.clear()
             self.diagnostics["reset_reason"] = reset
@@ -814,6 +829,7 @@ class DoubleLineCrossingRule(ViolationRule):
         for key, state in list(self.states.items()):
             if (key[1] not in valid_ids or
                     frame["timestamp_sec"] - state["last_time"] > self.settings["max_observation_gap_sec"]):
+                self._diagnose_state(key, "line_unavailable" if key[1] not in valid_ids else "observation_gap")
                 del self.states[key]
                 continue
             if key[0] not in vehicle_ids:
@@ -824,6 +840,7 @@ class DoubleLineCrossingRule(ViolationRule):
                     state["position_gap"] = True
                     state.update(after_path=[], destination_since=None, destination_count=0)
                 elif state["phase"] != "reported":
+                    self._diagnose_state(key, "vehicle_missing")
                     del self.states[key]
                     continue
             try:
@@ -839,6 +856,7 @@ class DoubleLineCrossingRule(ViolationRule):
                 box = np.asarray(project_points([[x1, y1], [x2, y2]], matrix))
                 state["last_box"] = [*box.min(axis=0), *box.max(axis=0)]
             except ValueError:
+                self._diagnose_state(key, "projection_invalid")
                 del self.states[key]
         if motion_gap:
             self.diagnostics["motion_gap"] = True
@@ -847,7 +865,50 @@ class DoubleLineCrossingRule(ViolationRule):
         events = self._evaluate_crossing(frame, fresh, usable, error, motion_gap)
         self.diagnostics["states"] = [{"object_id": key[0], "line_id": key[1], "phase": s["phase"]}
                                       for key, s in self.states.items()]
+        if self.detailed_diagnostics:
+            self.diagnostics["details"]["candidates"] = [self._state_summary(key) for key in self.states]
         return events
+
+    def _state_summary(self, key):
+        state = self.states[key]
+        now = self._diagnostic_frame["timestamp_sec"]
+        return dict(object_id=key[0], line_id=key[1], phase=state["phase"], origin=state["origin"],
+                    elapsed_seconds=max(0., now-state["origin_since"]),
+                    before_count=len(state["before_path"]), after_count=len(state["after_path"]),
+                    destination_count=state["destination_count"],
+                    destination_seconds=max(0., now-state["destination_since"]) if state["destination_since"] is not None else 0.,
+                    since_last_observation_seconds=max(0., now-state.get("last_time", now)),
+                    sides=clone(self._side_history.get(key)))
+
+    def _diagnose_state(self, key, reason, *, action="deleted", **extra):
+        if self.detailed_diagnostics and key in self.states:
+            self.diagnostics["details"]["state_changes"].append(
+                dict(self._state_summary(key), reason=reason, action=action, **extra))
+
+    def _diagnose_all_states(self, reason):
+        if self.detailed_diagnostics:
+            for key in self.states:
+                self._diagnose_state(key, reason)
+
+    def _diagnose_position(self, key, frame, position):
+        if not self.detailed_diagnostics:
+            return
+        side, now, index = position["side"], frame["timestamp_sec"], frame["index"]
+        summary = self._side_history.get(key)
+        if (summary is None or now-summary["last_timestamp_sec"] > self.settings["max_observation_gap_sec"]
+                or index <= summary["last_frame"]):
+            summary = dict(first_side=side, last_side=side, first_frame=index, last_frame=index,
+                           first_timestamp_sec=now, last_timestamp_sec=now,
+                           counts={"-1": 0, "0": 0, "1": 0}, seconds={"-1": 0., "0": 0., "1": 0.})
+            self._side_history[key] = summary
+        # 每側秒數只累加連續幀、相同 side 的間隔，不把缺口／不穩定位置或快取當成證據。
+        if (index == summary["last_frame"]+1 and side == summary["last_side"]
+                and 0 < now-summary["last_timestamp_sec"] <= self.settings["max_observation_gap_sec"]):
+            summary["seconds"][str(side)] += now-summary["last_timestamp_sec"]
+        summary["counts"][str(side)] += 1
+        summary.update(last_side=side, last_frame=index, last_timestamp_sec=now)
+        self.diagnostics["details"]["positions"].append(dict(object_id=key[0], line_id=key[1],
+            side=side, point=position["point"], extrapolated=position.get("extrapolated", False), sides=clone(summary)))
 
     def _hand_off_lines(self, usable, matrix):
         """雙線追蹤編號中斷（同一條線換了新編號）時，把車輛候選轉移到新編號。
@@ -888,6 +949,9 @@ class DoubleLineCrossingRule(ViolationRule):
                 mapping[old] = best[1]
         for (object_id, track), state in list(self.states.items()):
             if track in mapping and (object_id, mapping[track]) not in self.states:
+                self._diagnose_state((object_id, track), "line_handoff", action="transferred", new_line_id=mapping[track])
+                if self.detailed_diagnostics and (object_id, track) in self._side_history:
+                    self._side_history[(object_id, mapping[track])] = self._side_history.pop((object_id, track))
                 state["line_handoff"] = True
                 self.states[(object_id, mapping[track])] = self.states.pop((object_id, track))
         if mapping:
@@ -927,12 +991,23 @@ class DoubleLineCrossingRule(ViolationRule):
                     not isinstance(vehicle.get("confidence"), (int, float)) or
                     not math.isfinite(vehicle["confidence"]) or vehicle["confidence"] < cfg["min_vehicle_confidence"]):
                 for key in [key for key in self.states if key[0] == object_id]:
+                    confidence = vehicle.get("confidence")
+                    reason = ("low_confidence" if isinstance(confidence, (int, float))
+                              and math.isfinite(confidence) and confidence < cfg["min_vehicle_confidence"] else "invalid_vehicle")
+                    self._diagnose_state(key, reason, confidence=confidence if isinstance(confidence, (int, float)) and math.isfinite(confidence) else None)
                     del self.states[key]
                 self.diagnostics["skipped_vehicles"].append({"object_id": object_id, "reason": "invalid_vehicle"})
                 continue
             for line in lines:
                 key = (object_id, line["track_id"])
-                position = vehicle_line_position(vehicle, line, cfg, motion_error)
+                if self.detailed_diagnostics:
+                    detail = {}
+                    position = vehicle_line_position(vehicle, line, cfg, motion_error, diagnostics=detail)
+                    if position is None:
+                        self.diagnostics["details"]["position_failures"].append(
+                            dict(object_id=object_id, line_id=line["track_id"], **detail))
+                else:
+                    position = vehicle_line_position(vehicle, line, cfg, motion_error)
                 if position is None:
                     state = self.states.get(key)
                     # The observation-gap timeout still expires this state.
@@ -941,12 +1016,14 @@ class DoubleLineCrossingRule(ViolationRule):
                         state["position_gap"] = True
                         state.update(after_path=[], destination_since=None, destination_count=0)
                     else:
+                        self._diagnose_state(key, "position_unavailable")
                         self.states.pop(key, None)
                     self.diagnostics["skipped_vehicles"].append({
                         "object_id": object_id, "line_id": line["track_id"],
                         "reason": "unsupported_footprint_or_invalid_box"})
                     continue
                 side, point, box = position["side"], position["point"], position["box"]
+                self._diagnose_position(key, frame, position)
                 state = self.states.get(key)
                 if state:
                     old = state["last_box"]
@@ -956,6 +1033,7 @@ class DoubleLineCrossingRule(ViolationRule):
                     if (max(ratios) > cfg["max_box_scale_ratio"] or
                             np.linalg.norm(np.asarray(point) - state["last_point"]) >
                             cfg["max_step_box_ratio"] * max(sizes)):
+                        self._diagnose_state(key, "box_jump")
                         self.states.pop(key)
                         self.diagnostics["skipped_vehicles"].append({"object_id": object_id, "reason": "box_jump"})
                         state = None
@@ -977,6 +1055,7 @@ class DoubleLineCrossingRule(ViolationRule):
                     if side != state["destination"]:
                         state["rearm_since"] = now
                     elif now - state["rearm_since"] >= cfg["rearm_seconds"]:
+                        self._diagnose_state(key, "rearmed", action="reset")
                         state.update(phase="seeding", origin=side, origin_since=now,
                                      before_path=[], after_path=[], crossing=None, transition=None, position_gap=False)
                     else:
@@ -984,11 +1063,13 @@ class DoubleLineCrossingRule(ViolationRule):
                     if state["phase"] == "reported":
                         continue
                 if state["phase"] == "crossing" and now - state["crossing"]["frame"]["timestamp_sec"] > cfg["max_crossing_seconds"]:
+                    self._diagnose_state(key, "crossing_timeout")
                     del self.states[key]
                     continue
                 if side == state["origin"]:
                     # A touch-and-return cancels the candidate without emitting it.
                     if state["phase"] == "crossing":
+                        self._diagnose_state(key, "returned_to_origin", action="reset")
                         state.update(phase="seeding", origin_since=now, before_path=[],
                                      after_path=[], crossing=None, transition=None, position_gap=False)
                     path = state["before_path"]
@@ -999,6 +1080,7 @@ class DoubleLineCrossingRule(ViolationRule):
                         state["phase"] = "armed"
                     continue
                 if state["phase"] == "seeding":
+                    self._diagnose_state(key, "origin_not_stable")
                     del self.states[key]
                     continue
                 if state["phase"] == "armed":
@@ -1059,6 +1141,12 @@ class DoubleLineCrossingRule(ViolationRule):
 
     def finalize(self):
         # Incomplete approaches never become events merely because the video ends.
+        if self.detailed_diagnostics and hasattr(self, "_diagnostic_frame"):
+            self.diagnostics["details"]["state_changes"] = []
+            self._diagnose_all_states("finalize")
+            self.final_diagnostics = dict(frame=self._diagnostic_frame["index"],
+                state_changes=self.diagnostics["details"]["state_changes"])
+            self._side_history.clear()
         self.states.clear()
         self.line_memory.clear()
         self.previous_frame = None

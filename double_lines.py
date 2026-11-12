@@ -39,7 +39,7 @@ RULE_DEFAULTS = dict(
     max_line_handoff_px=25.0,  # 雙線追蹤換編號時，依位置把候選轉移到新編號的距離上限（0＝停用）
     # 確認需要直接觀測的標線：線本身至少 min_line_observations 次直接觀測，越線前後各至少一個樣本
     # 落在直接觀測的幾何上，且沒有樣本落在未對齊（鏡頭運動失效時沿用）的推移幾何上。不成立時最多為疑似。
-    require_direct_marking_evidence=True)
+    require_direct_marking_evidence=True, detailed_diagnostics=False)
 
 
 def validate_rule_settings(overrides=None):
@@ -48,7 +48,7 @@ def validate_rule_settings(overrides=None):
         raise ValueError("Unknown double-line rule settings")
     settings = {**RULE_DEFAULTS, **overrides}
     for key, value in settings.items():
-        if key in ("emit_suspected", "allow_semantic_band", "allow_motion_gaps", "require_direct_marking_evidence"):
+        if key in ("emit_suspected", "allow_semantic_band", "allow_motion_gaps", "require_direct_marking_evidence", "detailed_diagnostics"):
             if type(value) is not bool:
                 raise ValueError(f"{key} must be boolean")
         elif type(value) not in (int, float) or not math.isfinite(value) or (value < 0 if key in ("footprint_inset_ratio", "max_extrapolation_ratio", "max_line_handoff_px") else value <= 0):
@@ -417,7 +417,47 @@ def _extend_line(line, y_target, max_extension):
     return extended
 
 
-def vehicle_line_position(vehicle, line, settings, motion_error=0):
+def _position_failure(detail, reason, line, settings, *, box=None, point=None,
+                      original_line=None, position=None, bbox_reason=None, extrapolated=False):
+    """只描述已作出的拒絕；距離沿影像 y 軸，比例分母為車框高度，不是建議外插量。"""
+    if detail is None:
+        return
+    path = line.get("centerline", [])
+    original = (original_line or line).get("centerline", [])
+    ends = [list(map(float, p)) for p in (path[0], path[-1])] if len(path) >= 2 else None
+    original_ends = [list(map(float, p)) for p in (original[0], original[-1])] if len(original) >= 2 else None
+    height = float(box[3]-box[1]) if box is not None else None
+    pad = settings["endpoint_margin_px"]+1
+    gap = required = None
+    if point is not None and original_ends:
+        y, top, bottom = float(point[1]), original_ends[0][1], original_ends[1][1]
+        gap = max(top-y, y-bottom, 0.)
+        required = max(top-(y-pad), (y+pad)-bottom, 0.)
+    detail.update(reason=reason, bbox_reason=bbox_reason,
+                  failed_point=list(map(float, point)) if point is not None else None,
+                  line_endpoints=ends, original_line_endpoints=original_ends,
+                  endpoint_distance_px=float(position["endpoint_distance_px"]) if position is not None else None,
+                  endpoint_margin_px=settings["endpoint_margin_px"], extrapolated=bool(extrapolated),
+                  extension_limit_ratio=settings.get("max_extrapolation_ratio", 0),
+                  extension_limit_px=settings.get("max_extrapolation_ratio", 0)*height+pad if height else None,
+                  support_gap_px=gap, required_extension_px=required,
+                  required_extension_ratio=required/height if required is not None and height else None,
+                  ratio_denominator="bbox_height", distance_axis="image_y",
+                  extension_policy="occluded_far_endpoint_only")
+
+
+def write_final_double_line_diagnostics(stream, rules):
+    """只在詳細診斷啟用時補寫片尾清除；不改原逐幀格式或事件。"""
+    if stream is None:
+        return
+    final = {r.rule_id: r.final_diagnostics for r in rules
+             if isinstance(getattr(r, "final_diagnostics", None), dict) and r.final_diagnostics}
+    if final:
+        stream.write(json.dumps({"frame": next(iter(final.values()))["frame"],
+                                 "finalize": True, "rules": final}, ensure_ascii=False)+"\n")
+
+
+def vehicle_line_position(vehicle, line, settings, motion_error=0, *, diagnostics=None):
     """Inset bottom-edge proxy must clear the entire band; not tire localization.
 
     車底超出雙線遠端可見端點、且該端點被車身遮住時，若設定允許，沿端點方向外插後再判斷，
@@ -426,10 +466,13 @@ def vehicle_line_position(vehicle, line, settings, motion_error=0):
     try:
         box = np.asarray(vehicle.get("bbox_xyxy", []), dtype=float)
     except (TypeError, ValueError):
+        _position_failure(diagnostics, "invalid_bbox", line, settings, bbox_reason="conversion_failed")
         return None
     if box.shape != (4,) or not np.isfinite(box).all() or box[2] <= box[0] or box[3] <= box[1]:
+        _position_failure(diagnostics, "invalid_bbox", line, settings, bbox_reason="invalid_shape_or_extent")
         return None
     x1, y1, x2, y2 = box
+    original_line = line
     extrapolated = False
     ratio = settings.get("max_extrapolation_ratio", 0)
     if ratio > 0:
@@ -455,6 +498,13 @@ def vehicle_line_position(vehicle, line, settings, motion_error=0):
         if position is None or position["endpoint_distance_px"] < settings["endpoint_margin_px"]:
             position = row_line_position(point, line["centerline"])
         if position is None or position["endpoint_distance_px"] < settings["endpoint_margin_px"]:
+            if diagnostics is not None:
+                path = line["centerline"]
+                reason = ("endpoint_margin" if position is not None else
+                          "outside_near_support" if point[1] > path[-1][1] else
+                          "outside_far_support" if point[1] < path[0][1] else "unsupported_line_projection")
+                _position_failure(diagnostics, reason, line, settings, box=box, point=point,
+                                  original_line=original_line, position=position, extrapolated=extrapolated)
             return None
         foot = np.asarray(position["projection"])
         tangent = np.asarray(position["tangent"])

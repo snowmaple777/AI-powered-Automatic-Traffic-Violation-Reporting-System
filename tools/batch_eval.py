@@ -32,7 +32,10 @@ def diagnose(folder, video, category):
     reasons, signal, frames, stop_lines = Counter(), Counter(), 0, 0
     with path.open(encoding="utf-8") as source:
         for line in source:
-            rules = json.loads(line)["rules"]
+            row = json.loads(line)
+            if row.get("finalize") is True:
+                continue  # 片尾清除是診斷記錄，不是額外一幀。
+            rules = row["rules"]
             frames += 1
             if category == "red_light_stop_line_crossing":
                 d = rules.get(category, {})
@@ -152,11 +155,24 @@ def validate_outputs(folder, name, masks_required):
         raise ValueError("局部範圍尚未完成")
     for suffix, key in (("detections", "frame"), ("rule_diagnostics", "frame")):
         count = 0
+        final_seen = False
         with (folder / f"{name}_{suffix}.jsonl").open(encoding="utf-8") as source:
-            for index, line in enumerate(source):
+            for line in source:
                 row = json.loads(line)
+                if final_seen:
+                    raise ValueError("片尾診斷之後仍有資料")
+                if suffix == "rule_diagnostics" and row.get("finalize") is True:
+                    rules = row.get("rules", {})
+                    if (count != frames or row.get("frame") != frames-1 or not isinstance(rules, dict) or not rules
+                            or any(name not in ("double_yellow_line_crossing", "double_white_line_crossing")
+                                   or not isinstance(detail, dict) or detail.get("frame") != frames-1
+                                   or not isinstance(detail.get("state_changes"), list)
+                                   for name, detail in rules.items())):
+                        raise ValueError("片尾診斷範圍或格式不符")
+                    final_seen = True
+                    continue
                 actual = row[key]["index"] if suffix == "detections" else row[key]
-                if actual != index:
+                if actual != count:
                     raise ValueError(f"{suffix} 幀序不連續")
                 count += 1
         if count != frames:

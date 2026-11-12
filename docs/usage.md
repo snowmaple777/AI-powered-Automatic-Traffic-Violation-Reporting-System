@@ -684,3 +684,20 @@ CPU 備註計算在六個案例平均約 27–86 ms/事件，較 4af 增加；�
 只有壓線、首次看到時已在線帶上，或車身遮住標線時，可能無法建立完整跨越事件；沒有事件不代表沒有違規。
 2026-11-11 覆核 7 支短片、8 筆標註：命中 1、漏報 7。漏報包含有限線段支援、起點不足、分割污染及運動失效。
 詳細逐片證據與後續方案見 docs/handoff/double_yellow_miss_review_4ah.md。本輪未修改判定、門檻或設定。
+
+## 雙線詳細診斷（4ai，預設關閉）
+
+將雙線設定的 detailed_diagnostics 設為 true，可在原 *_rule_diagnostics.jsonl 保存車底拒絕原因、
+候選清除前的狀態與各側觀測摘要；不改違規事件、門檻或 confirmed 條件。建議另存設定副本，平常維持 false。
+run_pipeline.py、evaluate_violations.py、tools/rule_eval.py 都可用 --double-line-config 指定該副本，例如：
+
+```powershell
+.venv\Scripts\python.exe tools/rule_eval.py --source outputs/eval/baseline_18 --label diagnostic_review --double-line-config outputs/double_line_detailed.json
+```
+
+先將 configs/double_line_rules.json 複製至 outputs/double_line_detailed.json，僅改 detailed_diagnostics 為 true。
+新增資訊在 rules.<雙線規則>.details；原 unsupported_footprint_or_invalid_box 等彙總碼保留。
+near／far 是實際有限線段的影像近端／遠端，不是車輛行駛方向；距離以原圖像素與框高比例表示。
+片尾額外一列 finalize:true 記錄最後候選清除，不是新影格；批次彙總與完整性檢查已支援。
+自訂分析需略過片尾列再算幀數；全追蹤側別應彙總 positions，不要累加每幀已累計的 sides 摘要。
+診斷會增加檔案大小與 CPU 成本。逐片事件比對、A1 整片成本及欄位語意見 docs/handoff/double_line_diagnostics_4ai.md。

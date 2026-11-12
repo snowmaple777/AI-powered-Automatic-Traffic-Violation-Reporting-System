@@ -54,6 +54,24 @@ class BatchIntegrityTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "任何影格"):
             self.run_fake(count=0)
 
+    def test_final_diagnostics_keep_frame_count_and_reject_truncated_or_extra_rows(self):
+        self.run_fake()
+        folder = self.root / "out"
+        path = folder / "sample_rule_diagnostics.jsonl"
+        original = path.read_text(encoding="utf-8")
+        before = batch_eval.diagnose(folder, "sample", "red_light_stop_line_crossing")
+        final = json.dumps({"frame": 2, "finalize": True, "rules": {
+            "double_yellow_line_crossing": {"frame": 2, "state_changes": []}}}) + "\n"
+        path.write_text(original + final, encoding="utf-8")
+        self.assertEqual(batch_eval.validate_outputs(folder, "sample", False)["frames"], 3)
+        self.assertEqual(batch_eval.diagnose(folder, "sample", "red_light_stop_line_crossing"), before)
+        for bad in (original + final + final, original + final + original.splitlines()[0] + "\n",
+                    "\n".join(original.splitlines()[:-1]) + "\n" + final,
+                    original + final.replace('"frame": 2', '"frame": 1')):
+            path.write_text(bad, encoding="utf-8")
+            with self.assertRaises(ValueError):
+                batch_eval.validate_outputs(folder, "sample", False)
+
     def test_early_decode_failure_fails(self):
         with self.assertRaisesRegex(RuntimeError, "截斷"):
             self.run_fake(count=2, reported=3)

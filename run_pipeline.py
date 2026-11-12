@@ -12,7 +12,7 @@ from model_library import FrameContext, ModelPipeline, load_config
 from violation_engine import RuleContext, ViolationEngine, create_rules
 from violation_clips import add_clip_arguments, validate_clip_options, export_violation_clips
 from road_compensation import CompensationConfig, EgoMotionTracker, RoadMarkingCompensator
-from double_lines import double_line_rule_options
+from double_lines import double_line_rule_options, write_final_double_line_diagnostics
 from area_rules import AREA_RULES, area_rule_options, area_geometry_options
 from frame_processing import FrameProcessor
 from pipeline_outputs import DetectionCsv, annotate_frame
@@ -245,6 +245,7 @@ def run(args, resources, pipeline=None):
                 all_events.append(event)
                 violations_file.write(json.dumps(event, ensure_ascii=False) + "\n")
             violations_file.flush()
+            write_final_double_line_diagnostics(diagnostics_file, violation_engine.rules)
     if motion_notes.enabled:
         write_motion_summary(args.output_dir / f"{stem}_motion_notes.txt", all_events)
     timings = {"frames": frame_index, "wall_seconds": round(time.perf_counter() - started, 3),

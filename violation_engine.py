@@ -921,7 +921,8 @@ class DoubleLineCrossingRule(ViolationRule):
         previous, self.previous_lines = self.previous_lines, current
         if limit <= 0 or not previous:
             return
-        lost = {track for track in previous if track not in current}
+        # 依上一幀的線序走訪（不用 set），line_handoffs 診斷的順序才不受字串雜湊種子影響。
+        lost = [track for track in previous if track not in current]
         new = [track for track in current if track not in previous]
         if not lost or not new:
             return

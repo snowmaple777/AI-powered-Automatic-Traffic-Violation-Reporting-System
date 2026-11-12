@@ -1,4 +1,4 @@
-# 交接文件索引（2026-11-10 整理）
+# 交接文件索引（2026-11-12 更新）
 
 依時間排列；「狀態」以 refactor_log 為準。新交接請複製 `TEMPLATE.md`。
 
@@ -12,11 +12,11 @@
 | 4x–4z | [long_video_stress_preflight.md](long_video_stress_preflight.md)、[long_video_test_plan.md](long_video_test_plan.md)、[long_video_phase0_phase1.md](long_video_phase0_phase1.md)、[long_video_retest_4z.md](long_video_retest_4z.md) | 長片盤點、測試方針、階段 0／1、覆核與修正紀錄 | 已提交 |
 | 4ab–4ac | 見 refactor_log 與 long_video_retest_4z.md 第 7 節 | 長片誤報修正 1–4 | 已提交（cced518、1b3c707） |
 | — | [next_development_plan.md](next_development_plan.md) | 後續開發方案 | 已提交（1cc045a） |
-| 4ad | [windows_rules_4ad.md](windows_rules_4ad.md) | Windows 重算確認 4ab／4ac | 未提交，待 Opus 整合 |
-| 4ae | [depth_letterbox_4ae.md](depth_letterbox_4ae.md) | 深度 4:3 補邊修正 | 未提交，待 Opus 審查 |
-| 4af | [local_lane_motion_4af.md](local_lane_motion_4af.md) | 局部車道與動作備註（預設關） | 未提交，待 Opus 審查 |
-| 4ag | [motion_layers_4ag.md](motion_layers_4ag.md) | 分層動作備註 | 未提交，待 Opus 審查 |
-| 4ah | [double_yellow_miss_review_4ah.md](double_yellow_miss_review_4ah.md) | 雙黃線漏報逐片覆核與修正順序 | 分析完成，未改規則 |
-| 4ai | [double_line_diagnostics_4ai.md](double_line_diagnostics_4ai.md)、[原始 prompt](double_line_diagnostics_prompt.md) | 雙線持久診斷拆分（預設關）；33 片事件逐位元不變 | 驗證完成，未提交，待 Opus 審查／整合 |
+| 4ad | [windows_rules_4ad.md](windows_rules_4ad.md) | Windows 重算確認 4ab／4ac | 已整合（4aj，feature/conservative-marking-schedule） |
+| 4ae | [depth_letterbox_4ae.md](depth_letterbox_4ae.md) | 深度 4:3 補邊修正 | 已整合（4aj，feature/conservative-marking-schedule） |
+| 4af | [local_lane_motion_4af.md](local_lane_motion_4af.md) | 局部車道與動作備註（預設關） | 已整合（4aj，feature/conservative-marking-schedule） |
+| 4ag | [motion_layers_4ag.md](motion_layers_4ag.md) | 分層動作備註 | 已整合（4aj，feature/conservative-marking-schedule） |
+| 4ah | [double_yellow_miss_review_4ah.md](double_yellow_miss_review_4ah.md) | 雙黃線漏報逐片覆核與修正順序 | 已整合（4aj，feature/conservative-marking-schedule） |
+| 4ai | [double_line_diagnostics_4ai.md](double_line_diagnostics_4ai.md)、[原始 prompt](double_line_diagnostics_prompt.md) | 雙線持久診斷拆分（預設關）；33 片事件逐位元不變 | 已整合（4aj，feature/conservative-marking-schedule） |
 
 展示成果：`產生展示成果.cmd`／`tools/make_showcase.py`，最新輸出 `outputs/showcase_20261110`（不進 git）。

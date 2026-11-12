@@ -31,6 +31,19 @@ for index in range(8):
     outputs.append([c["compensation"]["id"] for m in result.compensated_markings for c in m["components"]])
 print(json.dumps(outputs))
 '''
+HANDOFF_SCRIPT = r'''
+import json, sys
+import numpy as np
+sys.path.insert(0, sys.argv[1])
+from violation_engine import RuleContext, create_rules
+
+rule = create_rules(["double_yellow_line_crossing"], RuleContext("t", 30, 640, 360))[0]
+rule.previous_lines = {f"double-line-{k}@10": np.array([[40. + 90 * k, 120.], [60. + 90 * k, 340.]]) for k in range(6)}
+usable = [{"track_id": f"double-line-{k}@12", "centerline": [[41. + 90 * k, 120.], [61. + 90 * k, 340.]]} for k in range(6)]
+rule.diagnostics = {}
+rule._hand_off_lines(usable, np.eye(3))
+print(json.dumps(list(rule.diagnostics.get("line_handoffs", {}).items())))
+'''
 
 
 class DeterminismTests(unittest.TestCase):
@@ -44,6 +57,17 @@ class DeterminismTests(unittest.TestCase):
         self.assertTrue(any(results[0][5:]), "測試序列必須包含預測輸出")
         self.assertEqual(results[0], results[1])
         self.assertEqual(results[0], results[2])
+
+    def test_double_line_handoff_order_is_independent_of_hash_seed(self):
+        results = []
+        for seed in ("1", "2", "3", "4"):
+            env = dict(os.environ, PYTHONHASHSEED=seed, PYTHONDONTWRITEBYTECODE="1")
+            proc = subprocess.run([sys.executable, "-c", HANDOFF_SCRIPT, str(ROOT)], env=env,
+                                  capture_output=True, text=True, check=True)
+            results.append(json.loads(proc.stdout))
+        self.assertEqual(len(results[0]), 6, "六條線都要成功交接")
+        for other in results[1:]:
+            self.assertEqual(results[0], other)
 
 
 if __name__ == "__main__":

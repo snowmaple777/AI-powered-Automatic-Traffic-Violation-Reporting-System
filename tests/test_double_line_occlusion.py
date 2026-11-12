@@ -1,9 +1,10 @@
-"""4am／4an：雙線遮擋延伸、線段記憶與起點容忍（皆預設關閉，使用時事件只能是疑似）。"""
+"""4am／4an／4ao：雙線遮擋延伸、線段記憶、起點容忍與壓線（皆預設關閉，使用時事件只能是疑似）。"""
 import unittest
 
 import numpy as np
 
-from double_lines import ORIGIN_OPTION_KEYS, OCCLUSION_OPTION_KEYS, _extend_line, validate_rule_settings
+from double_lines import (ORIGIN_OPTION_KEYS, OCCLUSION_OPTION_KEYS, STRADDLE_OPTION_KEYS, _extend_line,
+                          validate_rule_settings)
 from violation_engine import RuleContext, create_rules
 from test_double_line_rules import LANE_CHANGE, run_records, sequence
 
@@ -132,6 +133,73 @@ class OriginInterruptionTests(unittest.TestCase):
     def test_uninterrupted_crossing_stays_confirmed_with_tolerance_enabled(self):
         events = run_records(sequence(LANE_CHANGE), settings=self.TOLERANT)
         self.assertEqual([e["status"] for e in events], ["confirmed"])
+
+
+class StraddleTests(unittest.TestCase):
+    ON = {"straddle_min_seconds": .25}
+    ORIGIN = [(125, 200), (125, 197), (125, 194)]
+    BAND = [(140, 191), (154, 188), (154, 185), (154, 182), (154, 179)]  # 第一幀只在邊距；線帶內 0.3 秒、4 次
+    BACK = [(125, 176), (125, 173), (125, 170), (125, 167)]
+    CROSS = [(140, 164), (154, 161), (170, 158), (185, 155), (185, 152), (185, 149)]
+
+    def test_defaults_stay_out_of_settings_and_emit_nothing(self):
+        rule = create_rules(["double_yellow_line_crossing"], RuleContext("test", 10, 400, 300))[0]
+        self.assertFalse(set(STRADDLE_OPTION_KEYS) & set(rule.settings))
+        self.assertEqual(run_records(sequence(self.ORIGIN + self.BAND + self.BACK)), [])
+        for bad in ({"straddle_min_seconds": -1}, {"straddle_merge_seconds": float("nan")}):
+            with self.assertRaises(ValueError):
+                validate_rule_settings(bad)
+
+    def test_touch_and_return_is_reported_as_suspected_straddle(self):
+        events = run_records(sequence(self.ORIGIN + self.BAND + self.BACK), settings=self.ON)
+        self.assertEqual([(e["status"], e["behavior"]) for e in events], [("suspected", "line_straddle")])
+        event = events[0]
+        self.assertFalse(event["conditions"]["complete_band_crossing"])
+        self.assertIn("stable_destination", event["missing_conditions"])
+        self.assertEqual(event["evidence"]["maneuver"], "line_straddle")
+        [episode] = event["evidence"]["straddle"]["episodes"]
+        self.assertEqual((episode["end_reason"], episode["band_observations"]), ("returned_to_origin", 4))
+        self.assertAlmostEqual(episode["band_seconds"], .3)
+        self.assertEqual(event["frame"], 7)  # 與跨越事件相同：最後一次車底中心在線帶內的幀
+        # 停留不足門檻時不輸出。
+        self.assertEqual(run_records(sequence(self.ORIGIN + self.BAND + self.BACK),
+                                     settings={"straddle_min_seconds": .5}), [])
+
+    def test_touching_only_the_band_margin_is_not_a_straddle(self):
+        margin = [(141, 191), (141, 188), (141, 185), (141, 182), (141, 179)]  # 車底右點只到邊距
+        self.assertEqual(run_records(sequence(self.ORIGIN + margin + self.BACK), settings=self.ON), [])
+
+    def test_vehicle_first_seen_on_line_is_not_a_straddle(self):
+        points = [(154, 200), (154, 197), (154, 194), (154, 191)] + self.BACK
+        self.assertEqual(run_records(sequence(points), settings=self.ON), [])
+
+    def test_track_ending_inside_band_counts_with_or_without_detailed_diagnostics(self):
+        for detailed in (False, True):
+            events = run_records(sequence(self.ORIGIN + self.BAND),
+                                 settings={**self.ON, "detailed_diagnostics": detailed})
+            self.assertEqual([e["evidence"]["straddle"]["episodes"][0]["end_reason"] for e in events],
+                             ["finalize"])
+
+    def test_later_full_crossing_absorbs_pending_straddle(self):
+        points = self.ORIGIN + self.BAND + self.BACK + self.CROSS
+        events = run_records(sequence(points), settings=self.ON)
+        self.assertEqual([e["evidence"]["maneuver"] for e in events], ["complete_crossing"])
+        self.assertEqual(len(events[0]["evidence"]["merged_straddles"]), 1)
+        # 等待期過後才完成跨越：分別輸出，壓線在前。
+        events = run_records(sequence(points), settings={**self.ON, "straddle_merge_seconds": .2})
+        self.assertEqual([e["behavior"] for e in events], ["line_straddle", "complete_crossing"])
+        self.assertNotIn("merged_straddles", events[1]["evidence"])
+
+    def test_repeated_straddles_merge_into_one_event(self):
+        events = run_records(sequence(self.ORIGIN + self.BAND + self.BACK + self.BAND[:1] + [
+            (154, 164), (154, 161), (154, 158), (154, 155)] + self.BACK), settings=self.ON)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(len(events[0]["evidence"]["straddle"]["episodes"]), 2)
+
+    def test_clean_crossing_is_unchanged_with_straddle_enabled(self):
+        events = run_records(sequence(LANE_CHANGE), settings=self.ON)
+        self.assertEqual([e["status"] for e in events], ["confirmed"])
+        self.assertNotIn("merged_straddles", events[0]["evidence"])
 
 
 if __name__ == "__main__":

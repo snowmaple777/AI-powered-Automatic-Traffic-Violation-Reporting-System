@@ -49,7 +49,17 @@ RULE_DEFAULTS = dict(
     # 邊緣（side 0，只限 seeding）或車輛信心短暫介於下限與 min_vehicle_confidence 之間時，不刪除候選；
     # 中斷不計入穩定次數。用過容許的事件 stable_origin=False，只能是疑似。
     max_origin_interruption_sec=0.0,  # 單次連續中斷的最長秒數（0＝停用）
-    origin_interruption_min_confidence=.25)  # 中斷期間可容許的車輛信心下限
+    origin_interruption_min_confidence=.25,  # 中斷期間可容許的車輛信心下限
+    # 4ao 壓線（C1，預設關閉；同樣不寫入預設設定）。已在原側穩定（armed）的車，車底至少一點進入線帶本身
+    # （不含兩側邊距）後退回原側，或仍在線帶附近時候選結束（離開畫面、線消失、逾時、片尾等），且線帶內
+    # 首末觀測相距達門檻、次數達 stable_observations 時，輸出「壓線」疑似事件（complete_band_crossing=False，
+    # 永遠不會確認）。結束後保留 straddle_merge_seconds；期間同一車完成跨越時併入該跨越事件，不重複輸出；
+    # 同一車（不分雙線追蹤編號）的多次壓線合併為一筆。
+    straddle_min_seconds=0.0,  # 線帶內最短停留秒數（0＝停用）
+    straddle_merge_seconds=2.0)  # 壓線結束後等待合併的秒數
+
+# 4ao 選項：同 OCCLUSION_OPTION_KEYS，等於預設值時不放進規則設定。
+STRADDLE_OPTION_KEYS = ("straddle_min_seconds", "straddle_merge_seconds")
 
 # 4an 選項：同 OCCLUSION_OPTION_KEYS，等於預設值時不放進規則設定。
 ORIGIN_OPTION_KEYS = ("max_origin_interruption_sec", "origin_interruption_min_confidence")
@@ -68,7 +78,7 @@ def validate_rule_settings(overrides=None):
                    "curve_extrapolation", "extend_near_endpoint"):
             if type(value) is not bool:
                 raise ValueError(f"{key} must be boolean")
-        elif type(value) not in (int, float) or not math.isfinite(value) or (value < 0 if key in ("footprint_inset_ratio", "max_extrapolation_ratio", "max_line_handoff_px", "line_memory_seconds", "max_origin_interruption_sec") else value <= 0):
+        elif type(value) not in (int, float) or not math.isfinite(value) or (value < 0 if key in ("footprint_inset_ratio", "max_extrapolation_ratio", "max_line_handoff_px", "line_memory_seconds", "max_origin_interruption_sec", "straddle_min_seconds", "straddle_merge_seconds") else value <= 0):
             raise ValueError(f"{key} must be finite and positive")
     for key in ("min_line_observations", "stable_observations"):
         if type(settings[key]) is not int or settings[key] < 2:
@@ -591,6 +601,7 @@ def vehicle_line_position(vehicle, line, settings, motion_error=0, *, diagnostic
         measurements.append({**position, "in_band": low <= distance <= high})
     return {"side": sides[0] if sides[0] == sides[1] == sides[2] else 0,
             "point": points[1], "center_in_band": measurements[1]["in_band"],
+            "band_points": sum(m["in_band"] for m in measurements),  # 落在線帶本身（不含邊距）的車底點數
             "tangent": measurements[1]["tangent"], "box": box.tolist(), "extrapolated": extrapolated}
 
 

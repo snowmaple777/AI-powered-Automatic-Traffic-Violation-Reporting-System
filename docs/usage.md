@@ -284,8 +284,10 @@ rearm_seconds 後才可重新建立起始側，辨識下一次反向跨越。
 | line_memory_seconds | 0 | 已有候選的雙線短暫消失時，以運動補償後的最後幾何延續並轉交給新編號的秒數（0＝停用；4am 實驗選項；事件只能是疑似） |
 | max_origin_interruption_sec | 0 | 建立起點時，車底短暫落在線帶邊緣或車輛信心短暫偏低的最長容許秒數，中斷不計入穩定次數（0＝停用；4an 實驗選項；事件標 stable_origin=False，只能是疑似） |
 | origin_interruption_min_confidence | 0.25 | 上述容許期間的車輛信心下限（低於此值照常刪除候選） |
+| straddle_min_seconds | 0 | 壓線：已在原側穩定的車，車底至少一點進入線帶本身（不含邊距）後退回原側或在線帶附近結束追蹤，線帶內首末觀測相距達此秒數（且次數達 stable_observations）時輸出疑似事件，behavior＝line_straddle（0＝停用；4ao 實驗選項；永遠不會確認） |
+| straddle_merge_seconds | 2 | 壓線結束後等待的秒數；期間同一車完成跨越則併入跨越事件（evidence.merged_straddles），同一車多次壓線合併為一筆 |
 
-4am 的三個選項與 4an 的起點容忍在 31 支評估影片上都沒有改變任何事件（見 refactor_log 4am、4an），因此預設關閉；
+4am 的三個選項、4an 的起點容忍與 4ao 的壓線在 31 支評估影片上都沒有追回任何漏報（見 refactor_log 4am、4an、4ao），因此預設關閉；
 維持預設值時不寫入事件 parameters 與診斷 settings，輸出與未加入選項前逐位元相同。
 
 建議先查看診斷的 blocked_lines、skipped_vehicles、reset_reason 與 states，再調整對應門檻。

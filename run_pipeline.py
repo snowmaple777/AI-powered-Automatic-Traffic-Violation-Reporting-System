@@ -39,6 +39,8 @@ def parse_args(argv=None):
     parser.add_argument("--tracker", type=Path, default=None,
                         help="追蹤器設定（預設 ByteTrack）")
     parser.add_argument("--max-frames", type=int, default=0)
+    parser.add_argument("--allow-short-decode", action="store_true",
+                        help="可解碼幀數少於中繼資料時不中止，以實際解碼範圍完成並記錄為 short_eof（預設關閉）")
     parser.add_argument("--save-masks", type=Path, default=None,
                         help="除錯用：將每幀標線遮罩存成 PNG（可離線重播完整後處理）")
     parser.add_argument("--save-video", action="store_true",
@@ -183,7 +185,11 @@ def run(args, resources, pipeline=None):
                     if frame_index == 0:
                         raise RuntimeError("影片未成功解碼任何影格")
                     if expected_frames is not None and frame_index != expected_frames:
-                        raise RuntimeError(f"影片可能截斷或影格中繼資料不符：讀到 {frame_index} / {expected_frames} 幀")
+                        # 只容許「少於」中繼資料；多讀到的幀仍視為中繼資料錯誤。
+                        if not (getattr(args, "allow_short_decode", False) and frame_index < expected_frames):
+                            raise RuntimeError(f"影片可能截斷或影格中繼資料不符：讀到 {frame_index} / {expected_frames} 幀")
+                        termination = "short_eof"
+                        break
                     termination = "eof" if expected_frames is not None else "unverified_eof"
                     break
                 timestamp = frame_index / fps
@@ -251,7 +257,7 @@ def run(args, resources, pipeline=None):
     timings = {"frames": frame_index, "wall_seconds": round(time.perf_counter() - started, 3),
                "ms_per_frame": timer.summary(frame_index),
                "plate_backfill_seconds": plate_backfill.seconds,
-               "completion": {"status": "complete" if termination == "eof" else "partial",
+               "completion": {"status": "complete" if termination in ("eof", "short_eof") else "partial",
                               "termination": termination, "expected_frames": expected_frames,
                               "max_frames": args.max_frames, "masks_written": masks_written}}
     if motion_notes.enabled:

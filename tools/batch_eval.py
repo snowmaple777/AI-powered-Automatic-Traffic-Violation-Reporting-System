@@ -141,14 +141,18 @@ def output_inventory(folder):
             if p.is_file() and p.name != "done.json"}
 
 
-def validate_outputs(folder, name, masks_required):
+def validate_outputs(folder, name, masks_required, allow_short_decode=False):
     """只對已關閉的輸出驗證；失敗不得發布完成標記。"""
     from tools.real_replay import read_mask
     timings = json.loads((folder / f"{name}_timings.json").read_text(encoding="utf-8"))
     frames = timings["frames"]
     completion = timings["completion"]
-    if frames <= 0 or completion["termination"] not in ("eof", "max_frames"):
+    allowed = ("eof", "max_frames", "short_eof") if allow_short_decode else ("eof", "max_frames")
+    if frames <= 0 or completion["termination"] not in allowed:
         raise ValueError("未完成可驗證的解碼範圍")
+    if completion["termination"] == "short_eof" and not (
+            completion["expected_frames"] and frames < completion["expected_frames"]):
+        raise ValueError("short_eof 幀數必須少於影片中繼資料")
     if completion["termination"] == "eof" and frames != completion["expected_frames"]:
         raise ValueError("EOF 幀數與影片中繼資料不符")
     if completion["termination"] == "max_frames" and frames != completion["max_frames"]:
@@ -203,6 +207,31 @@ def verify_done(folder, request=None):
     return done
 
 
+def short_decode_notes(out, truth, videos):
+    """列出以 short_eof 完成的影片；超出實際解碼時間的 GT 事件無法命中，須另外說明。"""
+    notes = {}
+    for video in videos:
+        path = out / video / f"{video}_timings.json"
+        if not path.is_file():
+            continue
+        timings = json.loads(path.read_text(encoding="utf-8"))
+        completion = timings.get("completion", {})
+        if completion.get("termination") != "short_eof":
+            continue
+        fps = timings.get("fps")
+        detections = out / video / f"{video}_detections.jsonl"
+        if not fps:
+            with detections.open(encoding="utf-8") as source:
+                first = json.loads(source.readline())
+                fps = first.get("frame", {}).get("fps")
+        decoded = timings["frames"] / fps if fps else float("nan")
+        events = truth["videos"].get(video, {}).get("events", [])
+        notes[video] = {"frames": timings["frames"], "expected_frames": completion["expected_frames"],
+                        "decoded_seconds": round(decoded, 3),
+                        "events_beyond": sum(e.get("end_sec", e.get("start_sec", 0)) > decoded for e in events)}
+    return notes
+
+
 def summarize(label, verified_only=False):
     from eval.metrics import evaluate, load_predictions
     out = EVAL_DIR / label
@@ -227,11 +256,17 @@ def summarize(label, verified_only=False):
         recall = f"{c['tp'] / (c['tp'] + c['fn']):.0%}" if c["tp"] + c["fn"] else "—"
         lines.append(f"事件層級 {rule}: TP {c['tp']} FP {c['fp']} FN {c['fn']}  精確率 {precision}  召回率 {recall}")
     lines.append(f"事件當下車牌完全正確：{original_correct}/{original_total}；含補充：{plate_correct}/{plate_total}")
+    short = short_decode_notes(out, truth, [video for video, *_ in rows])
+    for video, note in short.items():
+        beyond = f"；GT 事件超出解碼範圍 {note['events_beyond']} 筆" if note["events_beyond"] else ""
+        lines.append(f"短解碼（--allow-short-decode）：{video} 解碼 {note['frames']}/{note['expected_frames']} 幀"
+                     f"（{note['decoded_seconds']:.2f} 秒）{beyond}")
     lines.append("逐片（命中與否、事件、目標規則最常見的阻擋原因）：")
     report = {"rows": rows, "event_level": per_rule, "videos": {},
               "truth_identity": file_identity(ROOT / "eval/ground_truth.json"),
               "verified_only": verified_only, "plate": [plate_correct, plate_total],
-              "plate_at_event": [original_correct, original_total], "event_level_at_event": original_rules}
+              "plate_at_event": [original_correct, original_total], "event_level_at_event": original_rules,
+              "short_decode": short}
     for video, category, hit, count in rows:
         folder = out / video
         events = [json.loads(l) for l in (folder / f"{video}_violations.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
@@ -256,6 +291,8 @@ def main(argv=None):
     parser.add_argument("--only", nargs="*", help="只跑指定影片（例如 ms01 cdy02）")
     parser.add_argument("--max-frames", type=int, default=0)
     parser.add_argument("--summary-only", action="store_true", help="只重新產生摘要")
+    parser.add_argument("--allow-short-decode", action="store_true",
+                        help="可解碼幀數少於中繼資料的影片以實際範圍計分（short_eof，摘要另列）；預設關閉")
     parser.add_argument("--model-config", type=Path, default=ROOT / "configs/default.json",
                         help="模型設定檔（不同設定請用不同 --label）")
     args = parser.parse_args(argv)
@@ -297,7 +334,9 @@ def execute_batch(args, out):
                 "path": str(source), **file_identity(source)}, "max_frames": args.max_frames}
             folder = out / name
             if folder.exists():
-                verify_done(folder, request)
+                done = verify_done(folder, request)
+                if done.get("completion", {}).get("termination") == "short_eof" and not getattr(args, "allow_short_decode", False):
+                    raise ValueError(f"{folder} 是短解碼結果；續跑請加 --allow-short-decode 或改用新的 label")
                 print(f"{name} 已驗證完成指定範圍，略過", flush=True)
             else:
                 pending.append((name, source, request))
@@ -321,11 +360,14 @@ def execute_batch(args, out):
                             "--model-config", str(args.model_config)]
                 if args.max_frames:
                     argv_run += ["--max-frames", str(args.max_frames)]
+                allow_short = getattr(args, "allow_short_decode", False)
+                if allow_short:
+                    argv_run.append("--allow-short-decode")
                 video_started = time.perf_counter()
                 try:
                     with ExitStack() as resources:
                         run_pipeline.run(run_pipeline.parse_args(argv_run), resources, pipeline=pipeline)
-                    timings = validate_outputs(staging, name, "road_markings" in pipeline.models)
+                    timings = validate_outputs(staging, name, "road_markings" in pipeline.models, allow_short)
                     # 執行中也可能有人改碼／設定／影片；不能把混合版本發布為完成。
                     if code_version() != version or settings_fingerprint(args.model_config) != fingerprint:
                         raise ValueError("執行中程式或設定／權重變更，結果保留在 .attempts")

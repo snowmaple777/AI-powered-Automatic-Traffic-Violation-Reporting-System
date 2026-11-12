@@ -556,6 +556,10 @@ batch_eval 現在以 done.json version 2 管理完成狀態。續跑必須匹配
 --max-frames 達上限的結果標為 partial，不列入全片指標（即使剛好等於影片總幀數亦保守視為 partial）。
 零幀、提前讀取失敗、FPS／尺寸無效及遮罩寫入失敗會報錯。影片總幀數未知時不發布可驗證的全片結果。
 讀取失敗且幀數與中繼資料一致只能視為可驗證 EOF，不能保證所有影片編碼內容都無損。
+可解碼幀數少於中繼資料（例如 cdy02：218／268 幀）預設報錯；需要以實際解碼範圍計分時加 --allow-short-decode
+（run_pipeline 與 batch_eval 皆有，預設關閉）。結果記錄為 completion.termination = short_eof、status complete，
+摘要另列「短解碼」並標出超出解碼時間的 GT 事件數。多於中繼資料的幀數仍報錯。續跑含 short_eof 的 label 必須再加此選項：
+.venv\Scripts\python.exe tools\batch_eval.py --label eval_4aj --only cdy02 --allow-short-decode
 鎖檔 .run.lock 防止同 label 同時寫入；程序被強制終止時先確認沒有工作執行，再人工移除殘留鎖。
 辨識迴圈耗時在 timings.wall_seconds，done.seconds 另含收尾與發布前驗證，模型載入另記 model_load_seconds。
 發布紀錄 runtime_devices 檢查已建立 ONNX session 的 providers／PyTorch 模型參數裝置；OCR CPU 設定見模型設定。

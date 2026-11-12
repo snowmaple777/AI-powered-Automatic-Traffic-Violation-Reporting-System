@@ -25,7 +25,7 @@ class BatchIntegrityTests(unittest.TestCase):
         self.config = self.root / "config.json"
         self.config.write_text('{"version":1,"models":{}}', encoding="utf-8")
 
-    def run_fake(self, count=3, reported=3, limit=0, fps=10, mask=False):
+    def run_fake(self, count=3, reported=3, limit=0, fps=10, mask=False, allow_short=False):
         cap = Mock()
         cap.isOpened.return_value = True
         cap.get.side_effect = lambda key: {cv2.CAP_PROP_FPS: fps, cv2.CAP_PROP_FRAME_WIDTH: 32,
@@ -41,6 +41,7 @@ class BatchIntegrityTests(unittest.TestCase):
             "--max-frames", str(limit), "--no-marking-compensation", "--no-violation-clips"])
         if mask:
             args.save_masks = self.root / "out/masks"
+        args.allow_short_decode = allow_short
         with patch("run_pipeline.cv2.VideoCapture", return_value=cap), ExitStack() as resources:
             result = run_pipeline.run(args, resources, pipeline=pipeline)
         return result, cap
@@ -75,6 +76,29 @@ class BatchIntegrityTests(unittest.TestCase):
     def test_early_decode_failure_fails(self):
         with self.assertRaisesRegex(RuntimeError, "截斷"):
             self.run_fake(count=2, reported=3)
+
+    def test_short_decode_is_opt_in_and_recorded(self):
+        result, _ = self.run_fake(count=2, reported=3, allow_short=True)
+        self.assertEqual(result["completion"]["status"], "complete")
+        self.assertEqual(result["completion"]["termination"], "short_eof")
+        self.assertEqual(result["frames"], 2)
+        folder = self.root / "out"
+        with self.assertRaisesRegex(ValueError, "解碼範圍"):
+            batch_eval.validate_outputs(folder, "sample", False)
+        self.assertEqual(batch_eval.validate_outputs(folder, "sample", False, allow_short_decode=True)["frames"], 2)
+        truth = {"videos": {"sample": {"events": [{"start_sec": 0.05, "end_sec": 0.1},
+                                                  {"start_sec": 0.15, "end_sec": 0.3}]}}}
+        (self.root / "sample").mkdir()
+        for path in folder.iterdir():
+            if path.is_file():
+                (self.root / "sample" / path.name).write_bytes(path.read_bytes())
+        notes = batch_eval.short_decode_notes(self.root, truth, ["sample"])
+        self.assertEqual(notes, {"sample": {"frames": 2, "expected_frames": 3, "decoded_seconds": 0.2,
+                                            "events_beyond": 1}})
+
+    def test_short_decode_flag_does_not_accept_extra_frames(self):
+        with self.assertRaisesRegex(RuntimeError, "截斷"):
+            self.run_fake(count=4, reported=3, allow_short=True)
 
     def test_limit_is_partial_and_does_not_decode_extra_frame(self):
         result, cap = self.run_fake(count=3, limit=1)

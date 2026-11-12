@@ -996,3 +996,16 @@ A1 全片單次 CPU 重算：規則 evaluate CPU 977.422→983.953 秒（+6.531 
 - 車牌：偵測紀錄 7,768→7,854（+1.1%）。最終車牌文字變化 3 支：ctm03 多出 BD-019；ms07 BD-937→BD-9937；s04 多出 ACK-6626。三者皆不影響事件車牌。
 - 結論：4ae 在本評估集不改變任何事件與指標，可保留為預設。距離改變集中在非 16:9 影片；目前集合只有 cdy07 一支，沒有直式影片的距離 GT，不宣稱距離準確率提升。
 - 輸出：outputs/eval/eval_4aj（summary.txt）、outputs/eval/replay_4aj、outputs/eval_4aj_b.log。`batch_eval.summarize('eval_4aj')` 遇缺少的 cdy02 會丟 FileNotFoundError；批次結束時寫出的 summary.txt 正常。未推送／合併。
+
+### 4al：短解碼的選用容許與 cdy02 補評（Opus，2026-11-12）
+
+- 依使用者選擇（4ak 列出的 cdy02 處理方式）：新增 `--allow-short-decode`（`run_pipeline.py`、`tools/batch_eval.py`），預設關閉，4t 的行為不變。
+  開啟時，可解碼幀數**少於**中繼資料的影片以實際範圍完成：`completion.termination = "short_eof"`、`status = "complete"`；多於中繼資料仍報錯。
+  `validate_outputs` 只在旗標開啟時接受 short_eof，且要求幀數小於中繼資料。摘要另列「短解碼」行，並計算結束時間超出解碼範圍的 GT 事件數（report.json 的 `short_decode`）。
+  續跑含 short_eof 結果的 label 時必須再加此旗標，否則報錯。旗標不寫入 done.json 的 request，因此完整解碼的影片不受影響，可續用同 label。
+- 測試：新增 2 項（短解碼須選用並記錄、旗標不接受多出的幀），完整 256 項通過。`docs/usage.md` 的批次完整性段落已補充說明。
+- cdy02 補評：`batch_eval --label eval_4aj --only cdy02 --allow-short-decode`，EXIT 0，解碼 218/268 幀（7.27 秒）。GT 事件 5.0–6.3 秒位於範圍內，摘要沒有超出範圍的事件。
+  cdy02 由本節的程式版本產生，其餘 30 支是 `f91c799`；兩者差異只在此旗標的錯誤處理路徑。
+- 31 支結果（eval_4aj 對 replay_4aj）：四類規則的影片層級與事件層級指標全部相同。雙黃線影片層級 1/7、事件層級 1/0/7；其餘同 4ak。
+  31 支事件檔全部相同。距離配對 43,975 組，差值中位數 −0.06 m，|差值| 中位數 0.45 m，p05/p95 −2.46/+1.57 m；22 m 閘門進入 369 次、離開 155 次。
+  cdy02 本身的距離中位數 +0.11 m，車牌紀錄 170→169，事件相同（仍未命中，阻擋原因同 replay）。4ak 的結論不變。

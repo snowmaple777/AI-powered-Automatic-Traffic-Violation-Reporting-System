@@ -867,3 +867,16 @@ TP/FP/FN 不變：紅燈 11/1/4、停等區 5/1/2、斑馬線 1/3/3、雙黃線 
 採用決策：保留實驗、預設關閉。交接 local_lane_motion_4af.md 含 Opus 接手 prompt，優先補真實動作覆核與車道支援診斷，再考慮遮擋／虛線連接。
 使用說明兩份、schema 文件同步；保留 4ad／4ae 修改。未改 GT、long_video_review、third_party；未提交／推送／合併。
 增量差異 outputs/patches/4af_local_lane_motion.diff；分析附件 outputs/analysis/local_motion_4af。下一編號 4ag，4aa 仍保留給標線尺度。
+
+
+#### 專案清理與展示成果（Opus，2026-11-10）
+
+依使用者要求清理舊版本遺留物，並整理進度回報用的執行成果。未修改 GT、long_video_review、third_party；GPT 未提交的 4ad–4ag 全部保留。
+- **刪除（outputs，約 3.5 GB，結果已記錄於本檔）**：`outputs/eval` 底線開頭的實驗資料夾（_cw_*、_dedupe_*、_gap_*、_v4w_*、_merge_v2、_rr_chk、_exp_cw_gap）、rules_4n–4s、baseline_18_no_gate、plate_4w_*、
+  sim_sampling_20261104 的逐策略重播（保留 summary.txt、report.json）、verify/stage4l、stage4o（保留 stage4q）、patches 內已提交版本的修改前快照與差異檔／測試紀錄（pre_*、4v、4w、4z、activity_boost、batch_integrity、marking_evidence_gate 等）、
+  長片分析的中間重算（opus_variants 的 short_*、*_new、*_fix34，保留 *_fix34b 與索引）與失敗的 A5_failed_1、roi_failed_1、outputs/_to_delete。
+  保留：baseline_18、sampling_20261102_*、failure_audit_20261104、長片 run_01、p0_20261110、local_motion_4af、motion_layers_4ag、4ad 之後的差異檔、GT 修改前備份與覆核圖片。
+- **刪除（程式庫）**：`驗證標線閘門.cmd`（4l 一次性驗證腳本，標籤已過時）。
+- **新增 `tools/make_showcase.py` 與 `產生展示成果.cmd`**：以保存的感知結果重播目前版本，輸出標註影片、違規片段、違規紀錄、動作備註與 index.html 總覽；可中斷續做，`encode` 轉 H.264。
+- **展示成果 `outputs/showcase_20261110`**（563 MB）：短片 29 支（cdy07 為 AV1、ctm06 有 1,261 幀，在 Claude 的執行環境無法完成，留給 Windows 執行 cmd 補齊）、長片 A1 7 筆與 A5 1 筆違規片段、長片誤報時間軸副本、`成果說明.md`。
+  完整重跑後處理時闖紅燈為 12/1/3（4v 的停止線運動失效容忍讓 ms07 命中；只重算規則時為 11/1/4），停等區 4/0/2（少 ctm06）、斑馬線 1/3/3、雙黃線 1/0/6（少 cdy07），車牌 6/15。

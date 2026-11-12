@@ -808,3 +808,12 @@ A1 於 23:16 驗證完成；審查時 SQLite 離線量測仍在執行，本節�
 
 4ac 本機提交 1b3c707。依使用者要求分析後續開發方向，全文見 [後續開發方案](handoff/next_development_plan.md)：P0 Windows 重算確認、深度 4:3 補邊修正、使用者覆核剩下 8 筆；
 P1 標線推論尺度實驗、階段 2 資料收集、長片評估工具化；P2 本車行進走廊與號誌—車道對應；P3 診斷欄位與長片召回；P4 標線加速、遮蔽區、60 FPS 參數、串流化。
+
+### 4ad：Windows CPU 重算確認 4ab／4ac（Astra，2026-11-10）
+
+依 P0 授權，以 git archive 的 cced518（4ab）、1b3c707（4ac）獨立快照，分別呼叫 rule_eval.run_rules 重算 31 支短片及 A5、A1 整片；不切換／還原工作區，不重跑感知，不讀 Opus 的 pickle checkpoint。
+66 個影片案例、84 筆事件的 ID、規則、狀態、幀、秒數、車輛與全部 conditions 均與 Claude 相同。兩程序均未載入 torch／onnxruntime。
+只排除頂層 plate 的嚴格比較：4ab 26/33 片、4ac 28/33 片完全相同；其他差異皆是 evidence 數值，最大絕對差 0.00005109034，不能宣稱跨平台逐位元等價。
+4ab 短片／A5／A1 事件數 25／4／24；4ac 23／1／7，均與 Claude 相同。闖紅燈 TP/FP/FN 分別 11/3/4、11/1/4；停等區 5/1/2、斑馬線 1/3/3、雙黃線 1/0/7、車牌 6/15 均重現。
+修改前測試 209 項通過（91.650 秒）。本項沒有生產程式或規則修改；逐片表、逐事件雜湊及每個差異欄位在 outputs/analysis/p0_20261110/rules_report 與各案例 comparison.json。
+交接：[4ad Windows 規則驗證](handoff/windows_rules_4ad.md)。不因浮點差異改寫證據或引入隱藏容差，跨平台精度契約另交 Opus 評估。

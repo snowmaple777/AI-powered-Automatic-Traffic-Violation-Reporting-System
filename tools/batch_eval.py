@@ -62,8 +62,13 @@ def diagnose(folder, video, category):
 
 
 FINGERPRINT_CONFIGS = ("configs/double_line_rules.json", "configs/area_rules.json",
-                       "configs/marking_compensation.json", "configs/bytetrack_perception.yaml",
-                       "eval/ground_truth.json")
+                       "configs/marking_compensation.json", "configs/bytetrack_perception.yaml")
+DEFAULT_TRUTH = ROOT / "eval/ground_truth.json"
+
+
+def truth_name(path):
+    path = Path(path).resolve()
+    return path.relative_to(ROOT).as_posix() if path.is_relative_to(ROOT) else path.as_posix()
 
 
 def file_identity(path):
@@ -75,12 +80,17 @@ def file_identity(path):
     return {"size": path.stat().st_size, "sha256": digest.hexdigest()}
 
 
-def settings_fingerprint(model_config):
-    """設定及實際權重／字典指紋；不只依賴設定中宣告的雜湊。"""
+def settings_fingerprint(model_config, truth=DEFAULT_TRUTH):
+    """設定及實際權重／字典指紋；不只依賴設定中宣告的雜湊。
+
+    影片清單來源（truth）也列入：預設的 eval/ground_truth.json 鍵名不變，舊結果可續跑；
+    以 --truth 指定其他清單時，執行中修改 eval/ground_truth.json 不會中斷這批。
+    """
     from model_library import load_config
     path = Path(model_config).resolve()
     name = path.relative_to(ROOT).as_posix() if path.is_relative_to(ROOT) else path.as_posix()
-    files = {name: path, **{item: ROOT / item for item in FINGERPRINT_CONFIGS}}
+    files = {name: path, **{item: ROOT / item for item in FINGERPRINT_CONFIGS},
+             truth_name(truth): Path(truth).resolve()}
     config = load_config(path)
     for stage, spec in config["models"].items():
         if not spec.get("enabled", True):
@@ -232,10 +242,10 @@ def short_decode_notes(out, truth, videos):
     return notes
 
 
-def summarize(label, verified_only=False):
+def summarize(label, verified_only=False, truth_path=DEFAULT_TRUTH):
     from eval.metrics import evaluate, load_predictions
     out = EVAL_DIR / label
-    truth = json.loads((ROOT / "eval/ground_truth.json").read_text(encoding="utf-8-sig"))
+    truth = json.loads(Path(truth_path).read_text(encoding="utf-8-sig"))
     folders = [out]
     if verified_only:
         folders = [p for p in sorted(out.iterdir()) if p.is_dir() and not p.name.startswith(".")
@@ -244,6 +254,8 @@ def summarize(label, verified_only=False):
     rows, per_rule, plate_total, plate_correct = evaluate(truth, predictions)
     _, original_rules, original_total, original_correct = evaluate(truth, predictions, plate_at_event=True)
     lines = [f"===== 全片評估 {label} ====="]
+    if Path(truth_path).resolve() != DEFAULT_TRUTH.resolve():
+        lines.append(f"影片清單：{truth_name(truth_path)}（未覆核影片只計影片層級）")
     if verified_only:
         lines.append(f"只計完整且驗證通過的影片：{len(folders)} 支；partial 與 .attempts 不計分。")
     by_category = {}
@@ -263,7 +275,7 @@ def summarize(label, verified_only=False):
                      f"（{note['decoded_seconds']:.2f} 秒）{beyond}")
     lines.append("逐片（命中與否、事件、目標規則最常見的阻擋原因）：")
     report = {"rows": rows, "event_level": per_rule, "videos": {},
-              "truth_identity": file_identity(ROOT / "eval/ground_truth.json"),
+              "truth": truth_name(truth_path), "truth_identity": file_identity(truth_path),
               "verified_only": verified_only, "plate": [plate_correct, plate_total],
               "plate_at_event": [original_correct, original_total], "event_level_at_event": original_rules,
               "short_decode": short}
@@ -295,6 +307,8 @@ def main(argv=None):
                         help="可解碼幀數少於中繼資料的影片以實際範圍計分（short_eof，摘要另列）；預設關閉")
     parser.add_argument("--model-config", type=Path, default=ROOT / "configs/default.json",
                         help="模型設定檔（不同設定請用不同 --label）")
+    parser.add_argument("--truth", type=Path, default=DEFAULT_TRUTH,
+                        help="影片清單與標註（格式同 eval/ground_truth.json；未覆核影片只計影片層級）")
     args = parser.parse_args(argv)
     if args.max_frames < 0:
         parser.error("--max-frames 不可為負數")
@@ -321,11 +335,11 @@ def execute_batch(args, out):
     if not args.summary_only:
         import run_pipeline
         from model_library import ModelPipeline, load_config
-        truth = json.loads((ROOT / "eval/ground_truth.json").read_text(encoding="utf-8-sig"))
+        truth = json.loads(Path(args.truth).read_text(encoding="utf-8-sig"))
         if args.only and set(args.only) - set(truth["videos"]):
             raise ValueError(f"未知影片：{sorted(set(args.only) - set(truth['videos']))}")
         videos = {k: v for k, v in truth["videos"].items() if not args.only or k in args.only}
-        fingerprint = settings_fingerprint(args.model_config)
+        fingerprint = settings_fingerprint(args.model_config, args.truth)
         version = code_version()
         pending = []
         for name, spec in videos.items():
@@ -341,7 +355,7 @@ def execute_batch(args, out):
             else:
                 pending.append((name, source, request))
         if not pending:
-            print(summarize(args.label, verified_only=True))
+            print(summarize(args.label, verified_only=True, truth_path=args.truth))
             return
         with ExitStack() as shared:
             config = load_config(args.model_config)
@@ -369,7 +383,7 @@ def execute_batch(args, out):
                         run_pipeline.run(run_pipeline.parse_args(argv_run), resources, pipeline=pipeline)
                     timings = validate_outputs(staging, name, "road_markings" in pipeline.models, allow_short)
                     # 執行中也可能有人改碼／設定／影片；不能把混合版本發布為完成。
-                    if code_version() != version or settings_fingerprint(args.model_config) != fingerprint:
+                    if code_version() != version or settings_fingerprint(args.model_config, args.truth) != fingerprint:
                         raise ValueError("執行中程式或設定／權重變更，結果保留在 .attempts")
                     if file_identity(source) != {k: request["input"][k] for k in ("size", "sha256")}:
                         raise ValueError("執行中輸入影片變更")
@@ -383,7 +397,7 @@ def execute_batch(args, out):
                 except BaseException as exc:
                     write_json_atomic(staging / "failure.json", {"error": repr(exc), "request": request})
                     raise
-    print("\n" + summarize(args.label, verified_only=True))
+    print("\n" + summarize(args.label, verified_only=True, truth_path=args.truth))
     print(f"\n摘要已存於 {out / 'summary.txt'}")
 
 

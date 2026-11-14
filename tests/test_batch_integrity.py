@@ -184,10 +184,35 @@ class BatchIntegrityTests(unittest.TestCase):
         report = json.loads((self.root / "report.json").read_text(encoding="utf-8"))
         self.assertEqual(report["rows"], [])
 
+    def test_custom_truth_scores_unreviewed_videos_at_video_level(self):
+        folder = self.root / "cy999"
+        folder.mkdir()
+        event = {"rule_id": "double_yellow_line_crossing", "status": "suspected", "timestamp_sec": 1.0}
+        (folder / "cy999_violations.jsonl").write_text(json.dumps(event) + "\n", encoding="utf-8")
+        batch_eval.write_json_atomic(folder / "done.json", {"version": 2, "status": "complete",
+            "request": {}, "outputs": batch_eval.output_inventory(folder)})
+        truth = self.root / "pending.json"
+        truth.write_text(json.dumps({"videos": {"cy999": {"file": "x.mp4", "reviewed": False, "events": [],
+            "category": "double_yellow_line_crossing"}}}), encoding="utf-8")
+        with patch.object(batch_eval, "EVAL_DIR", self.root.parent):
+            text = batch_eval.summarize(self.root.name, verified_only=True, truth_path=truth)
+        report = json.loads((self.root / "report.json").read_text(encoding="utf-8"))
+        self.assertEqual(report["rows"], [["cy999", "double_yellow_line_crossing", True, 1]])
+        self.assertEqual(report["event_level"], {})  # 未覆核影片不計事件層級
+        self.assertEqual(report["truth_identity"], batch_eval.file_identity(truth))
+        self.assertIn("影片清單", text)
+        # 指紋改用指定清單：執行中修改 eval/ground_truth.json 不會中斷這批。
+        with patch("model_library.load_config", return_value={"models": {}}):
+            keys = set(batch_eval.settings_fingerprint(self.config, truth)["sha256"])
+            default_keys = set(batch_eval.settings_fingerprint(self.config)["sha256"])
+        self.assertIn(batch_eval.truth_name(truth), keys)
+        self.assertNotIn("eval/ground_truth.json", keys)
+        self.assertIn("eval/ground_truth.json", default_keys)
+
     def test_run_failure_is_kept_in_attempt_without_published_done(self):
         # 使用一支真實存在於標註中的來源，但只模擬 run，不載入模型。
         args = Mock(summary_only=False, only=["ms01"], model_config=self.config,
-                    max_frames=0, label="test")
+                    max_frames=0, label="test", truth=batch_eval.DEFAULT_TRUTH)
         with patch.object(batch_eval, "settings_fingerprint", return_value={}), \
              patch.object(batch_eval, "code_version", return_value={}), \
              patch("model_library.ModelPipeline"), patch("run_pipeline.run", side_effect=OSError("disk full")), \

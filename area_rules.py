@@ -36,11 +36,15 @@ NONNEGATIVE = {"occlusion_gap_ratio", "stationary_radius_ratio", "crosswalk_gree
 BOOLEAN = {"crosswalk_two_wheelers", "crosswalk_suppress_on_green", "crosswalk_exclude_lateral"}
 # 4aq 選用設定（預設不存在＝沿用 min_confidence，設定內容與事件不變）：只套用在車輛偵測信心，
 # 區域、燈號與接地幾何仍用 min_confidence。區域規則事件一律是疑似。
-OPTIONAL = {"min_vehicle_confidence", "stationary_window_seconds", "tolerate_overlap_dips"}
+OPTIONAL = {"min_vehicle_confidence", "stationary_window_seconds", "tolerate_overlap_dips", "stationary_scale_tolerance"}
 # 4ar 選用設定（斑馬線，預設不存在＝行為不變）：
 #   stationary_window_seconds：靜止判定改為「最近這段時間內」的接地中心位移不超過半徑，
 #     而不是與第一次的位置比較；拍攝者走動時的推移誤差不會一路累積到重置。
 #   tolerate_overlap_dips：壓線比例短暫低於門檻時比照短暫漏偵測，保留狀態到 max_observation_gap_sec（不累積證據）。
+# 4as 選用設定（斑馬線，預設不存在＝行為不變）：
+#   stationary_scale_tolerance：靜止判定另比較車框下緣寬度與「參考時的下緣隨道路推移投影後」的寬度，
+#     相差超過此比例（例如 0.35＝寬度比超出 1/1.35～1.35）視為移動。朝鏡頭或遠離鏡頭行駛的車在畫面上
+#     位移很小，但相對路面的放大縮小不一致；參考位置與 stationary_window_seconds 相同（未設定時為起點）。
 
 
 def settings_for(overrides=None):
@@ -57,6 +61,10 @@ def settings_for(overrides=None):
             raise ValueError("stationary_window_seconds must be finite and positive")
     if "tolerate_overlap_dips" in settings and type(settings["tolerate_overlap_dips"]) is not bool:
         raise ValueError("tolerate_overlap_dips must be boolean")
+    if "stationary_scale_tolerance" in settings:
+        value = settings["stationary_scale_tolerance"]
+        if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+            raise ValueError("stationary_scale_tolerance must be finite and positive")
     for key, value in settings.items():
         if key in OPTIONAL:
             continue
@@ -578,8 +586,11 @@ class AreaOccupancyRule:
                     raise ValueError("motion_unavailable")
                 for state in self.states.values():
                     state["anchor"] = project_points([state["anchor"]], matrix)[0]
+                    if "edge" in state:
+                        state["edge"] = project_points(state["edge"], matrix)
                     if "track" in state:
-                        state["track"] = [(t, project_points([p], matrix)[0]) for t, p in state["track"]]
+                        state["track"] = [(t, project_points([p], matrix)[0], e if e is None else project_points(e, matrix))
+                                          for t, p, e in state["track"]]
                 if self.history is not None:
                     self.history.project(lambda x, y: tuple(project_points([[x, y]], matrix)[0]))
             except (TypeError, ValueError):
@@ -651,7 +662,7 @@ class AreaOccupancyRule:
                             measurement=measured, threshold=cfg["min_intrusion_length_px"], name="front_overlap_px"))
                         if measured < cfg["min_intrusion_length_px"]:
                             continue
-                        point, duration = None, cfg["intrusion_seconds"]
+                        point, duration, edge = None, cfg["intrusion_seconds"], None
                     else:
                         footprint = polygon(geometry.get("footprint"))
                         intersection, _ = cv2.intersectConvexConvex(footprint, area)
@@ -672,23 +683,33 @@ class AreaOccupancyRule:
                         point, duration = footprint.mean(axis=0).tolist(), cfg["stationary_seconds"]
                         box = vehicle["bbox_xyxy"]
                         radius = max(cfg["stationary_radius_px"], cfg["stationary_radius_ratio"] * (box[2] - box[0]))
-                        window = cfg.get("stationary_window_seconds")
+                        window, scale = cfg.get("stationary_window_seconds"), cfg.get("stationary_scale_tolerance")
+                        edge = [[box[0], box[3]], [box[2], box[3]]] if scale is not None else None
+
+                        def moved(reference, reference_edge):
+                            if np.linalg.norm(np.asarray(point) - np.asarray(reference)) > radius:
+                                return True
+                            if reference_edge is None:
+                                return False
+                            # 停著的車，下緣寬度應隨路面同比例放大縮小。
+                            predicted = float(np.linalg.norm(np.subtract(reference_edge[1], reference_edge[0])))
+                            return predicted <= 0 or abs(math.log((box[2] - box[0]) / predicted)) > math.log1p(scale)
                         if window is None:
-                            if state and np.linalg.norm(np.asarray(point) - state["anchor"]) > radius:
+                            if state and moved(state["anchor"], state.get("edge")):
                                 state = None
-                        elif state:
-                            recent = [p for t, p in state["track"] if now - t <= window + 1e-6]
-                            if any(np.linalg.norm(np.asarray(point) - np.asarray(p)) > radius for p in recent):
-                                state = None
+                        elif state and any(moved(p, e) for t, p, e in state["track"] if now - t <= window + 1e-6):
+                            state = None
                     snapshot = clone(dict(frame=frame, vehicle=vehicle, region=region, measurement=measured))
                     if state is None:
                         state = dict(since=now, count=0, anchor=point, before=snapshot, reported=False)
                         if point is not None and cfg.get("stationary_window_seconds") is not None:
                             state["track"] = []
+                        if point is not None and edge is not None:
+                            state["edge"] = edge
                     state.update(last_time=now, count=state["count"] + 1)
                     if "track" in state:
                         window = cfg["stationary_window_seconds"]
-                        state["track"] = [(t, p) for t, p in state["track"] if now - t <= window + 1e-6] + [(now, point)]
+                        state["track"] = [(t, p, e) for t, p, e in state["track"] if now - t <= window + 1e-6] + [(now, point, edge)]
                         state["max_drift_px"] = max(state.get("max_drift_px", 0.),
                                                     float(np.linalg.norm(np.asarray(point) - np.asarray(state["anchor"]))))
                     if self.kind == "crosswalk" and occluded:
@@ -727,6 +748,9 @@ class AreaOccupancyRule:
                     event["conditions"]["estimated_vehicle_geometry"] = bool(geometry.get("estimated"))
                     if "track" in state:
                         event["evidence"]["stationary_drift_from_start_px"] = state["max_drift_px"]
+                    if "edge" in state:
+                        event["evidence"]["stationary_width_ratio_from_start"] = (box[2] - box[0]) / float(
+                            np.linalg.norm(np.subtract(state["edge"][1], state["edge"][0])))
                     event["conditions"]["predicted_region"] = bool(region.get("predicted"))
                     if self.kind == "crosswalk" and cfg["occlusion_gap_ratio"] > 0:
                         event["conditions"]["region_visible_at_footprint"] = not state.get("occlusion_extended", False)

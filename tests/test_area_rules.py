@@ -380,6 +380,40 @@ class AreaRuleTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 settings_for({"stationary_window_seconds": bad})
 
+    def test_stationary_scale_rejects_driving_along_view_axis(self):
+        # 4as：接地中心不動、車框每幀縮小 4%（遠離鏡頭行駛）：預設只看位置會成立；
+        # stationary_scale_tolerance=0.35 時寬度比超出 1/1.35 而重新計時。
+        def shrinking(rate):
+            rows = records(count=15)
+            for i, row in enumerate(rows):
+                v = row["observations"]["vehicles"][0]
+                w, h = 20 * rate ** i, 50 * rate ** i
+                v["bbox_xyxy"] = [55 - w/2, 70 - h, 55 + w/2, 70]
+                v["road_geometry"]["footprint"] = [[55 - w/2, 50], [55 + w/2, 50], [55 + w/2, 70], [55 - w/2, 70]]
+            return rows
+        self.assertNotIn("stationary_scale_tolerance", settings_for())
+        self.assertEqual(len(evaluate(shrinking(.96))), 1)
+        self.assertEqual(evaluate(shrinking(.96), {"stationary_scale_tolerance": .35}), [])
+        self.assertEqual(evaluate(shrinking(.96), {"stationary_scale_tolerance": .35, "stationary_window_seconds": 1.0}), [])
+        # 停著的車寬度不變；鏡頭靠近時車與路面同比例放大，也都成立。
+        events = evaluate(records(count=15), {"stationary_scale_tolerance": .35})
+        self.assertAlmostEqual(events[0]["evidence"]["stationary_width_ratio_from_start"], 1.0)
+        zoom = records(count=15)
+        for i, row in enumerate(zoom):
+            k = 1.03 ** i
+            row["postprocessing"]["road_marking_compensation"]["motion"]["matrix"] = [[1.03, 0, 0], [0, 1.03, 0], [0, 0, 1]]
+            v = row["observations"]["vehicles"][0]
+            v["bbox_xyxy"] = [x * k for x in v["bbox_xyxy"]]
+            v["road_geometry"]["footprint"] = [[x * k, y * k] for x, y in v["road_geometry"]["footprint"]]
+            region = row["observations"]["traffic_regions"][0]
+            region["polygon"] = [[x * k, y * k] for x, y in region["polygon"]]
+        self.assertEqual(len(evaluate(zoom, {"stationary_scale_tolerance": .35})), 1)
+        self.assertEqual(len(evaluate(zoom, {"stationary_scale_tolerance": .35, "stationary_window_seconds": .5})), 1)
+        self.assertNotIn("stationary_width_ratio_from_start", evaluate(records())[0]["evidence"])
+        for bad in (0, -.1, "0.3", float("nan")):
+            with self.assertRaises(ValueError):
+                settings_for({"stationary_scale_tolerance": bad})
+
     def test_overlap_dips_are_tolerated_only_when_enabled_and_brief(self):
         def dip(rows, frames):
             for i in frames:

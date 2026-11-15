@@ -361,6 +361,40 @@ class AreaRuleTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 settings_for({"min_vehicle_confidence": bad})
 
+    def test_stationary_window_compares_recent_positions_only(self):
+        # 4ar：每幀漂移 0.5 px（半徑 4 px），預設與第一次位置比較，1 秒內超過半徑而重新計時；
+        # stationary_window_seconds=0.5 只看最近 0.5 秒（約 2.5 px），可累積到 1 秒。
+        settings = settings_for()
+        self.assertNotIn("stationary_window_seconds", settings)
+        self.assertNotIn("tolerate_overlap_dips", settings)
+        drifting = records(count=15, moving=.5)
+        self.assertEqual(evaluate(drifting), [])
+        events = evaluate(drifting, {"stationary_window_seconds": .5})
+        self.assertEqual([e["status"] for e in events], ["suspected"])
+        self.assertGreater(events[0]["evidence"]["stationary_drift_from_start_px"], 4)
+        # 真的在移動（每幀 3 px）仍不成立。
+        self.assertEqual(evaluate(records(count=15, moving=3), {"stationary_window_seconds": .5}), [])
+        # 未設定時事件內容沒有新欄位。
+        self.assertNotIn("stationary_drift_from_start_px", evaluate(records())[0]["evidence"])
+        for bad in (0, -1, "0.5", float("inf")):
+            with self.assertRaises(ValueError):
+                settings_for({"stationary_window_seconds": bad})
+
+    def test_overlap_dips_are_tolerated_only_when_enabled_and_brief(self):
+        def dip(rows, frames):
+            for i in frames:
+                g = rows[i]["observations"]["vehicles"][0]["road_geometry"]
+                g["footprint"] = [[x - 40, y] for x, y in g["footprint"]]  # 本幀壓線比例 0
+            return rows
+        rows = dip(records(count=15), [6])
+        self.assertEqual(evaluate(rows), [])
+        self.assertEqual(len(evaluate(rows, {"tolerate_overlap_dips": True})), 1)
+        # 超過 max_observation_gap_sec（0.5 秒）仍重新計時。
+        rows = dip(records(count=15), range(5, 10))
+        self.assertEqual(evaluate(rows, {"tolerate_overlap_dips": True}), [])
+        with self.assertRaises(ValueError):
+            settings_for({"tolerate_overlap_dips": 1})
+
     def test_missing_geometry_motion_staleness_and_id_switch(self):
         for change in ("geometry", "motion", "cached", "stale_region", "identity"):
             rows = records()

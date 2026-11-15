@@ -354,6 +354,8 @@ overlap_ratio、stationary_seconds、stationary_radius_px、max_observation_gap_
 rearm_seconds、side_margin_ratio、duplicate_box_iou。
 選用 min_vehicle_confidence（預設不設定＝沿用 min_confidence 0.5）只放寬車輛偵測信心，區域、燈號與接地幾何仍用 min_confidence；
 4aq 評估 0.35／0.4 只讓新影片的斑馬線命中多 1 支、有標註的 31 支不變，未採用為預設。
+斑馬線另有兩個選用設定（預設不設定＝行為不變）：stationary_window_seconds 讓靜止判定只比較最近這段時間內的接地中心位置（不與第一次位置比較，移動鏡頭的推移誤差不會累積到重新計時；事件證據加記 stationary_drift_from_start_px）；tolerate_overlap_dips=true 讓壓線比例短暫低於門檻時比照短暫漏偵測，保留狀態到 max_observation_gap_sec。
+4ar 評估 0.5 秒視窗＋壓線容忍讓新影片斑馬線命中 14→17/28，但疑似事件 42→65、包含明顯誤報，有標註的 31 支多 1 個正確、2 個誤報，未採用為預設。
 預設觀測間隔上限 0.3 秒、連續影片幀時間間隔上限 0.2 秒。快取車框不增加證據次數；
 無法可靠銜接的換 ID、缺區域、失去條件、來源不連續或運動失敗會清除或重新累積，影片結束不補發未完成事件。
 同一次連續成立只輸出一個事件；同一台車在 rearm_seconds（預設 5 秒）內持續侵入，

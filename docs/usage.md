@@ -408,6 +408,7 @@ rearm_seconds、side_margin_ratio、duplicate_box_iou。
 4ar 評估 0.5 秒視窗＋壓線容忍讓新影片斑馬線命中 14→17/28，但疑似事件 42→65、包含明顯誤報，有標註的 31 支多 1 個正確、2 個誤報，未採用為預設。
 選用 stationary_scale_tolerance（例如 0.35）讓靜止判定另比較車框下緣寬度與「參考時的下緣隨道路推移投影後」的寬度，相差超過此比例視為移動（擋下朝鏡頭或遠離鏡頭行駛、畫面位移很小的車；事件證據加記 stationary_width_ratio_from_start）。
 4as 評估：單獨使用時新影片斑馬線命中維持 14/28、疑似事件 42→38，有標註的 31 支不變；與 0.5 秒視窗合用命中 16/28、事件 45。未採用為預設。
+4au 起 configs/area_rules.json 預設啟用 stationary_window_seconds=0.5 與 stationary_scale_tolerance=0.35（新影片粗略 GT 下斑馬線 TP 14→16、FP 不變）；tolerate_overlap_dips 仍不啟用。要恢復舊判定，刪除設定檔中這兩個鍵，或以 --area-rule-config 指定不含這兩個鍵的設定檔。
 預設觀測間隔上限 0.3 秒、連續影片幀時間間隔上限 0.2 秒。快取車框不增加證據次數；
 未能可靠銜接的 ID 變化、缺區域、失去條件、來源不連續或運動失敗會清除或重新累積，影片結束不補發未完成事件。
 同一次連續成立只輸出一個事件；同一台車在 rearm_seconds（預設 5 秒）內持續侵入，

@@ -45,6 +45,8 @@ OPTIONAL = {"min_vehicle_confidence", "stationary_window_seconds", "tolerate_ove
 #   stationary_scale_tolerance：靜止判定另比較車框下緣寬度與「參考時的下緣隨道路推移投影後」的寬度，
 #     相差超過此比例（例如 0.35＝寬度比超出 1/1.35～1.35）視為移動。朝鏡頭或遠離鏡頭行駛的車在畫面上
 #     位移很小，但相對路面的放大縮小不一致；參考位置與 stationary_window_seconds 相同（未設定時為起點）。
+# 4au 起 configs/area_rules.json 預設啟用 stationary_window_seconds=0.5、stationary_scale_tolerance=0.35；
+#   程式在設定檔沒有這兩個鍵時仍維持原判定（舊設定檔行為不變）。
 
 
 def settings_for(overrides=None):

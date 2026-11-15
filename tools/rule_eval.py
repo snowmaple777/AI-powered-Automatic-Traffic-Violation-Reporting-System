@@ -22,10 +22,10 @@ from plate_backfill import PlateBackfill, add_plate_arguments, DEFAULT_WINDOW_SE
 from motion_notes import MotionNotes, add_motion_arguments, read_motion_mask, write_motion_summary
 
 
-def rule_options(direct_marking_gate=True, double_line_config=None):
+def rule_options(direct_marking_gate=True, double_line_config=None, area_config=None):
     options = {"red_light_stop_line_crossing": {"crossing_direction": "away",
                                                 "require_direct_marking_evidence": direct_marking_gate}}
-    options.update(area_rule_options(ROOT / "configs/area_rules.json"))
+    options.update(area_rule_options(area_config or ROOT / "configs/area_rules.json"))
     options.update(double_line_rule_options(double_line_config or ROOT / "configs/double_line_rules.json"))
     if not direct_marking_gate:
         for name in ("double_yellow_line_crossing", "double_white_line_crossing"):
@@ -84,6 +84,10 @@ def main(argv=None):
     parser.add_argument("--only", nargs="*")
     parser.add_argument("--double-line-config", type=Path, default=ROOT / "configs/double_line_rules.json",
                         help="雙線設定；detailed_diagnostics 預設 false")
+    parser.add_argument("--area-rule-config", type=Path, default=ROOT / "configs/area_rules.json",
+                        help="停等區／斑馬線規則設定（格式同 configs/area_rules.json；geometry 只影響線上辨識，重算時不作用）")
+    parser.add_argument("--truth", type=Path, default=None,
+                        help="摘要用的影片清單與標註（預設 eval/ground_truth.json）")
     add_plate_arguments(parser)
     add_motion_arguments(parser, offline=True)
     parser.add_argument("--no-direct-marking-gate", action="store_true",
@@ -91,7 +95,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.motion_mask_dir is not None and not args.motion_mask_dir.is_dir():
         parser.error("--motion-mask-dir 必須是存在的根目錄")
-    options = rule_options(not args.no_direct_marking_gate, args.double_line_config)
+    options = rule_options(not args.no_direct_marking_gate, args.double_line_config, args.area_rule_config)
     out = ROOT / "outputs/eval" / args.label
     out.mkdir(parents=True, exist_ok=True)
     (out / "rule_options.json").write_text(json.dumps(
@@ -111,8 +115,8 @@ def main(argv=None):
         if brief(before) != brief(events):
             changed.append((name, brief(before), brief(events)))
     sys.path.insert(0, str(ROOT / "tools"))
-    from batch_eval import summarize
-    print(summarize(args.label))
+    from batch_eval import DEFAULT_TRUTH, summarize
+    print(summarize(args.label, truth_path=args.truth or DEFAULT_TRUTH))
     print(f"\n與來源（{args.source.name}）事件不同的影片：{len(changed)}")
     for name, before, after in changed:
         print(f"  {name}\n    前：{before}\n    後：{after}")

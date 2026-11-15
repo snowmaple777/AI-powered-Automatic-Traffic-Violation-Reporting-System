@@ -402,6 +402,8 @@ method 記錄來源方法；信心不足、資料過期或缺少來源會中止�
 參數含 min_confidence、min_observations、intrusion_seconds、min_intrusion_length_px、
 overlap_ratio、stationary_seconds、stationary_radius_px、max_observation_gap_sec、max_frame_gap_sec、
 rearm_seconds、side_margin_ratio、duplicate_box_iou。
+選用 min_vehicle_confidence（預設不設定＝沿用 min_confidence 0.5）只放寬車輛偵測信心，區域、燈號與接地幾何仍用 min_confidence；
+4aq 評估 0.35／0.4 只讓新影片的斑馬線命中多 1 支、有標註的 31 支不變，未採用為預設。
 預設觀測間隔上限 0.3 秒、連續影片幀時間間隔上限 0.2 秒。快取車框不增加證據次數；
 未能可靠銜接的 ID 變化、缺區域、失去條件、來源不連續或運動失敗會清除或重新累積，影片結束不補發未完成事件。
 同一次連續成立只輸出一個事件；同一台車在 rearm_seconds（預設 5 秒）內持續侵入，

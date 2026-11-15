@@ -336,6 +336,31 @@ class AreaRuleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             evaluate(rows, {"crosswalk_two_wheelers": 1})
 
+    def test_vehicle_confidence_threshold_is_separate_and_optional(self):
+        # 4aq：min_vehicle_confidence 只放寬車輛信心；未設定時與 min_confidence 相同，設定內容不變。
+        self.assertNotIn("min_vehicle_confidence", settings_for())
+        for kind in ("crosswalk", "motorcycle_waiting_area"):
+            rows = records(kind, count=15)
+            for row in rows:
+                row["observations"]["vehicles"][0]["confidence"] = .4
+            self.assertEqual(evaluate(rows), [], kind)
+            events = evaluate(rows, {"min_vehicle_confidence": .35})
+            self.assertEqual([e["status"] for e in events], ["suspected"], kind)
+            self.assertEqual(evaluate(rows, {"min_vehicle_confidence": .45}), [], kind)
+            # 區域信心仍用 min_confidence。
+            for row in rows:
+                row["observations"]["traffic_regions"][0]["confidence"] = .4
+            self.assertEqual(evaluate(rows, {"min_vehicle_confidence": .35}), [], kind)
+        # 停等區的燈號信心也不受影響（車道配對時讀區域燈號）。
+        rows = records("motorcycle_waiting_area", count=15)
+        for row in rows:
+            row["observations"]["vehicles"][0]["confidence"] = .4
+            row["observations"]["traffic_regions"][0]["signal"]["confidence"] = .4
+        self.assertEqual(evaluate(rows, {"min_vehicle_confidence": .35}), [])
+        for bad in (0, 1.5, "0.3", float("nan")):
+            with self.assertRaises(ValueError):
+                settings_for({"min_vehicle_confidence": bad})
+
     def test_missing_geometry_motion_staleness_and_id_switch(self):
         for change in ("geometry", "motion", "cached", "stale_region", "identity"):
             rows = records()

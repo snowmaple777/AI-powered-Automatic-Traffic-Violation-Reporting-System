@@ -34,13 +34,22 @@ DEFAULTS = dict(min_confidence=.5, min_observations=3, intrusion_seconds=.15,
 # 允許為 0（停用）的數值設定；布林設定。其餘必須為正數。
 NONNEGATIVE = {"occlusion_gap_ratio", "stationary_radius_ratio", "crosswalk_green_hold_seconds"}
 BOOLEAN = {"crosswalk_two_wheelers", "crosswalk_suppress_on_green", "crosswalk_exclude_lateral"}
+# 4aq 選用設定（預設不存在＝沿用 min_confidence，設定內容與事件不變）：只套用在車輛偵測信心，
+# 區域、燈號與接地幾何仍用 min_confidence。區域規則事件一律是疑似。
+OPTIONAL = {"min_vehicle_confidence"}
 
 
 def settings_for(overrides=None):
-    if overrides is not None and (not isinstance(overrides, dict) or set(overrides) - DEFAULTS.keys()):
+    if overrides is not None and (not isinstance(overrides, dict) or set(overrides) - DEFAULTS.keys() - OPTIONAL):
         raise ValueError("Unknown area-rule settings")
     settings = {**DEFAULTS, **(overrides or {})}
+    if "min_vehicle_confidence" in settings:
+        value = settings["min_vehicle_confidence"]
+        if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 1:
+            raise ValueError("min_vehicle_confidence must be in (0, 1]")
     for key, value in settings.items():
+        if key in OPTIONAL:
+            continue
         if key in BOOLEAN:
             if type(value) is not bool:
                 raise ValueError(f"{key} must be boolean")
@@ -587,9 +596,10 @@ class AreaOccupancyRule:
                     if region.get("source_frame") != index:
                         raise ValueError("stale_region")
                     area = polygon(region.get("polygon"))
-                    for item in (region, vehicle):
+                    for item, minimum in ((region, cfg["min_confidence"]),
+                                          (vehicle, cfg.get("min_vehicle_confidence", cfg["min_confidence"]))):
                         confidence = item.get("confidence", 0)
-                        if not isinstance(confidence, (float, int)) or not math.isfinite(confidence) or not cfg["min_confidence"] <= confidence <= 1:
+                        if not isinstance(confidence, (float, int)) or not math.isfinite(confidence) or not minimum <= confidence <= 1:
                             # 偵測信心短暫低於門檻：與短暫漏偵測相同處理——不累積證據、不更新時間，
                             # 但保留累積中的狀態到 max_observation_gap_sec，避免信心在門檻附近跳動時停留時間一再歸零。
                             previous = self.states.get(key)

@@ -224,5 +224,26 @@ class BatchIntegrityTests(unittest.TestCase):
         self.assertEqual(list(self.root.rglob("done.json")), [])
 
 
+    def test_publish_rename_retries_transient_permission_error(self):
+        source, target = self.root / "staging", self.root / "final"
+        source.mkdir()
+        real_rename, calls = Path.rename, []
+
+        def flaky(path, destination):
+            calls.append(path)
+            if len(calls) < 3:
+                raise PermissionError(13, "access denied")
+            return real_rename(path, destination)
+
+        with patch.object(Path, "rename", flaky), patch.object(batch_eval.time, "sleep") as sleep:
+            batch_eval.rename_with_retry(source, target)
+        self.assertTrue(target.is_dir())
+        self.assertEqual((len(calls), sleep.call_count), (3, 2))
+        source.mkdir()
+        with patch.object(Path, "rename", side_effect=PermissionError(13, "denied")), \
+             patch.object(batch_eval.time, "sleep"), self.assertRaises(PermissionError):
+            batch_eval.rename_with_retry(source, self.root / "other", attempts=3)
+
+
 if __name__ == "__main__":
     unittest.main()

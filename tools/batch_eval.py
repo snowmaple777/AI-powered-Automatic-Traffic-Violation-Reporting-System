@@ -123,6 +123,20 @@ def write_json_atomic(path, value):
     temporary.replace(path)
 
 
+def rename_with_retry(source, target, attempts=10, delay=2.0):
+    """Windows 上防毒或索引程式剛好開著新寫出的檔案時，改名會暫時被拒（WinError 5）；稍候重試。
+
+    new_20261114 的 141 支中發生 2 次（vr018、cy021），事後同一資料夾可正常改名。
+    """
+    for attempt in range(attempts):
+        try:
+            return source.rename(target)
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay)
+
+
 def runtime_devices(pipeline):
     """推論後檢查已建立的 session／實際模型參數裝置，而非只有可用 provider 清單。"""
     import torch
@@ -393,7 +407,7 @@ def execute_batch(args, out):
                         "seconds": round(time.perf_counter() - video_started, 3),
                         "model_load_seconds": round(load_seconds, 3),
                         "runtime_devices": runtime_devices(pipeline), "outputs": output_inventory(staging)})
-                    staging.rename(folder)
+                    rename_with_retry(staging, folder)
                 except BaseException as exc:
                     write_json_atomic(staging / "failure.json", {"error": repr(exc), "request": request})
                     raise

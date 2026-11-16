@@ -50,7 +50,7 @@ def get_args():
     parser.add_argument(
         "--profile", 
         type=str, 
-        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "reporter_profile.json"), 
+        default="reporter_profile.json", 
         help="檢舉人個人 Profile 設定檔路徑，預設為 reporter_profile.json"
     )
     return parser.parse_args()

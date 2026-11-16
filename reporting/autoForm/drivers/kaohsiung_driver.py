@@ -63,16 +63,16 @@ class KaohsiungDriver(BaseDriver):
             return
             
         print(f"[Kaohsiung] 正在選擇違規行政區: {district_name}")
-        
-        # 清理行政區贅字與後綴，如「高雄市」、「分局」、「派出所」、「區」、「鄉」、「鎮」
-        clean_district = district_name.replace("高雄市", "").replace("分局", "").replace("派出所", "").strip()
-        clean_district = clean_district.rstrip("區鄉鎮市")
 
-        # 選擇「違規行政區」 #ContentPlaceHolder1_ViolationArea
-        self._select_option_by_keyword(self.config["selectors"]["violation_district"], clean_district)
-        
-        # 選擇「交通違規地點行政區」 #ContentPlaceHolder1_uscPlace_ddlArea
-        self._select_option_by_keyword(self.config["selectors"]["violation_location_district"], clean_district)
+        # 行政區專用比對：自動去除「高雄市」、「分局」、「派出所」與結尾的區鄉鎮市，
+        # 並要求完全相同，避免「東區」配到「東勢區」這類錯誤
+        # 「違規行政區」 #ContentPlaceHolder1_ViolationArea
+        self.select_native(self.config["selectors"]["violation_district"], district_name,
+                           field_label="違規行政區", district=True, city="高雄市")
+
+        # 「交通違規地點行政區」 #ContentPlaceHolder1_uscPlace_ddlArea
+        self.select_native(self.config["selectors"]["violation_location_district"], district_name,
+                           field_label="交通違規地點行政區", district=True, city="高雄市")
 
     def select_village(self, village_name: str) -> None:
         # 高雄市表單無此欄位，直接 pass
@@ -120,37 +120,10 @@ class KaohsiungDriver(BaseDriver):
             self.page.check(self.config["selectors"]["car_type_auto"])
             
         # 4. 違規事實大類 (Dropdown) 與小類細項
-        category = violation_data.get("violation_category", "")
-        subcategory = violation_data.get("violation_subcategory", "") or violation_data.get("violation_description", "")
-        
-        print(f"  - 嘗試選擇違規大類: '{category}' ...")
-        
-        def do_select_category() -> bool:
-            # 優先嘗試以大類選取
-            ok = self._select_option_by_keyword(self.config["selectors"]["violation_category"], category)
-            # 若失敗且有提供小類，嘗試以小類關鍵字在「大類下拉選單」中尋找
-            # (例如：大類寫「交通違規檢舉專區」，小類為「闖紅燈」，此時能在選單中找到「不當駕駛行為(闖紅燈)」)
-            if not ok and subcategory:
-                kw = subcategory[:10]
-                print(f"  - 大類精確匹配失敗，嘗試以小類關鍵字 '{kw}' 匹配大類選單...")
-                ok = self._select_option_by_keyword(self.config["selectors"]["violation_category"], kw)
-            return ok
-
-        # 下拉大類選擇會觸發 AutoPostBack (頁面刷新以加載小類)
-        try:
-            with self.page.expect_navigation(timeout=5000):
-                success = do_select_category()
-                if not success:
-                    raise ValueError("No matched category")
-        except Exception:
-            # 後備等待時間
-            self.page.wait_for_timeout(2000)
-            
-        # 5. 違規事實小類細項 (Dropdown)
-        if subcategory:
-            clean_sub = subcategory[:15]
-            print(f"  - 選擇違規小類細項 (比對關鍵字: '{clean_sub}'):")
-            self._select_option_by_keyword(self.config["selectors"]["violation_subcategory"], clean_sub)
+        # 5. 違規事實大類 → 小類 (兩層連動選單)
+        # 依 configs/kaohsiung.json 的 violation_map 查表，直接選取對應的完整選項文字（不做模糊比對）。
+        # 大類選單是 AutoPostBack，選了之後整頁重新載入小類；select_cascade 會自動等待小類選項更新。
+        self._select_violation_type(violation_data)
         
         # 6. 違規詳細地點
         self.page.fill(self.config["selectors"]["violation_location_address"], violation_data.get("violation_location", ""))
@@ -215,7 +188,43 @@ class KaohsiungDriver(BaseDriver):
         return False
 
     # ==================== 輔助與格式化方法 ====================
-    
+
+    def _select_violation_type(self, violation_data: Dict[str, Any]) -> None:
+        """依 violation_map 查表選取違規事實大類與小類"""
+        cat_sel = self.config["selectors"]["violation_category"]
+        sub_sel = self.config["selectors"]["violation_subcategory"]
+        violation_map = {k: v for k, v in self.config.get("violation_map", {}).items() if not k.startswith("_")}
+
+        # 名稱與別名 (aliases) 都對應到正式名稱；只忽略空白，文字必須完全相同
+        lookup = {}
+        for name, entry in violation_map.items():
+            for n in [name] + list(entry.get("aliases", [])):
+                lookup[re.sub(r"\s+", "", n)] = name
+
+        # info.txt 的「違規事實」優先，其次「違規類別」
+        candidates = [violation_data.get("violation_subcategory"), violation_data.get("violation_category")]
+        key = next((lookup[re.sub(r"\s+", "", c)] for c in candidates
+                    if c and re.sub(r"\s+", "", c) in lookup), None)
+
+        if key is None:
+            supported = "、".join(violation_map)
+            detail = (f"info.txt 的違規事實/違規類別 ({[c for c in candidates if c]}) 不在支援清單中。"
+                      f"支援的項目：{supported}")
+            print(f"  - [違規事實] {detail}")
+            self._record_unmatched(cat_sel, "違規事實大類", candidates, detail)
+            self._record_unmatched(sub_sel, "違規事實小類", candidates, detail)
+            return
+
+        entry = violation_map[key]
+        print(f"  - 違規項目「{key}」→ 大類「{entry['category']}」/ 小類「{entry['subcategory']}」")
+        self.select_cascade(
+            cat_sel, entry["category"],
+            sub_sel, entry["subcategory"],
+            parent_label="違規事實大類",
+            child_label="違規事實小類",
+            exact=True,
+        )
+
     def _format_date(self, date_str: str) -> str:
         """將各種日期格式（如 20260706、2026/07/06 等）標準化為 YYYY-MM-DD"""
         date_str = date_str.replace("/", "-").replace(".", "-").strip()
@@ -228,18 +237,3 @@ class KaohsiungDriver(BaseDriver):
             y, m, d = match.groups()
             return f"{y}-{int(m):02d}-{int(d):02d}"
         return date_str
-
-    def _select_option_by_keyword(self, selector: str, keyword: str) -> bool:
-        """根據關鍵字模糊比對並選取下拉選單選項"""
-        try:
-            options = self.page.locator(f"{selector} option").all()
-            for opt in options:
-                val = opt.evaluate("el => el.value")
-                text = opt.evaluate("el => el.text")
-                if keyword in text or keyword == val:
-                    self.page.select_option(selector, value=val)
-                    print(f"  - 下拉選單 [{selector}] 已成功選擇: {text}")
-                    return True
-        except Exception as e:
-            print(f"[Kaohsiung 警告] 無法由關鍵字選取下拉選單 [{selector}]: {e}")
-        return False

@@ -358,6 +358,7 @@ video{width:100%;border-radius:16px;background:#0e1222;display:block;max-height:
 .resume-banner .txt{flex:1;min-width:0}
 .resume-banner b{display:block}
 .resume-banner .txt span{font-size:13px;color:var(--muted)}
+.resume-banner .txt b,.resume-banner .txt span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .draft-card .body .sub b{color:var(--ink-2);font-weight:500}
 .draft-card .actions-row{display:flex;gap:8px;margin-top:4px}
 .draft-card .btn{padding:6px 11px;font-size:12.5px}
@@ -544,7 +545,9 @@ body.authed #auth-screen{display:none!important}
   .page-title{font-size:22px}
   .case-card img,.draft-card .ph{width:96px}
   .draft-bar .btn span{display:none}
-  .resume-banner{flex-wrap:wrap}
+  .resume-banner{flex-wrap:wrap;gap:12px}
+  .resume-banner .txt{flex:1 1 calc(100% - 60px)}
+  .resume-banner .btn{flex:1 1 0}
 }
 @media (max-width:420px){
   .brand-sub{display:none}
@@ -561,6 +564,8 @@ body.authed #auth-screen{display:none!important}
 .af-test{align-items:flex-start;margin-bottom:14px;line-height:1.5}
 .af-test input{margin-top:3px}
 .af-confirm{margin-bottom:14px}
+.af-agree{align-items:flex-start;margin-bottom:14px;line-height:1.5;padding:12px 14px;border-radius:12px;background:#f7f8fc;border:1px solid var(--line)}
+.af-agree input{margin-top:3px;flex:none}
 .af-confirm .notice{margin-bottom:10px}
 .notice.danger{background:var(--red-soft);color:#c4283a}
 .btn.primary.danger{background:linear-gradient(135deg,#ff5d6c,#e23a4f);box-shadow:0 8px 20px rgba(226,58,79,.3)}

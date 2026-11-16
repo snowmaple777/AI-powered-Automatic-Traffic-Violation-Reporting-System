@@ -613,7 +613,14 @@ def update_draft(did, patch):
 
 def delete_draft(did):
     path = _draft_path(did)
-    if os.path.exists(path) and get_draft(did):
+    d = get_draft(did) if os.path.exists(path) else None
+    if d:
+        # 草稿刪掉了，還在排隊或分析中的工作也一起取消，不然會繼續占用 GPU、卡住後面的影片
+        if d.get("job_id"):
+            try:
+                cancel_job(d["job_id"])
+            except FileNotFoundError:
+                pass
         os.remove(path)
     return {"deleted": did}
 

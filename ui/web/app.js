@@ -788,6 +788,7 @@ async function renderRealSubmit(c, area) {
       <div class="notice danger">${ic("alert")}<span><b>正式送出</b>會把這筆檢舉真的送到${esc(c.city)}政府警察局，送出後無法撤回。請確認車牌、時間、地點、違規事實都正確，而且是真實發生的違規。</span></div>
       <label class="check-row"><input type="checkbox" id="af-sure"> 我已確認資料正確，要正式送出</label>
     </div>
+    <label class="check-row af-agree"><input type="checkbox" id="af-agree"> <span><b>我已自行閱讀${esc(c.city)}警察局檢舉網站上的注意事項</b><br><small class="muted">包含法令依據及說明、檢舉應具備資料、違規事實之認定、備註事項。我了解檢舉內容由我本人負責，本系統只協助整理資料與代為填表，不保證檢舉成立。</small></span></label>
     <button class="btn primary big" id="btn-af-start" style="width:100%" ${ok ? "" : "disabled"}>${ic("send")}開啟瀏覽器自動填表（測試）</button>
     <p class="muted small af-tip">驗證碼、Email 認證要你在跳出的瀏覽器裡自己完成。過程中可以隨時按「取消」，瀏覽器會關閉，什麼都不會送出。</p>`;
   const test = $("#af-test", area), btn = $("#btn-af-start", area);
@@ -795,9 +796,9 @@ async function renderRealSubmit(c, area) {
     $("#af-confirm", area).classList.toggle("hidden", test.checked);
     btn.innerHTML = test.checked ? `${ic("send")}開啟瀏覽器自動填表（測試）` : `${ic("send")}開啟瀏覽器並正式送出`;
     btn.classList.toggle("danger", !test.checked);
-    btn.disabled = !ok || (!test.checked && !$("#af-sure", area).checked);
+    btn.disabled = !ok || !$("#af-agree", area).checked || (!test.checked && !$("#af-sure", area).checked);
   };
-  test.onchange = sync; $("#af-sure", area).onchange = sync; sync();
+  test.onchange = sync; $("#af-sure", area).onchange = sync; $("#af-agree", area).onchange = sync; sync();
   btn.onclick = async () => {
     btn.disabled = true;
     try {
@@ -1274,7 +1275,7 @@ async function renderResumeBanner() {
   if (!list.length || state.video) return;
   const d = list[0], el = $("#resume-banner");
   el.innerHTML = `<span class="ic-bubble violet">${ic("history")}</span>
-    <div class="txt"><b>你有 ${list.length} 筆未完成的檢舉</b><span>最近一筆：${esc(d.video_name || "未命名")}・停在「${STEP_NAMES[d.step] || ""}」・${esc(d.updated)}</span></div>
+    <div class="txt"><b>${list.length} 筆未完成的檢舉</b><span>${esc(d.video_name || "未命名")}・${STEP_NAMES[d.step] || ""}・${esc(String(d.updated || "").slice(5, 16))}</span></div>
     <button class="btn ghost small" data-view-link="cases">${ic("folder")}全部</button>
     <button class="btn primary small" id="btn-resume-last">${ic("right")}繼續上次</button>`;
   el.classList.remove("hidden");

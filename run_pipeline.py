@@ -9,7 +9,7 @@ import cv2
 
 from model_library.detectors import ROOT
 from model_library import FrameContext, ModelPipeline, load_config
-from violation_engine import RuleContext, ViolationEngine, create_rules
+from violation_engine import RuleContext, ViolationEngine, create_rules, red_light_rule_options
 from violation_clips import add_clip_arguments, validate_clip_options, export_violation_clips
 from road_compensation import CompensationConfig, EgoMotionTracker, RoadMarkingCompensator
 from double_lines import double_line_rule_options, write_final_double_line_diagnostics
@@ -25,6 +25,8 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="可替換模型的交通影像辨識")
     parser.add_argument("--area-rule-config", type=Path, default=ROOT / "configs/area_rules.json",
                         help="停等區與行人穿越道候選規則參數")
+    parser.add_argument("--red-light-config", type=Path, default=ROOT / "configs/red_light_rules.json",
+                        help="闖紅燈規則設定（延後確認選項，4av）")
     parser.add_argument("input", type=Path, help="輸入影片")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "outputs")
     parser.add_argument("--device", default="auto", help="auto、cpu 或 cuda:0")
@@ -74,7 +76,8 @@ def resolve_device(requested):
 def build_rule_options(args, rule_names):
     """回傳 (規則參數, 區域幾何設定或 None)。"""
     rule_options = {"red_light_stop_line_crossing": {
-        "crossing_direction": getattr(args, "crossing_direction", "away")}}
+        "crossing_direction": getattr(args, "crossing_direction", "away"),
+        **red_light_rule_options(getattr(args, "red_light_config", ROOT / "configs/red_light_rules.json"))}}
     area_config = None
     if "all" in rule_names or any(name in AREA_RULES for name in rule_names):
         rule_options.update(area_rule_options(getattr(args, "area_rule_config", ROOT / "configs/area_rules.json")))

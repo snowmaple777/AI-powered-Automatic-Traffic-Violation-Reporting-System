@@ -15,16 +15,18 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from violation_engine import RuleContext, ViolationEngine, create_rules  # noqa: E402
+from violation_engine import RuleContext, ViolationEngine, create_rules, red_light_rule_options  # noqa: E402
 from double_lines import double_line_rule_options, write_final_double_line_diagnostics  # noqa: E402
 from area_rules import area_rule_options  # noqa: E402
 from plate_backfill import PlateBackfill, add_plate_arguments, DEFAULT_WINDOW_SECONDS
 from motion_notes import MotionNotes, add_motion_arguments, read_motion_mask, write_motion_summary
 
 
-def rule_options(direct_marking_gate=True, double_line_config=None, area_config=None):
+def rule_options(direct_marking_gate=True, double_line_config=None, area_config=None, red_light_config=None):
     options = {"red_light_stop_line_crossing": {"crossing_direction": "away",
                                                 "require_direct_marking_evidence": direct_marking_gate}}
+    options["red_light_stop_line_crossing"].update(
+        red_light_rule_options(red_light_config or ROOT / "configs/red_light_rules.json"))
     options.update(area_rule_options(area_config or ROOT / "configs/area_rules.json"))
     options.update(double_line_rule_options(double_line_config or ROOT / "configs/double_line_rules.json"))
     if not direct_marking_gate:
@@ -86,6 +88,8 @@ def main(argv=None):
                         help="雙線設定；detailed_diagnostics 預設 false")
     parser.add_argument("--area-rule-config", type=Path, default=ROOT / "configs/area_rules.json",
                         help="停等區／斑馬線規則設定（格式同 configs/area_rules.json；geometry 只影響線上辨識，重算時不作用）")
+    parser.add_argument("--red-light-config", type=Path, default=ROOT / "configs/red_light_rules.json",
+                        help="闖紅燈規則設定（延後確認選項，4av）")
     parser.add_argument("--truth", type=Path, default=None,
                         help="摘要用的影片清單與標註（預設 eval/ground_truth.json）")
     add_plate_arguments(parser)
@@ -95,7 +99,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.motion_mask_dir is not None and not args.motion_mask_dir.is_dir():
         parser.error("--motion-mask-dir 必須是存在的根目錄")
-    options = rule_options(not args.no_direct_marking_gate, args.double_line_config, args.area_rule_config)
+    options = rule_options(not args.no_direct_marking_gate, args.double_line_config, args.area_rule_config,
+                           args.red_light_config)
     out = ROOT / "outputs/eval" / args.label
     out.mkdir(parents=True, exist_ok=True)
     (out / "rule_options.json").write_text(json.dumps(

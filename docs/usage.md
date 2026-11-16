@@ -151,6 +151,17 @@ confirmed 需要：實際偵測到的停止線、強燈號證據（原本的燈�
 - proxy_requires_red／proxy_exclude_lateral（預設開）：斑馬線代理線的疑似事件必須在越線前後有紅燈證據（任何強度），
   且車輛最近 2 秒不是橫向移動（多為橫越路口或轉彎的車）。
 車框底邊僅為接地位置代理值；融合或漏檢延伸的機車框不等於輪胎偵測。
+延後確認（4av，預設關閉；configs/red_light_rules.json，或以 --red-light-config 指定）：疑似事件本來就保留到影片結束才輸出，
+以下選項讓首次越線後 deferred_confirmation_seconds（預設 3）秒內補齊的直接觀測，把同一次越線升級為 confirmed
+（沿用原事件編號，事件另記 confirmation_basis 與 evidence.first_after_line_frame；越線前紅燈、確認當下強紅燈、同一燈號、
+接地點可見等原條件仍須成立）：
+- confirm_line_handoff：停止線交接（同一條線的可見片段換了補償 ID，same_stop_line=false）不再阻擋確認，
+  條件是交接前的線在被車身遮住前曾達到確認所需的直接觀測、確認當下的線也有直接觀測。
+- confirm_crosswalk_proxy：斑馬線代理線的越線可以確認，條件是車輛接地點有 2 次直接觀測越過同一條直接觀測斑馬線的遠端邊緣
+  （整台車通過斑馬線，必然已越過其前方的停止線；推移的斑馬線不計入）。事件時間是通過遠端的時間。
+- confirm_after_motion_gap：鏡頭運動短暫失效不再阻擋確認，條件是最後一次線前觀測與最近連續 2 次線後觀測都不在失效幀，
+  且停止線在失效之後重新被直接觀測。
+確認事件不受 green_veto_seconds 取消，與原本的確認事件相同。
 
 從原影片與既有 JSONL 重算停止線補償：
 

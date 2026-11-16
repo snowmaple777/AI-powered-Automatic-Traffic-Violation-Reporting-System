@@ -135,6 +135,10 @@
   必須依各規則的確認條件判斷；新增放寬路徑只能支持 `suspected`。
 - `ViolationEngine` 會把同一車輛的停等區事件併入闖紅燈事件的 `merged_events`：停等區事件至少保留 3 秒，車仍在畫面中（離開未滿 1 秒）或闖紅燈規則仍有它的待定事件時繼續保留；已報告闖紅燈的車，同片之後的停等區事件直接併入（延後輸出的事件帶 `released_timestamp_sec`，refactor_log 4n）。
 - 每幀診斷寫在 `rule.diagnostics`（阻擋原因），全片評估以此統計漏判原因；新規則也要提供。
+- 闖紅燈延後確認（4av，`configs/red_light_rules.json`，預設關閉）：疑似事件保留期間補齊的直接觀測可升級為 `confirmed`，
+  事件帶 `confirmation_basis`（`standard` 或替代路徑名）。替代路徑各自只取代一個阻擋條件（停止線交接、斑馬線代理線、
+  運動失效），被取代的條件在 `conditions` 中仍為 false；消費端判斷確認依據時讀 `confirmation_basis`。
+  這是經使用者同意、有評估數字的確認定義擴充，不屬於第 6 節原則 1 所禁止的「暗中削弱」。
 
 ### 5.5 事件車牌補充（4w；預設關閉）
 
@@ -203,7 +207,7 @@
 指標摘要：`batch_eval.summarize(label)` 或 `eval/metrics.py`。影片層級＝該片是否輸出目標規則事件；事件層級只計 `reviewed: true` 的影片。
 
 ### 7.3 回報格式
-每次交付或整合，在 `docs/refactor_log.md` 新增一節（目前編號到 4au；4aa 保留給 Astra 的標線尺度實驗），包含：修改內容、原因、驗證方式、
+每次交付或整合，在 `docs/refactor_log.md` 新增一節（目前編號到 4av；4aa 保留給 Astra 的標線尺度實驗），包含：修改內容、原因、驗證方式、
 前後數字（影片層級、事件層級 TP／FP／FN、速度）、逐片變動的事件、已知副作用、是否採用。
 
 ---

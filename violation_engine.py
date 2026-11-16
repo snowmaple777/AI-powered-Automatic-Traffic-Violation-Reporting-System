@@ -2,7 +2,9 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+import json
 import math
+from pathlib import Path
 import cv2
 from core.fastcopy import clone
 from functools import partial
@@ -154,7 +156,9 @@ class RedLightStopLineCrossingRule(ViolationRule):
                  require_red_for_suspected=False, require_direct_marking_evidence=True,
                  green_veto_seconds=0.5, crosswalk_proxy_mode="per_vehicle",
                  signal_selected_continuity=True, occluded_contact="skip",
-                 proxy_requires_red=True, proxy_exclude_lateral=True):
+                 proxy_requires_red=True, proxy_exclude_lateral=True,
+                 confirm_line_handoff=False, confirm_crosswalk_proxy=False,
+                 confirm_after_motion_gap=False, deferred_confirmation_seconds=3.0):
         """weak_signal_evidence／signal_hold_seconds／crosswalk_proxy 只讓事件成為「疑似」：
         「確認」仍要求強燈號證據（與先前相同）且觀測到真正的停止線。
         require_red_for_suspected：疑似事件也必須在越線前後有紅燈證據（任何強度）。
@@ -173,7 +177,20 @@ class RedLightStopLineCrossingRule(ViolationRule):
         遮擋判定：另一台車（car／motorcycle／bus／truck，非同一 ID、非重複偵測）底邊比本車低、上緣高於本車底邊，
         且與本車水平重疊至少本車寬的 30%。
         proxy_requires_red／proxy_exclude_lateral：斑馬線代理線的疑似事件必須在越線前後有紅燈證據（任何強度），
-        且車輛最近 2 秒不是橫向移動（水平位移 ≥ 車寬一半且 ≥ 底邊垂直位移 2 倍，多為橫越或轉彎的車）。"""
+        且車輛最近 2 秒不是橫向移動（水平位移 ≥ 車寬一半且 ≥ 底邊垂直位移 2 倍，多為橫越或轉彎的車）。
+        4av 延後確認（預設全部關閉＝行為與輸出不變；設定檔 configs/red_light_rules.json）：疑似事件本來就保留到
+        片尾才輸出，期間車輛繼續被追蹤；以下選項讓「首次越線後 deferred_confirmation_seconds 秒內」補齊的直接觀測
+        也能把同一次越線升級為確認（事件沿用原 event_id，另記 confirmation_basis 與越線起點）。每條替代路徑仍要求
+        越線前紅燈、確認當下強紅燈、同一燈號、接地點可見等原條件，只取代下列單一阻擋條件；同一次確認
+        最多使用一條替代路徑（例如交接＋運動失效兩項同時缺少時仍是疑似）：
+        confirm_line_handoff（R2）：停止線交接（line_reassociated_from）不再阻擋確認，條件是交接前的線曾達到確認所需的
+        直接觀測（被車身遮住前）、確認當下的線有直接觀測（交接本身已要求近共線、間距 ≤ max_line_handoff_ratio 畫面高）。
+        confirm_crosswalk_proxy（R3）：斑馬線代理線的越線可以確認，條件是車輛接地點有 2 次新觀測越過同一條
+        直接觀測（非預測、marking_source=direct）斑馬線的遠端邊緣——整台車通過斑馬線，必然已越過其前方的停止線；
+        車框中心須在斑馬線中段（兩端尖角的邊緣擬合不可靠），且最近 2 秒（運動補償後）沿越線方向前進至少半個
+        斑馬線深度、不是橫向移動（proxy_exclude_lateral），排除斑馬線多邊形抖動與橫越、路邊的車。
+        confirm_after_motion_gap（R4）：鏡頭運動短暫失效不再阻擋確認，條件是最後一次線前觀測與最近連續 2 次線後
+        觀測都不在失效幀，且停止線在最後一個失效幀之後重新被直接觀測（線的位置已重新定錨）。"""
         self.context = context
         self.signal_confidence = signal_confidence
         self.line_margin = max(line_margin_pixels,
@@ -213,6 +230,16 @@ class RedLightStopLineCrossingRule(ViolationRule):
         self.require_red_for_suspected = require_red_for_suspected
         self.require_direct_marking_evidence = require_direct_marking_evidence
         self.green_veto_frames = max(0, round(context.fps * green_veto_seconds))
+        self.confirm_line_handoff = bool(confirm_line_handoff)
+        self._direct_lines = set()  # R2：曾達到確認直接觀測門檻的停止線 marking_id
+        self.confirm_crosswalk_proxy = bool(confirm_crosswalk_proxy)
+        self.confirm_after_motion_gap = bool(confirm_after_motion_gap)
+        if (not isinstance(deferred_confirmation_seconds, (int, float)) or isinstance(deferred_confirmation_seconds, bool)
+                or not math.isfinite(deferred_confirmation_seconds) or deferred_confirmation_seconds <= 0):
+            raise ValueError("deferred_confirmation_seconds must be finite and positive")
+        self.deferred_confirmation_frames = max(1, round(context.fps * deferred_confirmation_seconds))
+        self.deferred_confirmation = (self.confirm_line_handoff or self.confirm_crosswalk_proxy
+                                      or self.confirm_after_motion_gap)
         self.last_green_frame = None
         self._marking_evidence = marking_evidence({})
         self.diagnostics = {}
@@ -279,24 +306,39 @@ class RedLightStopLineCrossingRule(ViolationRule):
             chain_a = [hull[(left + k) % n] for k in range((right - left) % n + 1)]
             chain_b = [hull[(right + k) % n] for k in range((left - right) % n + 1)]
             pick = max if self.crossing_direction == "away" else min
-            chain = np.asarray(pick((chain_a, chain_b), key=lambda c: float(np.mean([p[1] for p in c]))))
-            if len(chain) < 2 or np.ptp(chain[:, 0]) < 10:
+            near = pick((chain_a, chain_b), key=lambda c: float(np.mean([p[1] for p in c])))
+            line = self._fit_edge(near)
+            if line is None:
                 continue
-            vx, vy, x0, y0 = cv2.fitLine(chain.reshape(-1, 1, 2), cv2.DIST_L2, 0, .01, .01).ravel()
-            if abs(vx) < 1e-6:
-                continue
-            x1, x2 = float(chain[:, 0].min()), float(chain[:, 0].max())
-            line = [x1, float(y0 + (x1 - x0) * vy / vx), x2, float(y0 + (x2 - x0) * vy / vx)]
+            x1, _, x2, _ = line
             angle = self._line_angle(line)
             if angle > self.max_line_angle:
                 continue
             top, bottom = min(line[1], line[3]), max(line[1], line[3])
-            lines.append({"area": int(round((x2 - x1) * max(1.0, bottom - top))),
-                          "bbox_xywh": [x1, top, x2 - x1, max(1.0, bottom - top)],
-                          "centroid": [(x1 + x2) / 2, (line[1] + line[3]) / 2], "line_xyxy": line,
-                          "angle_degrees": round(angle, 2), "proxy": "crosswalk_near_edge",
-                          "region_id": region.get("region_id")})
+            item = {"area": int(round((x2 - x1) * max(1.0, bottom - top))),
+                    "bbox_xywh": [x1, top, x2 - x1, max(1.0, bottom - top)],
+                    "centroid": [(x1 + x2) / 2, (line[1] + line[3]) / 2], "line_xyxy": line,
+                    "angle_degrees": round(angle, 2), "proxy": "crosswalk_near_edge",
+                    "region_id": region.get("region_id")}
+            if self.confirm_crosswalk_proxy:
+                # R3：遠端邊緣（另一條鏈）與斑馬線本身是否為模型直接觀測；只在啟用時加入，關閉時輸出不變。
+                far = self._fit_edge(chain_b if near is chain_a else chain_a)
+                item["far_line_xyxy"] = far
+                item["region_direct"] = region.get("marking_source", "direct") == "direct"
+            lines.append(item)
         return lines
+
+    @staticmethod
+    def _fit_edge(chain):
+        """以直線擬合斑馬線多邊形的一側邊緣；邊緣太短或近垂直時回傳 None。"""
+        chain = np.asarray(chain)
+        if len(chain) < 2 or np.ptp(chain[:, 0]) < 10:
+            return None
+        vx, vy, x0, y0 = cv2.fitLine(chain.reshape(-1, 1, 2), cv2.DIST_L2, 0, .01, .01).ravel()
+        if abs(vx) < 1e-6:
+            return None
+        x1, x2 = float(chain[:, 0].min()), float(chain[:, 0].max())
+        return [x1, float(y0 + (x1 - x0) * vy / vx), x2, float(y0 + (x2 - x0) * vy / vx)]
 
     def _valid_stop_components(self, observations):
         candidates = []
@@ -384,6 +426,11 @@ class RedLightStopLineCrossingRule(ViolationRule):
             line_id: item for line_id, item in self.line_tracks.items()
             if frame_index - item["last_frame"] <= self.max_crossing_gap
         }
+        if self.confirm_line_handoff:
+            # R2：記錄曾達到「確認」直接觀測門檻的線。交接多半發生在車輛壓上舊線、舊線被車身遮住時，
+            # 交接當下舊線已不是直接觀測，因此改看它被遮住之前是否曾經成立。
+            self._direct_lines.update(item["marking_id"] for item in updated
+                                      if self._stop_line_direct_evidence(item, frame_index))
         # 同一條線的可見片段可能改變補償 ID。只在舊線暫時消失、區間重疊且近共線時，
         # 將尚未完成的越線狀態交接給新片段；保留原時間，不能延長過期狀態。
         active_ids={item["marking_id"] for item in updated}
@@ -410,8 +457,74 @@ class RedLightStopLineCrossingRule(ViolationRule):
                     new_key=(vehicle_id,current["marking_id"])
                     if self.crossing_states.get(new_key,{}).get("before_count",0)<state["before_count"]:
                         self.crossing_states[new_key]=dict(state,line_reassociated_from=line_id)
+                        if self.confirm_line_handoff:
+                            # R2：交接前的線也必須曾有足以確認的直接觀測；多次交接時全部都要成立。
+                            self.crossing_states[new_key]["handoff_direct"] = bool(
+                                state.get("handoff_direct", True) and old["marking_id"] in self._direct_lines)
                         del self.crossing_states[(vehicle_id,line_id)]
         return updated
+
+    def _update_deferred_state(self, state, side, gap_now, index, stop_line, box, reference_x, y, contact_occluded):
+        """4av：替代確認路徑的逐幀狀態（只在啟用延後確認時維護，關閉時狀態與輸出不變）。"""
+        if side == -1:
+            state["before_in_gap"] = gap_now
+        if state["after_count"] == 0:
+            state.update(first_after_frame=None, after_clean=0, far_count=0)
+            return
+        if state["after_count"] == 1:
+            state["first_after_frame"] = index
+        # R4：最近連續的線後觀測都不在運動失效幀。
+        state["after_clean"] = 0 if gap_now else state.get("after_clean", 0) + 1
+        # R3：接地點越過同一條直接觀測斑馬線的遠端邊緣（新觀測、接地點未被遮住）。
+        far = stop_line.get("far_line_xyxy")
+        if not (self.confirm_crosswalk_proxy and stop_line.get("proxy") and far):
+            state["far_count"] = 0
+            return
+        if not stop_line.get("region_direct") or contact_occluded:
+            # 標線降頻時斑馬線隔幀才是直接觀測；推移幀與接地點被遮住的幀不是證據，不計入也不歸零。
+            return
+        if not self._inside_crosswalk_span(box, stop_line):
+            # 斑馬線兩端的尖角處近、遠端邊緣收斂，擬合不可靠（路邊、橫越的車）：不算證據並歸零。
+            state["far_count"] = 0
+            return
+        x = min(max(reference_x, min(far[0], far[2])), max(far[0], far[2]))
+        distance = y - self._line_y(far, x)
+        oriented = -distance if self.crossing_direction == "away" else distance
+        state["far_count"] = state.get("far_count", 0) + 1 if oriented > self.line_margin else 0
+
+    @staticmethod
+    def _inside_crosswalk_span(box, stop_line, inset=0.1):
+        """R3：車框中心 x 位於斑馬線近端與遠端邊緣的中段（兩端各內縮 inset 比例）。"""
+        cx = (box[0] + box[2]) / 2
+        for line in (stop_line["line_xyxy"], stop_line["far_line_xyxy"]):
+            left, right = min(line[0], line[2]), max(line[0], line[2])
+            margin = (right - left) * inset
+            if not left + margin <= cx <= right - margin:
+                return False
+        return True
+
+    def _crossed_crosswalk_forward(self, object_id, now, stop_line, box):
+        """R3：車輛最近 2 秒（鏡頭運動補償後）沿越線方向前進至少半個斑馬線深度，且不是橫向移動。
+        只看相對斑馬線的位置時，斑馬線多邊形本身的抖動也可能造成「通過遠端」。"""
+        moved = self.history.displacement(object_id, now, 2.0)
+        if not moved:
+            return False
+        cx = (box[0] + box[2]) / 2
+        depth = abs(self._line_y(stop_line["line_xyxy"], cx) - self._line_y(stop_line["far_line_xyxy"], cx))
+        forward = -moved["dy"] if self.crossing_direction == "away" else moved["dy"]
+        lateral = self.proxy_exclude_lateral and self.history.lateral(object_id, now, 2.0)
+        return forward >= 0.5 * depth and not lateral
+
+    @staticmethod
+    def _clean_after_gap(state, stop_line):
+        """R4：運動失效後的越線是否只由有效幀支持，且停止線在最後一個失效幀之後重新被直接觀測。"""
+        if state.get("after_clean", 0) < 2 or state.get("before_in_gap", True):
+            return False
+        compensation = stop_line.get("compensation") or {}
+        last_direct = (compensation.get("last_direct_observed_frame") if compensation
+                       else stop_line.get("last_direct_frame"))
+        last_gap = state.get("last_gap_frame")
+        return last_gap is not None and last_direct is not None and last_direct > last_gap
 
     def _stop_line_direct_evidence(self, stop_line, index):
         """停止線是否有足以支持「確認」的直接觀測（推移遮罩不計入）。"""
@@ -545,8 +658,11 @@ class RedLightStopLineCrossingRule(ViolationRule):
                     "last_frame":index, "red_before":False, "before_frame":None,
                     "red_before_frame":None})
                 state["last_frame"] = index
-                if getattr(self, "_motion_gap", False) or stop_line.get("compensation", {}).get("motion_gap"):
+                gap_now = bool(getattr(self, "_motion_gap", False) or stop_line.get("compensation", {}).get("motion_gap"))
+                if gap_now:
                     state["motion_gap"] = True
+                    if self.confirm_after_motion_gap:
+                        state["last_gap_frame"] = index
                 if vehicle.get("source_frame", index) != index:
                     # 降頻推論時沿用的上一幀車框不是新觀測：只讓狀態不過期，
                     # 不累積線前／線後次數，也不產生事件。
@@ -592,6 +708,9 @@ class RedLightStopLineCrossingRule(ViolationRule):
                     state["after_count"] += 1
                 else:
                     state["after_count"] = 0
+                if self.deferred_confirmation:
+                    self._update_deferred_state(state, side, gap_now, index, stop_line, vehicle_box,
+                                                reference_x, y, contact_occluded)
                 blocked_by = []
                 if state["before_count"] < 2:
                     blocked_by.append("insufficient_before_line_observations")
@@ -622,13 +741,31 @@ class RedLightStopLineCrossingRule(ViolationRule):
                     "phase":state["phase"],"before_count":state["before_count"],
                     "after_count":state["after_count"],"red_before":state["red_before"],
                     "blocked_by":blocked_by})
+                # 停止線條件：真正的停止線＋直接觀測，且沒有交接（R2 允許兩端都直接觀測的交接）；
+                # 或（R3）代理線但車輛已完整通過直接觀測的斑馬線。運動失效（R4）另判。
+                basis = []
+                line_ok = not stop_line.get("proxy") and (direct_line or not self.require_direct_marking_evidence)
+                if line_ok and state.get("line_reassociated_from"):
+                    line_ok = bool(self.confirm_line_handoff and direct_line and state.get("handoff_direct"))
+                    if line_ok:
+                        basis.append("line_handoff_direct")
+                proxy_ok = bool(self.confirm_crosswalk_proxy and stop_line.get("proxy") and state.get("far_count", 0) >= 2
+                                and self._crossed_crosswalk_forward(object_id, frame["timestamp_sec"], stop_line, vehicle_box))
+                if proxy_ok:
+                    basis.append("crosswalk_crossed_completely")
+                motion_ok = not state.get("motion_gap")
+                if not motion_ok and self.confirm_after_motion_gap and self._clean_after_gap(state, stop_line):
+                    motion_ok = True
+                    basis.append("clean_crossing_after_motion_gap")
+                # 替代路徑只在首次線後觀測起 deferred_confirmation_seconds 內有效（同一次越線），
+                # 且每次確認最多替代一個阻擋條件（兩項同時替代的證據疊加風險，例如看板誤偵測在鏡頭轉動時「越線」）。
+                in_window = not basis or (len(basis) == 1 and state.get("first_after_frame") is not None and
+                                          index - state["first_after_frame"] <= self.deferred_confirmation_frames)
                 confirmed = (state["after_count"] >= 2 and state["red_before"] and strong_state == "red"
                         and state.get("red_before_evidence", {}).get("signal_id") == self.signal_tracker.evidence.get("signal_id")
-                        and not state.get("line_reassociated_from")
-                        and not state.get("motion_gap")
+                        and (line_ok or proxy_ok)
+                        and motion_ok and in_window
                         and not state.get("contact_occluded")
-                        and not stop_line.get("proxy")
-                        and (direct_line or not self.require_direct_marking_evidence)
                         and object_id not in self.reported)
                 any_red = signal_state == "red" or (
                     state.get("any_red_before_frame") is not None
@@ -668,6 +805,12 @@ class RedLightStopLineCrossingRule(ViolationRule):
                 }
                 if self.require_direct_marking_evidence:
                     conditions["stop_line_direct_evidence"] = direct_line
+                if self.confirm_line_handoff and state.get("line_reassociated_from"):
+                    conditions["stop_line_handoff_direct"] = bool(direct_line and state.get("handoff_direct"))
+                if self.confirm_crosswalk_proxy and stop_line.get("proxy"):
+                    conditions["crosswalk_crossed_completely"] = state.get("far_count", 0) >= 2
+                if self.confirm_after_motion_gap and state.get("motion_gap"):
+                    conditions["clean_crossing_after_motion_gap"] = self._clean_after_gap(state, stop_line)
                 if confirmed:
                     behavior = "red_light_stop_line_crossing"
                     description = "車輛在紅燈期間由停止線前移至線後，符合目前紅燈越線規則。"
@@ -711,6 +854,10 @@ class RedLightStopLineCrossingRule(ViolationRule):
                         "marking_evidence": dict(self._marking_evidence),
                     },
                 }
+                if self.deferred_confirmation:
+                    # 延後確認：記錄確認依據與首次越線幀；standard＝原本的確認條件全部成立。
+                    event["confirmation_basis"] = (basis or ["standard"]) if confirmed else []
+                    event["evidence"]["first_after_line_frame"] = state.get("first_after_frame")
                 if confirmed:
                     state["phase"] = "crossed_line"
                     self.reported.add(object_id)
@@ -1371,6 +1518,36 @@ RULE_FACTORIES = {
     "car_motorcycle_waiting_area": partial(AreaOccupancyRule, rule_id="car_motorcycle_waiting_area"),
     "crosswalk_stopping": partial(AreaOccupancyRule, rule_id="crosswalk_stopping"),
 }
+
+
+RED_LIGHT_CONFIG_OPTIONS = {"confirm_line_handoff": bool, "confirm_crosswalk_proxy": bool,
+                            "confirm_after_motion_gap": bool, "deferred_confirmation_seconds": (int, float)}
+
+
+def red_light_rule_options(path):
+    """讀取闖紅燈規則設定（configs/red_light_rules.json，4av）。
+
+    只回傳檔案中出現的選項，其餘沿用 RedLightStopLineCrossingRule 的建構子預設值；
+    crossing_direction 等由各入口的命令列參數決定，不放在這個檔案。
+    """
+    data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    if not isinstance(data, dict) or data.get("version") != 1:
+        raise ValueError(f"{path}: version 必須是 1")
+    unknown = sorted(key for key in data if key != "version" and not key.startswith("_")
+                     and key not in RED_LIGHT_CONFIG_OPTIONS)
+    if unknown:
+        raise ValueError(f"{path}: 未知的闖紅燈設定：{', '.join(unknown)}")
+    options = {}
+    for key, kind in RED_LIGHT_CONFIG_OPTIONS.items():
+        if key not in data:
+            continue
+        value = data[key]
+        if kind is bool and type(value) is not bool:
+            raise ValueError(f"{path}: {key} 必須是 true／false")
+        if kind is not bool and (type(value) not in kind or not math.isfinite(value) or value <= 0):
+            raise ValueError(f"{path}: {key} 必須是正數")
+        options[key] = value
+    return options
 
 
 def create_rules(names, context, rule_options=None):

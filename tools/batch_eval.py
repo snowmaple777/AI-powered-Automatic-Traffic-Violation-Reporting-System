@@ -61,7 +61,7 @@ def diagnose(folder, video, category):
     return result
 
 
-FINGERPRINT_CONFIGS = ("configs/double_line_rules.json", "configs/area_rules.json",
+FINGERPRINT_CONFIGS = ("configs/double_line_rules.json", "configs/area_rules.json", "configs/red_light_rules.json",
                        "configs/marking_compensation.json", "configs/bytetrack_perception.yaml")
 DEFAULT_TRUTH = ROOT / "eval/ground_truth.json"
 

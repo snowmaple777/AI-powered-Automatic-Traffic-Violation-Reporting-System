@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "_說明": "闖紅燈規則設定（4av）。三個 confirm_* 選項讓首次越線後 deferred_confirmation_seconds 秒內補齊的直接觀測也能確認同一次越線；預設 false＝行為不變。說明見 docs/usage.md。",
+  "confirm_line_handoff": false,
+  "confirm_crosswalk_proxy": false,
+  "confirm_after_motion_gap": false,
+  "deferred_confirmation_seconds": 3.0
+}

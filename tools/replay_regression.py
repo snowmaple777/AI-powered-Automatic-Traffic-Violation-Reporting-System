@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from violation_engine import RuleContext, ViolationEngine, create_rules  # noqa: E402
+from violation_engine import RuleContext, ViolationEngine, create_rules, red_light_rule_options  # noqa: E402
 from double_lines import double_line_rule_options  # noqa: E402
 from area_rules import area_rule_options  # noqa: E402
 from plate_backfill import event_plate_text
@@ -26,7 +26,8 @@ DEFAULT_GLOBS = ("outputs/*_detections.jsonl",
 
 
 def rule_options():
-    options = {"red_light_stop_line_crossing": {"crossing_direction": "away"}}
+    options = {"red_light_stop_line_crossing": {"crossing_direction": "away",
+                                                **red_light_rule_options(ROOT / "configs/red_light_rules.json")}}
     options.update(area_rule_options(ROOT / "configs/area_rules.json"))
     options.update(double_line_rule_options(ROOT / "configs/double_line_rules.json"))
     return options

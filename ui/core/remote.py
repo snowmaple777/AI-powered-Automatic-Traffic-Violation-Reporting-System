@@ -262,8 +262,12 @@ class RemoteAnalyzer(BaseAnalyzer):
             new = logs[-(total - log_seen):] if total > log_seen else []
             log_seen = total
             msgs = [x.get("msg") for x in new if x.get("msg")]
-            if sstage == "queued" and st.get("queue_position"):
-                msgs.append(f"排隊中，前面還有 {st['queue_position'] - 1} 個工作")
+            if sstage == "queued":
+                ahead = st.get("jobs_ahead")
+                if ahead is None and st.get("queue_position"):  # 舊版推論服務沒有 jobs_ahead
+                    ahead = st["queue_position"] - 1
+                if ahead is not None:
+                    msgs.append(f"排隊中，前面還有 {ahead} 個工作" if ahead else "排隊中，即將開始")
             for m in msgs[:-1]:
                 report(stage, prog, m)
             pv = st.get("preview_version") or 0

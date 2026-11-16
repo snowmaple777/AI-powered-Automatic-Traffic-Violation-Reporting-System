@@ -136,8 +136,14 @@ class Manager:
         out["log"] = list(log)[-60:] if log is not None else (job.get("log") or [])[-60:]
         out["log_total"] = job.get("_log_total", len(out["log"]))
         if job.get("state") == "queued":
-            ids = list(self.queue.queue)
-            out["queue_position"] = ids.index(job["id"]) + 1 if job["id"] in ids else None
+            with self.lock:
+                # 只算還在等的工作（已取消的不算），再加上正在跑的那一個
+                waiting = [i for i in list(self.queue.queue)
+                           if (self.jobs.get(i) or {}).get("state") == "queued" and not (self.jobs.get(i) or {}).get("_cancel")]
+                running = sum(1 for j in self.jobs.values() if j.get("state") == "running")
+            idx = waiting.index(job["id"]) if job["id"] in waiting else 0
+            out["queue_position"] = idx + 1 if job["id"] in waiting else None
+            out["jobs_ahead"] = idx + running
         return out
 
     def get(self, job_id):

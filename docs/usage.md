@@ -163,6 +163,15 @@ confirmed 需要：實際偵測到的停止線、強燈號證據（原本的燈�
   且停止線在失效之後重新被直接觀測。
 確認事件不受 green_veto_seconds 取消，與原本的確認事件相同。
 
+4aw 分階段確認實驗：可用 --red-light-config configs/red_light_confirm_r23.json 啟用已完成短片／長片對照的 R2＋R3。
+可另用 --area-rule-config configs/area_confirm_crosswalk.json 啟用斑馬線確認及 confirmation_min_footprint_px=8，
+本輪保留兩筆與標註目標一致的確認，排除兩筆遠處車輛的疑義確認；8px 尚未經獨立資料驗證。
+主預設仍關閉。另有 confirm_signal_episode（闖紅燈設定）、confirm_waiting_area／confirm_waiting_occupancy（區域設定）、
+confirm_short_position_gap（雙線設定）；這些實驗沒有可認列的新增收益，不納入建議設定。
+區域確認最多等待原事件後 3 秒，確認即輸出；原事件時間保持不變，確認時間另存 confirmation_timestamp_sec。
+替代路徑的原 conditions 可能仍為 false，請讀 confirmation_basis 與 evidence.confirmation_review，不要將全部條件做 all()。
+完整條件、收益、誤報檢查與重現方式見 docs/handoff/confirmation_rules_4aw.md。
+
 從原影片與既有 JSONL 重算停止線補償：
 
 ~~~powershell

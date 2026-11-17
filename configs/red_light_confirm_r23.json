@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "_說明": "4aw 選用設定：R2 停止線交接＋R3 完整通過斑馬線。主預設仍使用 red_light_rules.json。R4 與燈號時段實驗不啟用。",
+  "confirm_line_handoff": true,
+  "confirm_crosswalk_proxy": true,
+  "confirm_after_motion_gap": false,
+  "deferred_confirmation_seconds": 3.0
+}

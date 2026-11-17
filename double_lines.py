@@ -56,7 +56,8 @@ RULE_DEFAULTS = dict(
     # 永遠不會確認）。結束後保留 straddle_merge_seconds；期間同一車完成跨越時併入該跨越事件，不重複輸出；
     # 同一車（不分雙線追蹤編號）的多次壓線合併為一筆。
     straddle_min_seconds=0.0,  # 線帶內最短停留秒數（0＝停用）
-    straddle_merge_seconds=2.0)  # 壓線結束後等待合併的秒數
+    straddle_merge_seconds=2.0,
+    confirm_short_position_gap=False)  # 短位置缺口的確認替代路徑，預設關閉
 
 # 4ao 選項：同 OCCLUSION_OPTION_KEYS，等於預設值時不放進規則設定。
 STRADDLE_OPTION_KEYS = ("straddle_min_seconds", "straddle_merge_seconds")
@@ -75,7 +76,7 @@ def validate_rule_settings(overrides=None):
     settings = {**RULE_DEFAULTS, **overrides}
     for key, value in settings.items():
         if key in ("emit_suspected", "allow_semantic_band", "allow_motion_gaps", "require_direct_marking_evidence", "detailed_diagnostics",
-                   "curve_extrapolation", "extend_near_endpoint"):
+                   "curve_extrapolation", "extend_near_endpoint", "confirm_short_position_gap"):
             if type(value) is not bool:
                 raise ValueError(f"{key} must be boolean")
         elif type(value) not in (int, float) or not math.isfinite(value) or (value < 0 if key in ("footprint_inset_ratio", "max_extrapolation_ratio", "max_line_handoff_px", "line_memory_seconds", "max_origin_interruption_sec", "straddle_min_seconds", "straddle_merge_seconds") else value <= 0):

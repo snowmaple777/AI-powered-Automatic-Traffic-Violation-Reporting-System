@@ -1,4 +1,4 @@
-# 交接文件索引（2026-11-12 更新）
+# 交接文件索引（2026-11-17 更新）
 
 依時間排列；「狀態」以 refactor_log 為準。新交接請複製 `TEMPLATE.md`。
 
@@ -18,5 +18,6 @@
 | 4ag | [motion_layers_4ag.md](motion_layers_4ag.md) | 分層動作備註 | 已整合（4aj，feature/conservative-marking-schedule） |
 | 4ah | [double_yellow_miss_review_4ah.md](double_yellow_miss_review_4ah.md) | 雙黃線漏報逐片覆核與修正順序 | 已整合（4aj，feature/conservative-marking-schedule） |
 | 4ai | [double_line_diagnostics_4ai.md](double_line_diagnostics_4ai.md)、[原始 prompt](double_line_diagnostics_prompt.md) | 雙線持久診斷拆分（預設關）；33 片事件逐位元不變 | 已整合（4aj，feature/conservative-marking-schedule） |
+| 4aw | [confirmation_rules_4aw.md](confirmation_rules_4aw.md) | 七組確認規則對照、逐件誤報檢查與選用設定 | 已整合（Opus 重驗，feature/conservative-marking-schedule）；主預設不變 |
 
 展示成果：`產生展示成果.cmd`／`tools/make_showcase.py`，最新輸出 `outputs/showcase_20261110`（不進 git）。

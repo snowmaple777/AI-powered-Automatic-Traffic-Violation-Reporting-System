@@ -158,7 +158,8 @@ class RedLightStopLineCrossingRule(ViolationRule):
                  signal_selected_continuity=True, occluded_contact="skip",
                  proxy_requires_red=True, proxy_exclude_lateral=True,
                  confirm_line_handoff=False, confirm_crosswalk_proxy=False,
-                 confirm_after_motion_gap=False, deferred_confirmation_seconds=3.0):
+                 confirm_after_motion_gap=False, deferred_confirmation_seconds=3.0,
+                 confirm_signal_episode=False):
         """weak_signal_evidence／signal_hold_seconds／crosswalk_proxy 只讓事件成為「疑似」：
         「確認」仍要求強燈號證據（與先前相同）且觀測到真正的停止線。
         require_red_for_suspected：疑似事件也必須在越線前後有紅燈證據（任何強度）。
@@ -234,15 +235,53 @@ class RedLightStopLineCrossingRule(ViolationRule):
         self._direct_lines = set()  # R2：曾達到確認直接觀測門檻的停止線 marking_id
         self.confirm_crosswalk_proxy = bool(confirm_crosswalk_proxy)
         self.confirm_after_motion_gap = bool(confirm_after_motion_gap)
+        self.confirm_signal_episode = bool(confirm_signal_episode)
+        self._signal_episode = None
+        self._signal_episode_sequence = 0
+        self._episode_previous_frame = None
         if (not isinstance(deferred_confirmation_seconds, (int, float)) or isinstance(deferred_confirmation_seconds, bool)
                 or not math.isfinite(deferred_confirmation_seconds) or deferred_confirmation_seconds <= 0):
             raise ValueError("deferred_confirmation_seconds must be finite and positive")
         self.deferred_confirmation_frames = max(1, round(context.fps * deferred_confirmation_seconds))
         self.deferred_confirmation = (self.confirm_line_handoff or self.confirm_crosswalk_proxy
-                                      or self.confirm_after_motion_gap)
+                                      or self.confirm_after_motion_gap or self.confirm_signal_episode)
         self.last_green_frame = None
         self._marking_evidence = marking_evidence({})
         self.diagnostics = {}
+
+    def _update_signal_episode(self, frame, lights, strong_state):
+        """R1 保守試驗：同一空間位置、單一直接紅燈軌跡的短暫換號。
+
+        不把 weak／held 當成直接證據；任何綠黃偵測、顏色衝突或輸入不連續即切斷。
+        不在無車道關聯時以多數決跨燈接續；保留原始 signal_id 供覆核。
+        """
+        index = frame['index']
+        evidence = self.signal_tracker.evidence
+        previous = self._signal_episode
+        continuous = is_continuous(self._episode_previous_frame, frame, .2)
+        self._episode_previous_frame = dict(frame)
+        contrary = any(l.get('class_name') in {'green', 'yellow'} and l.get('confidence', 0) >= .18 for l in lights)
+        if (not continuous or contrary or evidence.get('reason') == 'conflicting_signal_tracks'
+                or previous and index - previous['last'] > max(1, round(self.context.fps * .2))):
+            previous = self._signal_episode = None
+        if strong_state != 'red' or evidence.get('last_observed_frame') != index or contrary:
+            return
+        identity = evidence.get('signal_id')
+        tracks = self.signal_tracker.strong.tracks
+        track = tracks.get(identity)
+        direct = [t for t in tracks.values() if t['last'] == index]
+        if track is None or track.get('center') is None or len(direct) != 1:
+            self._signal_episode = None
+            return
+        center, size = track['center'], track['size']
+        compatible = (previous and math.dist(center, previous['center']) <= max(12., min(size, previous['size']))
+                      and .5 <= size / previous['size'] <= 2.)
+        if not compatible:
+            self._signal_episode_sequence += 1
+            previous = dict(id=f'red-episode-{self._signal_episode_sequence}', since=index)
+        self._signal_episode = dict(previous, last=index, center=center, size=size)
+        evidence['red_episode_id'] = previous['id']
+        evidence['red_episode_since_frame'] = previous['since']
 
     @staticmethod
     def _line_angle(line):
@@ -587,6 +626,8 @@ class RedLightStopLineCrossingRule(ViolationRule):
         self._marking_evidence = marking_evidence(observation)
         # 只有強證據沿用原規則的所有判斷（含綠／黃燈清除狀態與「確認」）；弱證據與延續只支持疑似。
         strong_state = signal_state if self.signal_tracker.strength == "strong" else None
+        if self.confirm_signal_episode:
+            self._update_signal_episode(frame, obs['traffic_lights'], strong_state)
         self._project_line_tracks(observation)
         self.history.update(frame["timestamp_sec"], index, obs.get("rule_vehicles", obs["vehicles"]),
                             lambda v: v.get("rider_group", {}).get("vehicle_bbox_xyxy") or v.get("bbox_xyxy"))
@@ -757,12 +798,20 @@ class RedLightStopLineCrossingRule(ViolationRule):
                 if not motion_ok and self.confirm_after_motion_gap and self._clean_after_gap(state, stop_line):
                     motion_ok = True
                     basis.append("clean_crossing_after_motion_gap")
+                same_signal = (state.get("red_before_evidence", {}).get("signal_id") == self.signal_tracker.evidence.get("signal_id"))
+                episode_ok = bool(self.confirm_signal_episode and
+                    state.get("red_before_evidence", {}).get("red_episode_id") and
+                    state["red_before_evidence"]["red_episode_id"] == self.signal_tracker.evidence.get("red_episode_id") and
+                    state.get("before_frame") is not None and
+                    index - state["before_frame"] <= self.max_crossing_gap)
+                if not same_signal and episode_ok:
+                    basis.append("same_direct_red_episode")
                 # 替代路徑只在首次線後觀測起 deferred_confirmation_seconds 內有效（同一次越線），
                 # 且每次確認最多替代一個阻擋條件（兩項同時替代的證據疊加風險，例如看板誤偵測在鏡頭轉動時「越線」）。
                 in_window = not basis or (len(basis) == 1 and state.get("first_after_frame") is not None and
                                           index - state["first_after_frame"] <= self.deferred_confirmation_frames)
                 confirmed = (state["after_count"] >= 2 and state["red_before"] and strong_state == "red"
-                        and state.get("red_before_evidence", {}).get("signal_id") == self.signal_tracker.evidence.get("signal_id")
+                        and (same_signal or episode_ok)
                         and (line_ok or proxy_ok)
                         and motion_ok and in_window
                         and not state.get("contact_occluded")
@@ -811,6 +860,8 @@ class RedLightStopLineCrossingRule(ViolationRule):
                     conditions["crosswalk_crossed_completely"] = state.get("far_count", 0) >= 2
                 if self.confirm_after_motion_gap and state.get("motion_gap"):
                     conditions["clean_crossing_after_motion_gap"] = self._clean_after_gap(state, stop_line)
+                if self.confirm_signal_episode:
+                    conditions["same_direct_red_episode"] = episode_ok
                 if confirmed:
                     behavior = "red_light_stop_line_crossing"
                     description = "車輛在紅燈期間由停止線前移至線後，符合目前紅燈越線規則。"
@@ -895,7 +946,7 @@ class DoubleLineCrossingRule(ViolationRule):
         # 診斷控制不進入原 settings／事件 evidence.parameters，停用時序列化保持原樣。
         self.detailed_diagnostics = self.settings.pop("detailed_diagnostics")
         # 4am 選項維持預設（關閉）時不留在 settings，事件參數與診斷與先前逐位元相同。
-        for key in OCCLUSION_OPTION_KEYS + ORIGIN_OPTION_KEYS + STRADDLE_OPTION_KEYS:
+        for key in OCCLUSION_OPTION_KEYS + ORIGIN_OPTION_KEYS + STRADDLE_OPTION_KEYS + ("confirm_short_position_gap",):
             if self.settings[key] == DOUBLE_LINE_DEFAULTS[key]:
                 del self.settings[key]
         self.straddle_seconds = self.settings.get("straddle_min_seconds", 0.0)
@@ -1339,6 +1390,8 @@ class DoubleLineCrossingRule(ViolationRule):
                 self._diagnose_position(key, frame, position)
                 state = self.states.get(key)
                 if state:
+                    if cfg.get("confirm_short_position_gap") and state.get("position_gap"):
+                        state["max_position_interval"] = max(state.get("max_position_interval", 0.), now - state["last_time"])
                     old = state["last_box"]
                     sizes = [box[2] - box[0], box[3] - box[1]]
                     old_sizes = [old[2] - old[0], old[3] - old[1]]
@@ -1435,15 +1488,23 @@ class DoubleLineCrossingRule(ViolationRule):
                 if cfg["require_direct_marking_evidence"]:
                     conditions["direct_marking_evidence"] = self._direct_marking_evidence(state, line)
                 status = "confirmed" if all(conditions.values()) else "suspected"
+                gap_basis = bool(cfg.get("confirm_short_position_gap") and not conditions["uninterrupted_positions"]
+                    and 0 < state.get("max_position_interval", float('inf')) <= .2 + 1e-9
+                    and all(v for k, v in conditions.items() if k != "uninterrupted_positions"))
                 maneuver, direction = classify_maneuver(state["before_path"], state["after_path"], position["tangent"], cfg)
                 crossing = state["transition"] or state["crossing"]
                 evidence = {"before": state["before"], "transition": state["transition"],
                             "after": self._snapshot(frame, vehicle, line, position),
                             "direction": direction, "reference_point_method": "bbox_inset_bottom_edge_proxy",
                             "parameters": cfg, "maneuver": maneuver}
-                if status == "confirmed" or cfg["emit_suspected"]:
+                if status == "confirmed" or gap_basis or cfg["emit_suspected"]:
                     event = self.build_event(crossing["frame"], crossing["vehicle"], crossing["double_line"],
                                              status=status, conditions=conditions, evidence=evidence)
+                    if gap_basis:
+                        # 不改寫缺口事實；此路徑只替代 uninterrupted_positions，其餘條件全部成立。
+                        status = "confirmed"
+                        event.update(status=status, status_label="確認違規", confirmation_basis=["short_position_gap"])
+                        event["evidence"]["max_position_interval_sec"] = state["max_position_interval"]
                     event.update(behavior=maneuver, confirmation_frame=frame["index"], confirmation_timestamp_sec=now)
                     if vehicle.get("plate_text"):
                         event["evidence"]["vehicle"]["plate_text"] = vehicle["plate_text"]
@@ -1521,7 +1582,8 @@ RULE_FACTORIES = {
 
 
 RED_LIGHT_CONFIG_OPTIONS = {"confirm_line_handoff": bool, "confirm_crosswalk_proxy": bool,
-                            "confirm_after_motion_gap": bool, "deferred_confirmation_seconds": (int, float)}
+                            "confirm_after_motion_gap": bool, "deferred_confirmation_seconds": (int, float),
+                            "confirm_signal_episode": bool}
 
 
 def red_light_rule_options(path):

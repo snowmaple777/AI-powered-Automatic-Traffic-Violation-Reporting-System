@@ -1,0 +1,38 @@
+{
+  "rules": [
+    "red_light_stop_line_crossing"
+  ],
+  "variants": {
+    "r23": {
+      "red_light_stop_line_crossing": {
+        "confirm_line_handoff": true,
+        "confirm_crosswalk_proxy": true
+      }
+    },
+    "episode": {
+      "red_light_stop_line_crossing": {
+        "confirm_line_handoff": true,
+        "confirm_crosswalk_proxy": true,
+        "confirm_signal_episode": true
+      }
+    }
+  },
+  "sources": [
+    {
+      "name": "formal",
+      "path": "outputs/eval/eval_4aj",
+      "truth": "eval/ground_truth.json"
+    },
+    {
+      "name": "rough",
+      "path": "outputs/eval/new_20261114",
+      "truth": "outputs/rough_truth_20261115.json",
+      "primary_only": true
+    },
+    {
+      "name": "long",
+      "path": "outputs/analysis/long_video_20261108/run_01/phase1",
+      "review": "eval/long_video_review.json"
+    }
+  ]
+}

@@ -139,6 +139,11 @@
   事件帶 `confirmation_basis`（`standard` 或替代路徑名）。替代路徑各自只取代一個阻擋條件（停止線交接、斑馬線代理線、
   運動失效），被取代的條件在 `conditions` 中仍為 false；消費端判斷確認依據時讀 `confirmation_basis`。
   這是經使用者同意、有評估數字的確認定義擴充，不屬於第 6 節原則 1 所禁止的「暗中削弱」。
+- 4aw：使用者授權逐階段嘗試重新設計確認規則，新增預設關閉的紅燈時段、區域確認、雙線短缺口實驗。
+  見 `docs/handoff/confirmation_rules_4aw.md`；區域候選最多等 3 秒，保留原事件時間，確認時間另記。
+  `confirmation_basis` 也適用區域／雙線事件，不能假設雙線 confirmed 的原條件全為 true。
+  主預設不變；選用 `configs/red_light_confirm_r23.json` 啟用 R2＋R3，`configs/area_confirm_crosswalk.json` 啟用斑馬線確認與 8px 足跡門檻。
+  其他實驗沒有可認列的新增收益，不納入建議設定；8px 尚未經獨立資料驗證，詳見本輪報告。
 
 ### 5.5 事件車牌補充（4w；預設關閉）
 
@@ -207,7 +212,7 @@
 指標摘要：`batch_eval.summarize(label)` 或 `eval/metrics.py`。影片層級＝該片是否輸出目標規則事件；事件層級只計 `reviewed: true` 的影片。
 
 ### 7.3 回報格式
-每次交付或整合，在 `docs/refactor_log.md` 新增一節（目前編號到 4av；4aa 保留給 Astra 的標線尺度實驗），包含：修改內容、原因、驗證方式、
+每次交付或整合，在 `docs/refactor_log.md` 新增一節（目前編號到 4aw；4aa 保留給 Astra 的標線尺度實驗），包含：修改內容、原因、驗證方式、
 前後數字（影片層級、事件層級 TP／FP／FN、速度）、逐片變動的事件、已知副作用、是否採用。
 
 ---

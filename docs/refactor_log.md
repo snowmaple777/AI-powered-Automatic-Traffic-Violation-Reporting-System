@@ -1333,3 +1333,87 @@ NLC（變換車道未打方向燈）與 NLT（轉彎）兩類系統沒有對應�
 - 結論：R2、R3 各有正式 GT 支持的升級且沒有新增 confirmed 誤報，但數量小（eval_4aj 3→5、新影片闖紅燈類 5→7）；
   R4 只產生 1 個無法判斷的升級。預設維持關閉，待更多標註或 R1（燈號時段判定）一併評估後再決定。
 - 輸出：outputs/eval/rules_4av_off、rules_4av_off2、new_4av_off（等價）、rules_4av_on_smoke（入口煙霧測試）；離線比較在工作暫存區。未推送／合併。
+
+### 4aw：確認規則分階段實作與誤報檢查（Codex，2026-11-16–17，主預設不變）
+
+使用者授權依提高 confirmed 的方案逐階段實作、量測實際收益並檢查新增誤報。
+新增預設關閉的停等區方向／深入占用、保守紅燈時段 R1、斑馬線持續重疊與雙線短位置缺口確認；
+沿用既有 R2／R3。區域候選最多延後 3 秒，保留原事件時間與條件，另存確認時間及直接觀測證據；
+替代路徑以 confirmation_basis 說明，不能假設 confirmed 的原 conditions 全為 true。
+沒有修改模型、觀測、GT 或三份主預設，也沒有提交、推送或合併。
+
+新增 tools/confirmation_eval.py、tools/confirmation_review.py 及 eval/confirmation_experiments/ 的七份 manifest，
+支援獨立引擎對照、續跑來源／程式指紋驗證、主類別評估、已知長片誤報比較及新增確認圖板。
+七組均完成正式 31 支、粗略 141 支及長片 2 支（每組 174 支），只重算既有觀測。
+詳細條件、逐件覆核與重現方式見 [交接報告](handoff/confirmation_rules_4aw.md)。
+
+| 實驗 | 正式 confirmed TP／FP | 粗略主類別 confirmed TP／FP | 結論 |
+| --- | --- | --- | --- |
+| R2＋R3 闖紅燈 | 3／0 → 5／0 | 5／2 → 7／2 | 有收益，提供選用設定 |
+| 停等區方向 | 0／0 → 0／0 | 0／0 → 0／0 | 無收益 |
+| 停等區深入占用 | 0／0 → 0／0 | 自動配對增加 1 TP，但目標不符 | 不認列收益，不採用 |
+| R1（相對 R2＋R3） | 5／0 → 5／0 | 7／2 → 7／2 | 無額外收益 |
+| 斑馬線確認 | 0／0 → 0／0 | 0／0 → 2／0，另有 2 筆跨類疑義 | 原版不採用 |
+| 斑馬線＋8px 足跡門檻 | 0／0 → 0／0 | 保留 2／0，兩筆疑義退回疑似 | 小樣本有收益，提供選用設定 |
+| 雙線短位置缺口 | 0／0 → 0／0 | 0／0 → 0／0 | 無收益 |
+
+- 停等區 CIM016 升級的是右側黑車 vehicle-000163，GT 是白色 Toyota 8969-L5；缺少 OCR 時，
+  原配對可將時間相近的另一台車當成命中。黑車是否另有違規尚未確認，不能把此數字當實際收益。
+- 斑馬線 SOZ019／SOZ020 的目標車與 GT 一致；CIM019／vr021 是遠處車輛，區域歸屬或停止狀態有疑義。
+  足跡短邊至少 8px 的門檻保留前兩者、排除後兩者；這是同一批資料上的工程門檻，尚未獨立驗證。
+- R2 另新增跨類未標註 CIM015；目視支持紅燈向前移動，但不計為已驗證收益。
+- 正式集合全部候選指標不變；粗略闖紅燈全部候選 TP／FP／FN 12／4／32 → 13／4／31，其他規則不變。
+- A1／A5 所有階段均無新增 confirmed；四類規則合計維持 8 筆疑似（約 13.17 筆／小時），
+  已知誤報維持闖紅燈 2、斑馬線 1。長片只有部分覆核，不能宣稱完整誤報率不變或零誤報。
+
+可用 configs/red_light_confirm_r23.json（只啟用 R2／R3）及 configs/area_confirm_crosswalk.json
+（斑馬線確認＋8px，保留原候選設定）。R1、停等區及雙線實驗不納入建議設定；主預設仍關閉。
+
+驗證：
+- 最終完整測試 314 項通過（274.016 秒）；新增測試涵蓋區域直接證據／遮擋／幾何擾動／慢速爬行／期限／解析度、
+  號誌換號與反證、雙線關鍵過渡及評估資料範圍。
+- stage1_red 對 stage2_window、stage2b，以及 stage4 對 stage4b 的對應不變變體，各 174 支輸出完全一致。
+  斑馬線與雙黃線關閉基準各 172 支與既有批次一致（只排除工具補的頂層 plate）；詳見 equivalence.json。
+- 全規則入口搭配兩份選用設定實跑 ms05、s01、SOZ019，分別驗證 R2、R3、斑馬線確認與解析度檢查。
+  七組完整重算按階段執行；未將三支合併設定入口驗證宣稱為合併設定完整 174 支評估。
+- git diff --check 通過；主設定與正式 GT／長片覆核檔無差異。未量測或宣稱 FPS 改善。
+
+輸出：outputs/confirmation_20261116/ 的 stage1_red、stage2_window、stage2b、stage3、stage4、stage4b、stage5；
+逐件紀錄 visual_review.json、相容性 equivalence.json、測試 tests_final_resolution.log 及 smoke_*.jsonl。
+stage1／stage2 是中止或被取代的初版，不作結論。圖板覆核是 agent 目視判讀，沒有冒充人工 GT。
+
+#### 4aw 整合重驗（Opus，2026-11-17）
+
+以工作目錄的 4aw 程式（基準 e3873b3）獨立重算闖紅燈新方案，不使用 confirmation_eval.py，
+並以全規則 rule_eval 入口核對預設與 R2＋R3 設定。結果與上表一致。
+- 預設關閉：rule_eval 全規則輸出與 4av 基準逐位元相同。
+  eval_4aj 62 檔對 rules_4av_off2，new_20261114 282 檔對 new_4av_off。
+  區域與雙線的新選項關閉時也不影響輸出。
+- 只跑闖紅燈規則（基礎設定同 rule_eval.rule_options），P／R／F1 為事件層級：
+
+| 設定 | 正式 全部 TP／FP／FN | 正式 confirmed TP／FP／FN（P／R） | 粗略主類別 全部 TP／FP／FN | 粗略 confirmed TP／FP／FN（P／R） |
+| --- | --- | --- | --- | --- |
+| 關閉 | 12／1／3 | 3／0／12（1.000／0.200） | 12／4／32 | 5／2／39（0.714／0.114） |
+| R2＋R3 | 12／1／3 | 5／0／10（1.000／0.333） | 13／4／31 | 7／2／37（0.778／0.159） |
+| R1 單開 | 12／1／3 | 3／0／12 | 12／4／32 | 5／2／39 |
+| R2＋R3＋R1 | 12／1／3 | 5／0／10 | 13／4／31 | 7／2／37 |
+| R4 單開 | 12／1／3 | 3／0／12 | 12／4／32 | 5／2／39 |
+| 全開 | 12／1／3 | 5／0／10 | 13／4／31 | 7／2／37 |
+
+- 升級事件：
+  - 正式：ms05（R2）、s01（R3）。
+  - 粗略：vr005、vr017（R2）。
+  - 跨類 confirmed：CIM015（R2）、cy047（R4）。
+- 全規則入口搭配 red_light_confirm_r23.json 的結果與上表 R2＋R3 相同。
+  粗略集合停等區 FP 16→15，因一筆停等區事件併入 vr017 的闖紅燈事件；其他規則不變。
+- A1／A5：各組都是 5 筆疑似、0 筆 confirmed。
+- 已知副作用（4av 起即存在）：
+  - 疑似事件保留「成立條件數最多」的快照（RedLightStopLineCrossingRule.evaluate 的 pending 比較）。
+  - 選項新增的條件欄位成立時，較晚的幀會被視為較強，使疑似事件時間移動。
+  - vr030 開 R4 時 5.54→5.56 秒，狀態與 GT 配對不變；確認事件不受影響。
+- 完整測試 314 項通過（233.9 秒）。
+- 本次只提交 4aw stage1–5。Codex 進行中的 stage6 斑馬線邊界實驗不在此提交：
+  area_rules.py 的 crosswalk_boundary_guard／crosswalk_min_footprint_px、
+  tests/test_crosswalk_boundary.py、eval/confirmation_experiments/stage6_crosswalk_boundary.json
+  仍留在工作目錄。
+- 重驗輸出：outputs/eval/verify_4aw_off、verify_4aw_r23、verify_new_4aw_off、verify_new_4aw_r23。

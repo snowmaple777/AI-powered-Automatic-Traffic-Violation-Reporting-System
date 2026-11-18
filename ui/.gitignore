@@ -2,3 +2,6 @@ data/
 __pycache__/
 *.pyc
 config.json
+# 片段庫的影片不進 git，只留說明檔
+clips/*
+!clips/README.txt

@@ -77,6 +77,19 @@
 <div class="bg-blobs" aria-hidden="true"><i></i><i></i><i></i></div>
 
 <!-- ======================= 登入／註冊 ======================= -->
+<div class="mail-pop hidden" id="mail-pop" role="status">
+  <div class="mail-pop-head"><span class="mail-pop-ic"><svg class="ic"><use href="#i-mail"/></svg></span>
+    <div><b>新郵件・馬路三寶</b><small>開發模式模擬收信</small></div>
+    <button class="mail-pop-x" type="button" id="mail-pop-x" aria-label="關閉"><svg class="ic"><use href="#i-x"/></svg></button></div>
+  <div class="mail-pop-body">你的 Email 驗證碼是
+    <div class="mail-pop-code" id="mail-pop-code"></div>
+    <small id="mail-pop-to"></small></div>
+  <div class="mail-pop-acts">
+    <button class="btn primary small" type="button" id="mail-pop-fill"><svg class="ic"><use href="#i-check"/></svg>自動填入</button>
+    <button class="btn ghost small" type="button" id="mail-pop-copy"><svg class="ic"><use href="#i-copy"/></svg>複製</button>
+  </div>
+  <i class="mail-pop-bar"></i>
+</div>
 <section id="auth-screen" class="auth">
   <div class="auth-hero">
     <div class="brand light">
@@ -112,13 +125,13 @@
       </div>
       <h2 id="auth-title">歡迎回來</h2>
       <p class="muted" id="auth-sub">登入以繼續你的檢舉</p>
-      <div class="seg full" id="auth-tabs">
+      <div class="seg full verify-hide" id="auth-tabs">
         <button data-mode="login" class="active">登入</button>
         <button data-mode="register">註冊</button>
       </div>
-      <button class="btn google full" id="btn-google" type="button"><span class="g-mark">G</span>使用 Google 帳號繼續</button>
-      <div class="divider"><span>或使用 Email</span></div>
-      <form id="auth-form" class="form" novalidate>
+      <button class="btn google full verify-hide" id="btn-google" type="button"><span class="g-mark">G</span>使用 Google 帳號繼續</button>
+      <div class="divider verify-hide"><span>或使用 Email</span></div>
+      <form id="auth-form" class="form verify-hide" novalidate>
         <label class="reg-only">姓名<div class="input-ic"><svg class="ic"><use href="#i-user"/></svg><input name="name" autocomplete="name" placeholder="王小明"></div></label>
         <label>Email<div class="input-ic"><svg class="ic"><use href="#i-mail"/></svg><input name="email" type="email" autocomplete="email" placeholder="you@example.com"></div></label>
         <label>密碼<div class="input-ic pw"><svg class="ic"><use href="#i-lock"/></svg><input name="password" type="password" autocomplete="current-password" placeholder="至少 6 個字元">
@@ -133,8 +146,41 @@
         <div class="auth-error hidden" id="auth-error"><svg class="ic xs"><use href="#i-alert"/></svg><span></span></div>
         <button class="btn primary big full" id="auth-submit" type="submit">登入</button>
       </form>
-      <p class="auth-switch" id="auth-switch">還沒有帳號？<a class="link" data-switch="register">立即註冊</a></p>
-      <p class="auth-note"><svg class="ic xs"><use href="#i-info"/></svg> 本機模擬登入：帳號只存在這台電腦，Google 登入為展示用</p>
+      <div class="verify-box verify-only" id="verify-box">
+        <div class="verify-dev"><svg class="ic xs"><use href="#i-info"/></svg><span>開發模式：不會真的寄信，驗證碼會跳出提醒，也印在伺服器的黑色視窗裡</span></div>
+        <form id="verify-form" novalidate>
+          <div class="otp" id="otp">
+            <input inputmode="numeric" maxlength="1" autocomplete="one-time-code" aria-label="第 1 碼"><input inputmode="numeric" maxlength="1" aria-label="第 2 碼"><input inputmode="numeric" maxlength="1" aria-label="第 3 碼"><span class="otp-sep"></span><input inputmode="numeric" maxlength="1" aria-label="第 4 碼"><input inputmode="numeric" maxlength="1" aria-label="第 5 碼"><input inputmode="numeric" maxlength="1" aria-label="第 6 碼">
+          </div>
+          <div class="auth-error hidden" id="verify-error"><svg class="ic xs"><use href="#i-alert"/></svg><span></span></div>
+          <button class="btn primary big full" id="verify-submit" type="submit">驗證並完成註冊</button>
+        </form>
+        <div class="verify-links">
+          <span id="verify-timer"></span>
+          <button class="link" type="button" id="verify-resend" disabled>重新寄送</button>
+        </div>
+        <button class="btn ghost full" type="button" id="verify-back"><svg class="ic"><use href="#i-left"/></svg>改用其他 Email</button>
+      </div>
+      <div class="setup-box setup-only" id="setup-box">
+        <ol class="setup-steps">
+          <li class="done"><i><svg class="ic"><use href="#i-check"/></svg></i>建立帳號</li>
+          <li class="done"><i><svg class="ic"><use href="#i-check"/></svg></i>驗證 Email</li>
+          <li class="cur"><i>3</i>檢舉人資料</li>
+        </ol>
+        <form id="setup-form" class="form" novalidate>
+          <label>真實姓名<div class="input-ic"><svg class="ic"><use href="#i-user"/></svg><input name="reporter_name" autocomplete="name" placeholder="與身分證相同"></div></label>
+          <label>身分證字號<div class="input-ic"><svg class="ic"><use href="#i-hash"/></svg><input name="reporter_id" maxlength="10" autocapitalize="characters" placeholder="A123456789"></div></label>
+          <label>手機號碼<div class="input-ic"><svg class="ic"><use href="#i-phone"/></svg><input name="reporter_phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="0912345678"></div></label>
+          <label>電子郵件<div class="input-ic"><svg class="ic"><use href="#i-mail"/></svg><input name="reporter_email" type="email" autocomplete="email"></div></label>
+          <label><span>聯絡地址<span class="opt">選填</span></span><div class="input-ic"><svg class="ic"><use href="#i-pin"/></svg><input name="reporter_address" autocomplete="street-address" placeholder="部分縣市會要求填寫"></div></label>
+          <div class="setup-privacy"><svg class="ic xs"><use href="#i-shield"/></svg><span>只存在這台電腦的 <code>ui/data/</code>，送出檢舉時才會帶入各縣市的檢舉表單。</span></div>
+          <div class="auth-error hidden" id="setup-error"><svg class="ic xs"><use href="#i-alert"/></svg><span></span></div>
+          <button class="btn primary big full" id="setup-submit" type="submit">完成，開始使用</button>
+        </form>
+        <button class="link setup-skip" type="button" id="setup-skip">稍後再填</button>
+      </div>
+      <p class="auth-switch verify-hide" id="auth-switch">還沒有帳號？<a class="link" data-switch="register">立即註冊</a></p>
+      <p class="auth-note setup-hide"><svg class="ic xs"><use href="#i-info"/></svg> 本機模擬登入：帳號只存在這台電腦，Google 登入為展示用</p>
     </div>
   </div>
 </section>
@@ -165,10 +211,13 @@
 <main>
   <!-- ======================= 新增檢舉 ======================= -->
   <section id="view-new" class="view active">
-    <div class="draft-bar hidden" id="draft-bar">
-      <span class="ic-bubble green sm"><svg class="ic"><use href="#i-save"/></svg></span>
-      <div class="draft-info"><b id="draft-name">新的檢舉</b><span id="save-state" class="muted small">進度會自動儲存</span></div>
-      <button class="btn ghost small" id="btn-new-draft"><svg class="ic"><use href="#i-plus"/></svg>開始新的檢舉</button>
+    <div class="draft-row hidden" id="draft-bar">
+      <div class="draft-bar">
+        <span class="ic-bubble green sm"><svg class="ic"><use href="#i-save"/></svg></span>
+        <div class="draft-info"><b id="draft-name">新的檢舉</b><span id="save-state" class="muted small">進度會自動儲存</span></div>
+      </div>
+      <button class="btn primary new-report-btn" id="btn-new-draft" title="目前的進度已自動儲存，可以在「案件紀錄」接著做">
+        <span class="nr-ic"><svg class="ic"><use href="#i-plus"/></svg></span>開始新的檢舉</button>
     </div>
     <div class="resume-banner hidden" id="resume-banner"></div>
     <ol class="stepper" id="stepper">
@@ -187,13 +236,40 @@
       </div>
       <div class="grid2">
         <div class="card" style="--i:0">
-          <div class="card-head"><span class="ic-bubble blue"><svg class="ic"><use href="#i-video"/></svg></span><div><h2>行車影片</h2><p>行車記錄器原始檔即可</p></div></div>
-          <label class="dropzone" id="dropzone">
+          <div class="card-head"><span class="ic-bubble blue"><svg class="ic"><use href="#i-video"/></svg></span><div><h2>行車影片</h2><p>挑一段要檢舉的片段</p></div></div>
+          <div class="src-picker" id="dropzone">
             <input type="file" id="video-input" accept="video/*" hidden>
-            <div class="dz-art"><svg class="ic"><use href="#i-upload"/></svg></div>
-            <div class="dz-text">拖曳影片到這裡，或 <u>選擇檔案</u></div>
-            <div class="dz-hint">MP4・MOV・AVI</div>
-          </label>
+            <button class="src-main" type="button" data-src="clips">
+              <span class="src-main-head">
+                <span class="src-art"><svg class="ic"><use href="#i-layers"/></svg></span>
+                <span class="src-txt"><b>已切好的片段 <em class="src-badge" id="clips-count"></em></b>
+                  <small id="clips-line">從切段程式輸出的資料夾挑選，點開可以先預覽</small></span>
+                <span class="src-cta">去挑片段<svg class="ic"><use href="#i-right"/></svg></span>
+              </span>
+              <span class="src-thumbs" id="src-thumbs"></span>
+            </button>
+            <div class="src-or"><span id="src-or-txt">還沒有片段？從這裡加入影片</span></div>
+            <div class="src-mini-row">
+              <button class="src-mini" type="button" data-src="long">
+                <span class="src-art amber sm"><svg class="ic"><use href="#i-scissors"/></svg></span>
+                <span class="src-txt"><b>一整趟的長片</b><small>上傳後自動切成片段</small></span>
+              </button>
+              <div class="src-mini plain">
+                <span class="src-art blue sm"><svg class="ic"><use href="#i-video"/></svg></span>
+                <span class="src-txt"><b>已剪好的短片</b>
+                  <span class="src-btns">
+                    <button class="btn soft small" type="button" data-src="local"><svg class="ic"><use href="#i-upload"/></svg>電腦</button>
+                    <button class="btn ghost small" type="button" data-src="cloud"><svg class="ic"><use href="#i-download"/></svg>雲端</button>
+                  </span></span>
+              </div>
+            </div>
+            <div class="src-drop-hint"><svg class="ic"><use href="#i-upload"/></svg>放開即可上傳這段影片</div>
+          </div>
+          <div class="src-selected hidden" id="src-selected">
+            <span class="src-art sm" id="src-selected-icon"></span>
+            <div class="src-sel-txt"><b id="src-selected-name"></b><small id="src-selected-from"></small></div>
+            <button class="btn ghost small" type="button" id="btn-reselect"><svg class="ic"><use href="#i-refresh"/></svg>重新選擇</button>
+          </div>
           <div id="upload-progress" class="progress hidden"><div></div><span></span></div>
           <div class="video-wrap hidden" id="video-wrap">
             <video id="video-preview" controls muted playsinline></video>
@@ -203,6 +279,7 @@
 
         <div class="card" style="--i:1">
           <div class="card-head"><span class="ic-bubble green"><svg class="ic"><use href="#i-pin"/></svg></span><div><h2>GPS 位置</h2><p>用來判斷違規地點與受理縣市</p></div></div>
+          <div class="gps-note hidden" id="gps-note"></div>
           <div class="seg full" id="gps-tabs">
             <button data-tab="preset" class="active"><svg class="ic"><use href="#i-map"/></svg>常用地點</button>
             <button data-tab="manual"><svg class="ic"><use href="#i-locate"/></svg>輸入座標</button>
@@ -220,6 +297,11 @@
             <label class="file-pick"><input type="file" id="gps-input" accept=".csv,.gpx,.nmea,.txt,.log" hidden>
               <svg class="ic"><use href="#i-route"/></svg><span id="gps-file-name">選擇 GPS 軌跡檔</span></label>
             <div class="muted small">CSV（t,lat,lon）、GPX、NMEA（$GPRMC）</div>
+            <div class="sim-box">
+              <div class="sim-txt"><b>沒有軌跡檔？</b><span>以目前地點為起點、依影片長度模擬一段行車軌跡（展示用）</span></div>
+              <button class="btn soft small" type="button" id="btn-sim-gps"><svg class="ic"><use href="#i-sparkles"/></svg>產生模擬軌跡</button>
+            </div>
+            <a class="link small hidden" id="sim-gpx-dl" download><svg class="ic xs"><use href="#i-download"/></svg>下載這條模擬軌跡（GPX）</a>
           </div>
           <div id="map" class="map"></div>
           <div id="gps-info" class="geo-line"></div>
@@ -366,7 +448,7 @@
               <label>違規行政區<input name="district" required></label>
             </div>
             <label>交通違規地點<input name="location" required placeholder="例：高雄市楠梓區大學南路 700 號前">
-              <em class="hint warn"><svg class="ic xs"><use href="#i-info"/></svg>GPS 只能推到行政區，請補上路名／門牌</em></label>
+              <em class="hint warn" id="loc-hint"><svg class="ic xs"><use href="#i-info"/></svg>GPS 只能推到行政區，請補上路名／門牌</em></label>
             <div class="form-section"><svg class="ic"><use href="#i-calendar"/></svg>時間與車輛</div>
             <div class="row">
               <label>違規日期<input name="date" type="date" required></label>
@@ -421,8 +503,8 @@
     <div class="card narrow">
       <form id="profile-form" class="form">
         <label>姓名<div class="input-ic"><svg class="ic"><use href="#i-user"/></svg><input name="reporter_name"></div></label>
-        <label>身分證字號<div class="input-ic"><svg class="ic"><use href="#i-hash"/></svg><input name="reporter_id"></div></label>
-        <label>聯絡電話<div class="input-ic"><svg class="ic"><use href="#i-phone"/></svg><input name="reporter_phone"></div></label>
+        <label>身分證字號<div class="input-ic"><svg class="ic"><use href="#i-hash"/></svg><input name="reporter_id" maxlength="10" placeholder="A123456789"></div></label>
+        <label>聯絡電話<div class="input-ic"><svg class="ic"><use href="#i-phone"/></svg><input name="reporter_phone" type="tel" placeholder="0912345678"></div></label>
         <label>電子郵件<div class="input-ic"><svg class="ic"><use href="#i-mail"/></svg><input name="reporter_email" type="email"></div></label>
         <label>聯絡地址<div class="input-ic"><svg class="ic"><use href="#i-pin"/></svg><input name="reporter_address"></div></label>
         <div class="actions left"><button class="btn primary" type="submit"><svg class="ic"><use href="#i-check"/></svg>儲存</button><span id="profile-saved" class="muted small"></span></div>

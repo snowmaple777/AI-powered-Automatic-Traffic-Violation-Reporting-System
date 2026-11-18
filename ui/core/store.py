@@ -10,6 +10,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -678,8 +679,26 @@ def get_profile():
     return {k: data.get(k, "") for k in PROFILE_KEYS}
 
 
+_ID_LETTERS = dict(zip("ABCDEFGHJKLMNPQRSTUVXYWZIO", range(10, 36)))
+
+
+def valid_tw_id(v: str) -> bool:
+    """身分證字號／新式居留證號（第二碼 1、2、8、9）的檢查碼。"""
+    if not re.fullmatch(r"[A-Z][1289]\d{8}", v or ""):
+        return False
+    n = _ID_LETTERS[v[0]]
+    total = n // 10 + (n % 10) * 9 + sum(int(d) * w for d, w in zip(v[1:9], range(8, 0, -1))) + int(v[9])
+    return total % 10 == 0
+
+
 def save_profile(data):
     clean = {k: str(data.get(k, "")).strip() for k in PROFILE_KEYS}
+    clean["reporter_id"] = clean["reporter_id"].upper()
+    clean["reporter_phone"] = re.sub(r"[\s-]", "", clean["reporter_phone"])
+    if clean["reporter_id"] and not valid_tw_id(clean["reporter_id"]):
+        raise ValueError("身分證字號格式不正確")
+    if clean["reporter_phone"] and not re.fullmatch(r"0\d{8,9}", clean["reporter_phone"]):
+        raise ValueError("電話格式不正確（例：0912345678）")
     _write_json(_profile_path(require_user()), clean)
     return clean
 

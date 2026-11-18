@@ -176,40 +176,87 @@ function goStep(n) {
 const unlock = (n) => { state.maxStep = Math.max(state.maxStep, n); };
 $$("#stepper li").forEach((li) => li.addEventListener("click", () => goStep(+li.dataset.step)));
 
-/* ============================ Step 1：上傳 ============================ */
+/* ============================ Step 1：選擇影片來源 ============================ */
 const dz = $("#dropzone"), vInput = $("#video-input");
 ["dragover", "dragenter"].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add("over"); }));
-["dragleave", "drop"].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.remove("over"); }));
-dz.addEventListener("drop", (e) => { const f = e.dataTransfer.files[0]; if (f) uploadVideo(f); });
-vInput.addEventListener("change", () => { if (vInput.files[0]) uploadVideo(vInput.files[0]); });
+dz.addEventListener("dragleave", (e) => { if (!dz.contains(e.relatedTarget)) dz.classList.remove("over"); });
+dz.addEventListener("drop", (e) => { e.preventDefault(); dz.classList.remove("over"); const f = e.dataTransfer.files[0]; if (f) uploadVideo(f); });
+vInput.addEventListener("change", () => { if (vInput.files[0]) uploadVideo(vInput.files[0]); vInput.value = ""; });
+$$("#dropzone [data-src]").forEach((b) => b.addEventListener("click", () => {
+  const src = b.dataset.src;
+  if (src === "local") vInput.click();
+  else if (src === "clips") openClipLibrary();
+  else if (src === "cloud") openCloudImport();
+  else if (src === "long") openLongUpload();
+}));
+$("#btn-reselect").addEventListener("click", () => {
+  $("#src-selected").classList.add("hidden"); dz.classList.remove("hidden");
+});
 
-function uploadVideo(file) {
-  const bar = $("#upload-progress");
-  bar.classList.remove("hidden", "done");
+const SOURCES = {
+  clips: { icon: "layers", cls: "", label: "已切好的片段" },
+  local: { icon: "upload", cls: "blue", label: "本機上傳" },
+  cloud: { icon: "download", cls: "green", label: "雲端匯入" },
+};
+
+/* 用 XHR 上傳（才拿得到進度），回傳伺服器的 JSON */
+function xhrUpload(url, file, bar) {
+  return new Promise((resolve, reject) => {
+    bar.classList.remove("hidden", "done");
+    bar.firstElementChild.style.width = "0%";
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${url}?filename=${encodeURIComponent(file.name)}`);
+    if (tokenStore.get()) xhr.setRequestHeader("X-Auth-Token", tokenStore.get());
+    xhr.upload.onprogress = (e) => {
+      if (!e.lengthComputable) return;
+      const p = Math.round((e.loaded / e.total) * 100);
+      bar.firstElementChild.style.width = p + "%";
+      bar.lastElementChild.textContent = `上傳中 ${p}%`;
+    };
+    xhr.onload = () => {
+      let data = {}; try { data = JSON.parse(xhr.responseText); } catch (e) { /* 非 JSON */ }
+      if (xhr.status !== 200) { bar.classList.add("hidden"); reject(new Error(data.error || "上傳失敗")); return; }
+      bar.firstElementChild.style.width = "100%";
+      bar.classList.add("done"); bar.lastElementChild.textContent = "上傳完成";
+      setTimeout(() => bar.classList.add("hidden"), 1200);
+      resolve(data);
+    };
+    xhr.onerror = () => { bar.classList.add("hidden"); reject(new Error("上傳失敗，請確認伺服器是否在執行")); };
+    xhr.send(file);
+  });
+}
+
+async function uploadVideo(file) {
   $("#btn-analyze").disabled = true;
-  const xhr = new XMLHttpRequest();
-  xhr.open("POST", `/api/upload?filename=${encodeURIComponent(file.name)}`);
-  if (tokenStore.get()) xhr.setRequestHeader("X-Auth-Token", tokenStore.get());
-  xhr.upload.onprogress = (e) => {
-    if (!e.lengthComputable) return;
-    const p = Math.round((e.loaded / e.total) * 100);
-    bar.firstElementChild.style.width = p + "%";
-    bar.lastElementChild.textContent = `上傳中 ${p}%`;
-  };
-  xhr.onload = async () => {
-    if (xhr.status !== 200) { toast("上傳失敗", "alert"); return; }
-    const data = JSON.parse(xhr.responseText);
-    state.video = { ...data, name: file.name, lastModified: file.lastModified };
-    bar.firstElementChild.style.width = "100%";
-    bar.classList.add("done"); bar.lastElementChild.textContent = "上傳完成";
-    setTimeout(() => bar.classList.add("hidden"), 1200);
-    showVideo(state.video, true);
-    refreshAnalyzeBtn();
-    toast("影片上傳完成");
-    try { await ensureDraft(); showDraftBar(); saveDraft(); } catch (e) { setSaveState("error"); }
-  };
-  xhr.onerror = () => toast("上傳失敗，請確認伺服器是否在執行", "alert");
-  xhr.send(file);
+  try {
+    const data = await xhrUpload("/api/upload", file, $("#upload-progress"));
+    await useVideo({ ...data, name: file.name, lastModified: file.lastModified, source: "local" }, "影片上傳完成");
+  } catch (e) { toast(e.message, "alert"); refreshAnalyzeBtn(); }
+}
+
+/* 三種來源最後都走這裡：記到 state、顯示預覽、存草稿 */
+async function useVideo(video, msg) {
+  const gps = video.gps; delete video.gps;          // 軌跡放 state.gps，不塞進 video
+  if (gps && gps.track && gps.track[0] && gps.track[0].time) video.recorded_start = gps.track[0].time;
+  state.video = video;
+  if (gps) {
+    applyTrack(gps, gps.simulated ? `${gps.file}（模擬軌跡）` : gps.file, gps.simulated);
+    gpsNote("ok", gps);
+    msg += `，已自動帶入軌跡檔 ${gps.file}`;
+  } else {
+    // 這支影片沒有附軌跡檔：清掉上一支的位置，提醒使用者補
+    state.gps = { mode: "track", lat: null, lon: null, track: null, geo: null };
+    $("#gps-file-name").textContent = "選擇 GPS 軌跡檔";
+    $("#sim-gpx-dl").classList.add("hidden");
+    $("#btn-sim-gps").innerHTML = `${ic("sparkles")}產生模擬軌跡`;
+    switchGpsTab("file"); renderGpsInfo(); drawMap();
+    gpsNote("need");
+    msg += "，請補上 GPS 軌跡檔";
+  }
+  showVideo(state.video, true);
+  refreshAnalyzeBtn();
+  toast(msg);
+  try { await ensureDraft(); showDraftBar(); saveDraft(); } catch (e) { setSaveState("error"); }
 }
 
 function showVideo(video, fresh = false) {
@@ -220,23 +267,239 @@ function showVideo(video, fresh = false) {
   chips([video.name, size]);
   v.onloadedmetadata = () => {
     chips([video.name, size, `${v.videoWidth}×${v.videoHeight}`, fmtSec(v.duration)]);
-    if (fresh && video.lastModified) {
+    if (fresh && video.recorded_start) {          // 片段有附軌跡：錄影時間以 GPS 時間為準
+      $("#recorded-at").value = toLocalInput(new Date(video.recorded_start));
+      saveDraft();
+    } else if (fresh && video.lastModified) {
       // 行車記錄器的檔案時間通常是「錄影結束」，往前推影片長度當作開始時間
       $("#recorded-at").value = toLocalInput(new Date(video.lastModified - (v.duration || 0) * 1000));
       saveDraft();
     }
   };
   v.onerror = () => chips([video.name, "瀏覽器無法預覽此格式，但仍可分析"]);
-  dz.classList.add("compact");
-  dz.querySelector(".dz-text").innerHTML = `已選擇 <b>${esc(video.name)}</b>　<u>重新選擇</u>`;
+  const src = SOURCES[video.source] || SOURCES.local;
+  $("#src-selected-icon").className = `src-art sm ${src.cls}`;
+  $("#src-selected-icon").innerHTML = ic(src.icon);
+  $("#src-selected-name").textContent = video.name;
+  $("#src-selected-from").textContent = video.clip_group ? `${src.label}・${video.clip_group}`
+    : video.provider ? `${src.label}・${video.provider}` : src.label;
+  dz.classList.add("hidden");
+  $("#src-selected").classList.remove("hidden");
+}
+
+/* ---- 已處理短片庫 ---- */
+function setClipLine(n, list = []) {
+  $("#clips-count").textContent = n || "";
+  $("#clips-line").textContent = n ? "從切段程式輸出的資料夾挑選，點開可以先預覽" : "還沒有片段，先從下面上傳一整趟的長片";
+  $(".src-main").classList.toggle("empty", !n);
+  $("#src-or-txt").textContent = n ? "或加入新的影片" : "還沒有片段？從這裡加入影片";
+  const box = $("#src-thumbs");
+  const show = list.slice(0, 4);
+  box.innerHTML = show.map((c) => `<span class="src-thumb"><video muted playsinline preload="metadata" src="${c.url}#t=0.5"></video></span>`).join("")
+    + (n > show.length ? `<span class="src-thumb more">+${n - show.length}</span>` : "");
+}
+async function refreshClipCount() {
+  try {
+    const r = await api("/api/clips");
+    setClipLine(r.clips.length, r.clips);
+  } catch (e) { /* 未登入或伺服器沒開 */ }
+}
+
+async function openClipLibrary() {
+  openModal(`<h2>${ic("layers")}已切好的片段</h2>
+    <div class="lib-bar">
+      <select id="lib-group"><option value="">全部資料夾</option></select>
+      <div class="lib-search">${ic("scan", "xs")}<input id="lib-q" placeholder="搜尋檔名"></div>
+      <button class="btn ghost small" id="lib-refresh" type="button">${ic("refresh")}重新整理</button>
+    </div>
+    <div class="lib-path muted small" id="lib-path"></div>
+    <div class="lib">
+      <div class="lib-grid" id="lib-grid"><div class="lib-empty">${ic("refresh", "spin")}讀取中…</div></div>
+      <aside class="lib-preview" id="lib-preview">
+        <div class="lib-pv-empty">${ic("play")}<span>點選片段即可預覽，按兩下直接使用</span></div>
+      </aside>
+    </div>`);
+  $(".modal-card").classList.add("wide-modal");
+  let all = [], current = null, io = null;
+
+  const load = async () => {
+    try {
+      const r = await api("/api/clips");
+      all = r.clips;
+      $("#lib-path").innerHTML = `${ic("folder", "xs")}你的片段資料夾：${esc(r.dir)}`;
+      $("#lib-group").innerHTML = `<option value="">全部資料夾（${all.length}）</option>` +
+        r.groups.map((g) => `<option value="${esc(g)}">${esc(g || "（根目錄）")}（${all.filter((c) => c.group === g).length}）</option>`).join("");
+      setClipLine(all.length, all);
+      render();
+    } catch (e) { $("#lib-grid").innerHTML = `<div class="lib-empty">${ic("alert")}${esc(e.message)}</div>`; }
+  };
+
+  const render = () => {
+    const g = $("#lib-group").value, q = $("#lib-q").value.trim().toLowerCase();
+    const list = all.filter((c) => (!g || c.group === g) && (!q || c.name.toLowerCase().includes(q)));
+    const grid = $("#lib-grid");
+    if (!list.length) {
+      grid.innerHTML = `<div class="lib-empty">${ic("folder")}${all.length ? "沒有符合的片段" : `還沒有切好的片段<br><small>先上傳一整趟的長片，系統切好後會出現在這裡</small>
+        <button class="btn primary small" type="button" id="lib-go-long">${ic("scissors")}上傳長片</button>`}</div>`;
+      const go = $("#lib-go-long"); if (go) go.onclick = openLongUpload;
+      return;
+    }
+    grid.innerHTML = list.map((c, i) => `
+      <button class="clip ${current && current.id === c.id ? "active" : ""}" type="button" data-i="${i}" style="--d:${Math.min(i, 12) * 30}ms">
+        <span class="clip-thumb"><video muted playsinline preload="none" data-src="${c.url}#t=0.5"></video>
+          <em class="clip-dur"></em><i class="clip-play">${ic("play")}</i>${c.gps ? `<em class="clip-gps" title="${esc(c.gps)}">${ic("pin", "xs")}GPS</em>` : ""}</span>
+        <span class="clip-meta"><b title="${esc(c.name)}">${esc(c.name)}</b>
+          <small>${esc(c.group ? c.group + "・" : "")}${(c.size / 1e6).toFixed(1)} MB</small></span>
+      </button>`).join("");
+    // 縮圖：捲到看得到才載入，滑過去就播放
+    if (io) io.disconnect();
+    io = new IntersectionObserver((ents) => ents.forEach((en) => {
+      if (!en.isIntersecting) return;
+      const v = en.target; io.unobserve(v);
+      v.preload = "metadata"; v.src = v.dataset.src;
+    }), { root: $(".modal-card") });
+    $$(".clip", grid).forEach((el) => {
+      const c = list[+el.dataset.i], v = $("video", el);
+      io.observe(v);
+      v.addEventListener("loadedmetadata", () => { $(".clip-dur", el).textContent = fmtSec(v.duration).replace(/\.\d$/, ""); });
+      el.addEventListener("mouseenter", () => { if (v.src) { v.currentTime = 0; v.play().catch(() => {}); } });
+      el.addEventListener("mouseleave", () => { v.pause(); if (v.duration) v.currentTime = Math.min(0.5, v.duration); });
+      el.addEventListener("click", () => select(c, el));
+      el.addEventListener("dblclick", () => pick(c));
+    });
+  };
+
+  const select = (c, el) => {
+    current = c;
+    $$("#lib-grid .clip").forEach((x) => x.classList.toggle("active", x === el));
+    $("#lib-preview").innerHTML = `
+      <video id="lib-pv-video" src="${c.url}" controls autoplay muted playsinline></video>
+      <div class="lib-pv-info"><b>${esc(c.name)}</b>
+        <div class="file-chip" id="lib-pv-chips"><span>${(c.size / 1e6).toFixed(1)} MB</span><span>${esc(c.modified)}</span>${c.group ? `<span>${esc(c.group)}</span>` : ""}${c.gps ? `<span class="gps-chip">${ic("pin", "xs")}附 GPS：${esc(c.gps)}</span>` : ""}</div></div>
+      <button class="btn primary full" id="lib-use" type="button">${ic("check")}使用這段影片</button>`;
+    const v = $("#lib-pv-video");
+    v.onloadedmetadata = () => $("#lib-pv-chips").insertAdjacentHTML("afterbegin",
+      `<span>${v.videoWidth}×${v.videoHeight}</span><span>${fmtSec(v.duration)}</span>`);
+    $("#lib-use").onclick = () => pick(c);
+    if (matchMedia("(max-width:860px)").matches) $("#lib-preview").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  };
+
+  const pick = async (c) => {
+    const btn = $("#lib-use");
+    if (btn) { btn.disabled = true; btn.innerHTML = `${ic("refresh", "spin")}準備中…`; }
+    try {
+      const data = { ...(await postJSON("/api/clips/use", { id: c.id })), clip_group: c.group };
+      closeModal();
+      await useVideo(data, `已選擇短片 ${c.name}`);
+    } catch (e) {
+      toast(e.message, "alert");
+      if (btn) { btn.disabled = false; btn.innerHTML = `${ic("check")}使用這段影片`; }
+    }
+  };
+
+  $("#lib-group").onchange = render;
+  $("#lib-q").oninput = render;
+  $("#lib-refresh").onclick = load;
+  load();
+}
+
+/* ---- 雲端匯入 ---- */
+function openCloudImport() {
+  openModal(`<h2>${ic("download")}雲端匯入</h2>
+    <p class="muted small" style="margin-top:-6px">貼上雲端硬碟的分享連結，伺服器會直接下載影片，不用先存到這台電腦。</p>
+    <div class="cloud-providers">
+      <span><i class="cp gd">G</i>Google Drive</span><span><i class="cp db">D</i>Dropbox</span>
+      <span><i class="cp od">O</i>OneDrive</span><span><i class="cp ur">${ic("video", "xs")}</i>影片直連網址</span>
+    </div>
+    <form class="form" id="cloud-form">
+      <label>分享連結<input id="cloud-url" type="url" required placeholder="https://drive.google.com/file/d/…/view?usp=sharing"></label>
+      <div class="cloud-tip">${ic("info", "xs")}<span>Google Drive：檔案右鍵 → 共用 → 一般存取權改成<b>「知道連結的任何人」</b>→ 複製連結</span></div>
+      <div class="cloud-status hidden" id="cloud-status"><span class="bar-indet"></span><span>下載中，影片較大時會需要一點時間…</span></div>
+      <button class="btn primary full" type="submit" id="cloud-go">${ic("download")}匯入影片</button>
+    </form>`);
+  $(".modal-card").classList.add("narrow-modal");
+  $("#cloud-url").focus();
+  $("#cloud-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = $("#cloud-go");
+    btn.disabled = true; $("#cloud-status").classList.remove("hidden");
+    try {
+      const data = await postJSON("/api/import/url", { url: $("#cloud-url").value });
+      closeModal();
+      await useVideo(data, `已從 ${data.provider} 匯入`);
+    } catch (err) {
+      toast(err.message, "alert");
+      btn.disabled = false; $("#cloud-status").classList.add("hidden");
+    }
+  });
+}
+
+/* ---- 長片自動切段（上傳到待切分資料夾，由切段程式處理） ---- */
+function openLongUpload() {
+  openModal(`<h2>${ic("scissors")}長片自動切段</h2>
+    <div class="long-flow">
+      <div><span class="ic-bubble sm amber">${ic("upload")}</span><b>上傳長片</b><small>整趟行車的原始檔</small></div>
+      <i>${ic("right")}</i>
+      <div><span class="ic-bubble sm violet">${ic("scissors")}</span><b>自動切段</b><small>切成一段段短片</small></div>
+      <i>${ic("right")}</i>
+      <div><span class="ic-bubble sm blue">${ic("layers")}</span><b>挑片段分析</b><small>在「已切好的片段」選擇</small></div>
+    </div>
+    <label class="dropzone" id="long-dz">
+      <input type="file" id="long-input" accept="video/*" hidden>
+      <div class="dz-art">${ic("upload")}</div>
+      <div class="dz-text">拖曳長片到這裡，或 <u>選擇檔案</u></div>
+      <div class="dz-hint">MP4・MOV・AVI・可達數 GB</div>
+    </label>
+    <div id="long-progress" class="progress hidden"><div></div><span></span></div>
+    <h3 class="mini-title" style="margin-top:20px">切段中的長片</h3>
+    <div class="long-list" id="long-list"><div class="muted small">讀取中…</div></div>
+    <div class="long-next">${ic("info", "xs")}<span>切好的片段會放進「已切好的片段」，從那裡挑出有違規的那一段來分析。</span>
+      <button class="btn soft small" type="button" id="long-to-lib">${ic("layers")}去挑片段</button></div>`);
+  $("#long-to-lib").onclick = openClipLibrary;
+  const ldz = $("#long-dz"), input = $("#long-input");
+  const loadList = async () => {
+    try {
+      const r = await api("/api/longs");
+      $("#long-list").innerHTML = r.items.length
+        ? r.items.map((x) => `<div class="long-item">${ic("video", "xs")}<b>${esc(x.name)}</b><span>${(x.size / 1e6).toFixed(1)} MB</span><span>${esc(x.modified)}</span><em>${ic("clock", "xs")}等待切段</em></div>`).join("")
+        : `<div class="muted small">目前沒有待切分的長片</div>`;
+    } catch (e) { $("#long-list").innerHTML = `<div class="muted small">${esc(e.message)}</div>`; }
+  };
+  const send = async (file) => {
+    try {
+      const r = await xhrUpload("/api/longs", file, $("#long-progress"));
+      toast(`${r.name} 上傳完成，正在等待切段`, "scissors");
+      loadList();
+    } catch (e) { toast(e.message, "alert"); }
+  };
+  ["dragover", "dragenter"].forEach((ev) => ldz.addEventListener(ev, (e) => { e.preventDefault(); ldz.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((ev) => ldz.addEventListener(ev, (e) => { e.preventDefault(); ldz.classList.remove("over"); }));
+  ldz.addEventListener("drop", (e) => { const f = e.dataTransfer.files[0]; if (f) send(f); });
+  input.addEventListener("change", () => { if (input.files[0]) send(input.files[0]); input.value = ""; });
+  loadList();
 }
 
 /* ---- GPS ---- */
 let map = null, mapLayer = null;
 function initMap() {
   if (!window.L) { $("#map").classList.add("offline"); renderOfflineMap(); return; }
-  map = L.map("map", { zoomControl: true, attributionControl: false }).setView([23.7, 121], 7);
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", { maxZoom: 19 }).addTo(map);
+  map = L.map("map", { zoomControl: true, attributionControl: true }).setView([23.7, 121], 7);
+  map.attributionControl.setPrefix(false);
+  // 底圖：不用 API key 的圖磚，第一個載不到就自動換下一個
+  const TILES = [
+    { url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png", attr: "© OpenStreetMap" },
+    { url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", attr: "© Esri" },
+  ];
+  let ti = 0, layer = null;
+  const useTiles = (i) => {
+    if (layer) map.removeLayer(layer);
+    let ok = false, errs = 0;
+    layer = L.tileLayer(TILES[i].url, { maxZoom: 19, attribution: TILES[i].attr })
+      .on("tileload", () => { ok = true; })
+      .on("tileerror", () => { if (!ok && ++errs >= 4 && i + 1 < TILES.length) useTiles(ti = i + 1); })
+      .addTo(map);
+  };
+  useTiles(ti);
   map.on("click", (e) => {
     switchGpsTab("manual");
     $("#lat-input").value = e.latlng.lat.toFixed(6); $("#lon-input").value = e.latlng.lng.toFixed(6);
@@ -263,6 +526,7 @@ function drawMap() {
   }
 }
 async function setPoint(lat, lon, mode) {
+  gpsNote(null);
   state.gps = { mode, lat: +lat, lon: +lon, track: null, geo: null };
   try { state.gps.geo = await api(`/api/geocode?lat=${lat}&lon=${lon}`); } catch (e) { /* ignore */ }
   renderGpsInfo(); drawMap(); refreshAnalyzeBtn(); saveDraft();
@@ -272,7 +536,7 @@ function renderGpsInfo() {
   if (g.lat == null) { el.innerHTML = `<span class="muted">尚未設定位置</span>`; return; }
   const tag = g.geo ? `<span class="geo-tag">${ic("pin")}${esc(g.geo.city)}${esc(g.geo.district)}</span>` : "";
   const trackTxt = g.track && g.track.length > 1 ? `・軌跡 ${g.track.length} 點` : "";
-  el.innerHTML = `${tag}<span class="muted small">${g.lat.toFixed(5)}, ${g.lon.toFixed(5)}${trackTxt}</span>`;
+  el.innerHTML = `${tag}${g.simulated ? `<span class="sim-tag">${ic("sparkles", "xs")}模擬軌跡</span>` : ""}<span class="muted small">${g.lat.toFixed(5)}, ${g.lon.toFixed(5)}${trackTxt}</span>`;
 }
 function switchGpsTab(tab) {
   $$("#gps-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
@@ -298,11 +562,63 @@ $("#gps-input").addEventListener("change", async (e) => {
   const f = e.target.files[0]; if (!f) return;
   try {
     const data = await api(`/api/gps/parse?filename=${encodeURIComponent(f.name)}`, { method: "POST", body: f });
-    state.gps = { mode: "track", lat: data.track[0].lat, lon: data.track[0].lon, track: data.track, geo: data.geo };
-    state.gps.file = f.name; $("#gps-file-name").textContent = f.name;
-    renderGpsInfo(); drawMap(); refreshAnalyzeBtn(); saveDraft();
+    applyTrack(data, f.name);
+    $("#sim-gpx-dl").classList.add("hidden");
     toast(`讀到 ${data.count} 個 GPS 點`);
   } catch (err) { toast(err.message, "alert"); }
+});
+/* GPS 卡最上面的提示：自動帶入成功（ok）／這支影片缺軌跡檔（need） */
+function gpsNote(kind, gps) {
+  const el = $("#gps-note");
+  if (!kind) { el.classList.add("hidden"); el.className = "gps-note hidden"; return; }
+  el.className = `gps-note ${kind}`;
+  if (kind === "ok") {
+    el.innerHTML = `${ic("check", "xs")}<span>已自動帶入影片附的軌跡檔 <b>${esc(gps.file)}</b>（${gps.count} 點${gps.simulated ? "・模擬" : ""}），錄影時間也已對齊</span>`;
+  } else {
+    el.innerHTML = `<div class="gps-need-txt">${ic("alert", "xs")}<span><b>這段影片沒有附 GPS 軌跡檔</b>
+        <small>要有軌跡才能判斷每筆違規的地點與受理縣市，請擇一補上：</small></span></div>
+      <div class="gps-need-acts">
+        <button class="btn primary small" type="button" data-gn="file">${ic("route")}選擇軌跡檔</button>
+        <button class="btn soft small" type="button" data-gn="sim">${ic("sparkles")}產生模擬軌跡</button>
+        <button class="btn ghost small" type="button" data-gn="preset">${ic("map")}先用固定地點</button>
+      </div>`;
+    $$("[data-gn]", el).forEach((b) => b.addEventListener("click", () => {
+      const a = b.dataset.gn;
+      if (a === "file") { switchGpsTab("file"); $("#gps-input").click(); }
+      else if (a === "sim") { switchGpsTab("file"); $("#btn-sim-gps").click(); }
+      else { switchGpsTab("preset"); $("#preset-select").dispatchEvent(new Event("change")); gpsNote(null); }
+    }));
+  }
+  el.classList.remove("hidden");
+}
+
+/* 套用一條軌跡（GPS 檔、片段附帶的軌跡、模擬軌跡都走這裡） */
+function applyTrack(data, label, simulated = false) {
+  if ($("#gps-note").classList.contains("need")) gpsNote(null);
+  state.gps = { mode: "track", lat: data.track[0].lat, lon: data.track[0].lon, track: data.track, geo: data.geo, file: label, simulated };
+  switchGpsTab("file");
+  $("#gps-file-name").textContent = label;
+  renderGpsInfo(); drawMap(); refreshAnalyzeBtn(); saveDraft();
+}
+let simCount = 0, simUrl = null;
+$("#btn-sim-gps").addEventListener("click", async () => {
+  const btn = $("#btn-sim-gps"), v = $("#video-preview");
+  const base = state.gps.lat != null ? state.gps : state.presets[0] || { lat: 22.7335, lon: 120.285 };
+  const name = (state.video && state.video.name) || "simulated";
+  btn.disabled = true;
+  try {
+    const data = await postJSON("/api/gps/simulate", {
+      lat: base.lat, lon: base.lon, start: $("#recorded-at").value, name,
+      duration: v && isFinite(v.duration) && v.duration > 0 ? Math.ceil(v.duration) : 60, seed: `${name}#${simCount++}`,
+    });
+    applyTrack(data, "模擬軌跡（展示用）", true);
+    if (simUrl) URL.revokeObjectURL(simUrl);
+    simUrl = URL.createObjectURL(new Blob([data.gpx], { type: "application/gpx+xml" }));
+    const a = $("#sim-gpx-dl"); a.href = simUrl; a.download = name.replace(/\.[^.]+$/, "") + ".gpx"; a.classList.remove("hidden");
+    btn.innerHTML = `${ic("refresh")}換一條`;
+    toast(`已產生 ${data.count} 點的模擬軌跡`, "sparkles");
+  } catch (err) { toast(err.message, "alert"); }
+  finally { btn.disabled = false; }
 });
 ["#recorded-at", "#speed"].forEach((s) => $(s).addEventListener("change", saveDraft));
 ["#max-seconds"].forEach((s) => $(s).addEventListener("change", saveDraft));
@@ -352,7 +668,7 @@ setInterval(() => { if (state.mode === "remote" && state.step === 1 && document.
 function refreshAnalyzeBtn() {
   let reason = "";
   if (!state.video) reason = "請先上傳影片";
-  else if (state.gps.lat == null) reason = "請設定 GPS 位置";
+  else if (state.gps.lat == null) reason = "請補上 GPS 軌跡檔（或改用固定地點）";
   else if (state.mode === "remote") {
     const h = state.health;
     if (!h) reason = "正在檢查推論服務…";
@@ -670,6 +986,34 @@ function fillCaseForm(v) {
   const box = $("#evidence-box"); box.innerHTML = ""; box.append(clipPlayer(v, state.job, false));
   $("#evidence-meta").innerHTML = `<span class="plate" style="font-size:12px">${esc(v.plate)}</span>　${esc(v.label)}・${v.status === "confirmed" ? "確定違規" : "疑似違規"}（${confText(v)}）`;
   renderReporter();
+  autoAddress(v);
+}
+
+/* 違規地點：用 GPS 座標線上反查路名（OpenStreetMap）；查不到就維持只有行政區＋提醒手動補 */
+function locHint(kind, text) {
+  const el = $("#loc-hint");
+  el.className = `hint ${kind}`;
+  el.innerHTML = `${ic(kind === "ok" ? "check" : kind === "busy" ? "refresh" : "info", kind === "busy" ? "xs spin" : "xs")}${esc(text)}`;
+}
+async function autoAddress(v) {
+  const input = $("#case-form [name=location]"), geo = v.geo || {};
+  const untouched = !input.value.trim() || input.value.trim() === (geo.address_hint || "");
+  if (!untouched) { locHint("ok", "送出前請再確認地點是否正確"); return; }
+  if (v.lat == null || v.lon == null) { locHint("warn", "GPS 只能推到行政區，請補上路名／門牌"); return; }
+  locHint("busy", "正在依 GPS 查詢路名…");
+  let r = null;
+  try { r = await api(`/api/geocode/address?lat=${v.lat}&lon=${v.lon}`); } catch (e) { /* 離線 */ }
+  if (state.selected !== v) return;                       // 查詢期間換到別筆違規了
+  const now = input.value.trim();
+  if (now && now !== (geo.address_hint || "")) return;    // 查詢期間使用者自己改了
+  if (r && r.ok) {
+    input.value = r.address;
+    const d = $("#case-form [name=district]"); if (d && (!d.value || d.value === geo.district)) d.value = r.district;
+    $("#case-form").dispatchEvent(new Event("input"));    // 存進草稿
+    locHint("ok", "已依 GPS 自動填入路名（OpenStreetMap），GPS 有幾公尺誤差，送出前請確認");
+  } else {
+    locHint("warn", "查不到路名（可能沒有網路），請補上路名／門牌");
+  }
 }
 function openCaseForm(v) { fillCaseForm(v); unlock(4); goStep(4); }
 async function openSubmitted(v) {
@@ -711,6 +1055,16 @@ const FILL_STEPS = [
   ["填入違規時間、地點、車牌", "calendar"], ["選擇違規類別與事實", "scale"], ["上傳佐證影片", "upload"],
 ];
 
+/* 案件的佐證檔：用「違規_車牌_日期時間」當下載檔名，方便自己整理或手動上傳到檢舉網站 */
+function caseDlName(c, ext) {
+  const f = c.fields || {};
+  const parts = [c.violation && c.violation.label, f.plate, (f.date || "").replace(/-/g, ""), (f.time || "").replace(/:/g, "")];
+  return parts.filter(Boolean).join("_").replace(/[\\/:*?"<>|\s]+/g, "") + ext;
+}
+const caseFile = (c, name) => `${c.base_url}${encodeURIComponent(name)}`;
+const caseDl = (c, name) => `${caseFile(c, name)}?dl=${encodeURIComponent(caseDlName(c, name.slice(name.lastIndexOf("."))))}`;
+const caseHas = (c, name) => (c.files || []).includes(name);
+
 function renderSubmit(c, root, inModal = false) {
   const f = c.fields, v = c.violation, meta = TYPE_META[v.type] || { icon: "alert", color: "red" };
   const fileIcon = (n) => (n.endsWith(".mp4") ? "video" : n.endsWith(".jpg") ? "scan" : "file");
@@ -735,12 +1089,20 @@ function renderSubmit(c, root, inModal = false) {
           <div class="summary-item">${ic("hash")}<div><small>案件編號</small>${esc(c.id)}</div></div>
         </div>
       </div>
+      ${caseHas(c, "evidence.mp4") || caseHas(c, "evidence.jpg") ? `<div class="card evidence-card">
+        <h3 class="mini-title">佐證片段</h3>
+        ${caseHas(c, "evidence.mp4") ? `<video src="${caseFile(c, "evidence.mp4")}" controls playsinline preload="metadata" ${caseHas(c, "evidence.jpg") ? `poster="${caseFile(c, "evidence.jpg")}"` : ""}></video>`
+          : `<img src="${caseFile(c, "evidence.jpg")}" alt="違規截圖">`}
+        <div class="evidence-dl">
+          ${caseHas(c, "evidence.mp4") ? `<a class="btn primary small" href="${caseDl(c, "evidence.mp4")}" download>${ic("download")}下載影片片段</a>` : ""}
+          ${caseHas(c, "evidence.jpg") ? `<a class="btn soft small" href="${caseDl(c, "evidence.jpg")}" download>${ic("scan")}下載截圖</a>` : ""}
+        </div>
+        <p class="muted small">檔名會是「${esc(caseDlName(c, ".mp4"))}」，要自己到檢舉網站上傳時直接用。</p>
+      </div>` : ""}
       <div class="card">
         <h3 class="mini-title">案件資料夾</h3>
         <div class="files">${filesHtml}</div>
         <a class="btn ghost small" href="/api/cases/${encodeURIComponent(c.id)}/zip">${ic("download")}下載案件 ZIP</a>
-        <div class="cmd"><code>${esc(c.autoform_cmd)}</code><button class="btn small" data-copy="${esc(c.autoform_cmd)}" title="複製 autoForm 指令">${ic("copy")}</button></div>
-        <p class="muted small" style="margin:8px 0 0">格式與 autoForm 相同，之後可直接用上面的指令送出。</p>
       </div>
     </div>
   </div>
@@ -986,13 +1348,19 @@ async function loadCases() {
   $("#case-list").innerHTML = `<div class="case-grid">${list.map((c, i) => {
     const hasImg = (c.files || []).includes("evidence.jpg");
     return `<div class="case-card" data-case="${esc(c.id)}" style="--i:${i}">
-      ${hasImg ? `<img src="${c.base_url}evidence.jpg" alt="" loading="lazy">` : ""}
+      ${hasImg ? `<div class="case-thumb"><img src="${c.base_url}evidence.jpg" alt="" loading="lazy">${caseHas(c, "evidence.mp4") ? `<i>${ic("play")}</i>` : ""}</div>` : ""}
       <div class="body">
         <div class="top"><h3>${esc(c.violation.label)}</h3><span class="status ${c.status}">${c.status === "submitted" ? "已送出" : "待送出"}</span></div>
         <div><span class="plate">${esc(c.fields.plate)}</span></div>
         <div class="sub"><span>${ic("clock", "xs")} ${esc(c.fields.date)} ${esc(c.fields.time)}</span><span>${ic("pin", "xs")} ${esc(c.city)}</span></div>
+        <div class="case-dl">
+          ${caseHas(c, "evidence.mp4") ? `<a class="btn soft small" href="${caseDl(c, "evidence.mp4")}" download title="下載違規影片片段">${ic("download")}片段</a>` : ""}
+          ${caseHas(c, "evidence.jpg") ? `<a class="btn ghost small" href="${caseDl(c, "evidence.jpg")}" download title="下載違規截圖">${ic("scan")}截圖</a>` : ""}
+          <a class="btn ghost small" href="/api/cases/${encodeURIComponent(c.id)}/zip" download title="影片、截圖、案件資料一次打包">${ic("package")}ZIP</a>
+        </div>
       </div></div>`;
   }).join("")}</div>`;
+  $$("#case-list .case-dl a").forEach((a) => a.addEventListener("click", (e) => { e.stopPropagation(); toast("開始下載", "download"); }));
   $$("#case-list [data-case]").forEach((el) => el.addEventListener("click", async () => {
     const c = await api(`/api/cases/${encodeURIComponent(el.dataset.case)}`);
     openModal(`<h2>${ic("folder")}${esc(c.id)}</h2><div id="case-modal"></div>`);
@@ -1008,13 +1376,20 @@ async function loadProfile() {
 }
 $("#profile-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  state.profile = await postJSON("/api/profile", Object.fromEntries(new FormData(e.target).entries()));
-  $("#profile-saved").textContent = "已儲存"; renderReporter(); toast("檢舉人資料已儲存");
+  const f = Object.fromEntries(new FormData(e.target).entries());
+  const bad = checkProfile(f, false);
+  $$("#profile-form .input-err").forEach((x) => x.classList.remove("input-err"));
+  if (bad) { toast(bad[0], "alert"); e.target.elements[bad[1]].closest(".input-ic").classList.add("input-err"); e.target.elements[bad[1]].focus(); return; }
+  try {
+    state.profile = await postJSON("/api/profile", { ...f, reporter_id: f.reporter_id.toUpperCase(), reporter_phone: cleanPhone(f.reporter_phone) });
+    loadProfile();
+    $("#profile-saved").textContent = "已儲存"; renderReporter(); toast("檢舉人資料已儲存");
+  } catch (err) { toast(err.message, "alert"); }
 });
 
 /* ============================ Modal ============================ */
-function openModal(html) { $("#modal-body").innerHTML = html; $("#modal").classList.remove("hidden"); }
-function closeModal() { $$("#modal video").forEach((v) => v.pause()); $("#modal").classList.add("hidden"); $("#modal-body").innerHTML = ""; $(".modal-card").classList.remove("narrow-modal"); }
+function openModal(html) { $(".modal-card").classList.remove("narrow-modal", "wide-modal"); $("#modal-body").innerHTML = html; $("#modal").classList.remove("hidden"); }
+function closeModal() { $$("#modal video").forEach((v) => { v.pause(); v.removeAttribute("src"); v.load(); }); $("#modal").classList.add("hidden"); $("#modal-body").innerHTML = ""; $(".modal-card").classList.remove("narrow-modal", "wide-modal"); }
 $("#modal-x").onclick = closeModal;
 $("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
@@ -1043,7 +1418,13 @@ let appStarted = false, authMode = "login";
     try { user = (await api("/api/auth/me", { headers: { "X-Auth-Token": t } })).user; }
     catch (e) { tokenStore.set(null); }
   }
-  if (user) enterApp(user); else showAuth();
+  if (!user) return showAuth();
+  // 已登入但檢舉人資料還沒填齊：先請他補
+  try {
+    const prof = await api("/api/profile");
+    if (!profileComplete(prof) && !setupSkipped(user.email)) return startSetup(prof, user, false);
+  } catch (e) { /* 讀不到就直接進系統 */ }
+  enterApp(user);
 })();
 
 function showAuth() {
@@ -1058,6 +1439,7 @@ function enterApp(user) {
   if (!appStarted) { appStarted = true; startApp(); }
 }
 function setAuthMode(mode) {
+  if (mode !== "verify") stopVerify();
   authMode = mode;
   const card = $(".auth-card"); card.dataset.mode = mode;
   const reg = mode === "register";
@@ -1115,6 +1497,7 @@ $("#auth-form").addEventListener("submit", async (e) => {
   try {
     const res = await postJSON(`/api/auth/${reg ? "register" : "login"}`, reg
       ? { name: f.name, email: f.email, password: f.password } : { email: f.email, password: f.password });
+    if (res.pending) { startVerify(res); return; }
     await finishLogin(res, reg ? true : $("#remember").checked, reg);
   } catch (err) {
     authError(err.message, reg && err.message.includes("Email") ? "email" : !reg ? "password" : null);
@@ -1124,21 +1507,188 @@ $("#auth-form").addEventListener("submit", async (e) => {
 async function finishLogin(res, remember, isNew) {
   tokenStore.set(res.token, remember);
   // 第一次登入：把姓名與 Email 帶進檢舉人資料
+  let prof = null;
   try {
-    const prof = await api("/api/profile");
+    prof = await api("/api/profile");
     if (!prof.reporter_name || !prof.reporter_email) {
-      await postJSON("/api/profile", { ...prof, reporter_name: prof.reporter_name || res.user.name, reporter_email: prof.reporter_email || res.user.email });
+      prof = await postJSON("/api/profile", { ...prof, reporter_name: prof.reporter_name || res.user.name, reporter_email: prof.reporter_email || res.user.email });
     }
   } catch (e) { /* 不影響登入 */ }
   $("#auth-form").reset(); $("#pw-meter").dataset.s = 0; $("#pw-meter span").textContent = "";
+  // 檢舉人資料還沒填齊 → 先填資料再進系統
+  if (prof && !profileComplete(prof) && !setupSkipped(res.user.email)) { startSetup(prof, res.user, isNew); return; }
   enterApp(res.user);
   toast(isNew ? `註冊成功，歡迎 ${res.user.name}` : `歡迎回來，${res.user.name}`, "sparkles");
 }
+
+/* ---- 檢舉人資料：註冊後第一步就填 ---- */
+const TW_ID_CODE = "ABCDEFGHJKLMNPQRSTUVXYWZIO";
+function validTwId(v) {
+  if (!/^[A-Z][1289]\d{8}$/.test(v)) return false;
+  const n = TW_ID_CODE.indexOf(v[0]) + 10;
+  let sum = Math.floor(n / 10) + (n % 10) * 9 + Number(v[9]);
+  for (let i = 1; i <= 8; i++) sum += Number(v[i]) * (9 - i);
+  return sum % 10 === 0;
+}
+const cleanPhone = (v) => (v || "").replace(/[\s-]/g, "");
+const profileComplete = (p) => !!(p && p.reporter_name && p.reporter_id && p.reporter_phone);
+const setupSkipped = (email) => { try { return sessionStorage.getItem("setup-skip") === email; } catch (e) { return false; } };
+
+/* 回傳 [錯誤訊息, 欄位]；沒問題回傳 null */
+function checkProfile(f, requireAll) {
+  if (requireAll && !f.reporter_name.trim()) return ["請輸入真實姓名", "reporter_name"];
+  const id = f.reporter_id.trim().toUpperCase();
+  if (requireAll && !id) return ["請輸入身分證字號", "reporter_id"];
+  if (id && !validTwId(id)) return ["身分證字號格式不正確，請再確認一次", "reporter_id"];
+  const ph = cleanPhone(f.reporter_phone);
+  if (requireAll && !ph) return ["請輸入手機號碼", "reporter_phone"];
+  if (ph && !/^0\d{8,9}$/.test(ph)) return ["電話格式不正確（例：0912345678）", "reporter_phone"];
+  if (f.reporter_email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(f.reporter_email.trim())) return ["Email 格式不正確", "reporter_email"];
+  return null;
+}
+function formError(form, box, msg, field) {
+  $$(".input-err", form).forEach((x) => x.classList.remove("input-err"));
+  if (!msg) { box.classList.add("hidden"); return; }
+  box.querySelector("span").textContent = msg; box.classList.remove("hidden");
+  box.classList.remove("shake"); void box.offsetWidth; box.classList.add("shake");
+  if (field) { const inp = form.elements[field]; inp.closest(".input-ic").classList.add("input-err"); inp.focus(); }
+}
+
+let setupUser = null, setupIsNew = false;
+function startSetup(prof, user, isNew) {
+  setupUser = user; setupIsNew = isNew;
+  document.body.className = "";
+  $(".auth-card").dataset.mode = "setup";
+  $("#auth-title").textContent = isNew ? "最後一步：檢舉人資料" : "補齊檢舉人資料";
+  $("#auth-sub").textContent = "各縣市檢舉網站都要求實名，填一次之後每次檢舉都會自動帶入。";
+  $(".setup-steps").classList.toggle("hidden", !isNew);
+  const f = $("#setup-form");
+  Object.entries(prof).forEach(([k, v]) => { if (f.elements[k]) f.elements[k].value = v || ""; });
+  formError(f, $("#setup-error"), "");
+  setTimeout(() => (f.elements[!prof.reporter_name ? "reporter_name" : !prof.reporter_id ? "reporter_id" : "reporter_phone"]).focus(), 80);
+}
+$("#setup-form [name=reporter_id]").addEventListener("input", (e) => { e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""); });
+$("#setup-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = e.target, f = Object.fromEntries(new FormData(form).entries());
+  const bad = checkProfile(f, true);
+  if (bad) return formError(form, $("#setup-error"), ...bad);
+  formError(form, $("#setup-error"), "");
+  const btn = $("#setup-submit"); btn.disabled = true; btn.innerHTML = `<span class="spinner"></span>儲存中…`;
+  try {
+    state.profile = await postJSON("/api/profile", { ...f, reporter_id: f.reporter_id.toUpperCase(), reporter_phone: cleanPhone(f.reporter_phone) });
+    setAuthMode("login");
+    enterApp(setupUser);
+    toast(setupIsNew ? `註冊完成，歡迎 ${setupUser.name}` : "檢舉人資料已補齊", "sparkles");
+  } catch (err) { formError(form, $("#setup-error"), err.message); }
+  finally { btn.disabled = false; btn.innerHTML = "完成，開始使用"; }
+});
+$("#setup-skip").addEventListener("click", () => {
+  try { sessionStorage.setItem("setup-skip", setupUser.email); } catch (e) { /* 無痕模式 */ }
+  setAuthMode("login");
+  enterApp(setupUser);
+  toast("之後可以在「檢舉人資料」補填，送出檢舉前一定要填", "user");
+});
 
 $("#forgot").addEventListener("click", async () => {
   const email = $("#auth-form [name=email]").value.trim();
   try { await postJSON("/api/auth/reset", { email }); toast(`（模擬）已寄出重設密碼信到 ${email}`, "mail"); }
   catch (err) { authError(err.message, "email"); }
+});
+
+/* ---- Email 驗證（開發模式：驗證碼跳出提醒＋印在伺服器視窗） ---- */
+var verify = { email: "", timer: null, resendAt: 0, expiresAt: 0 };  // var：開機時 setAuthMode 會比這裡先執行
+const otpInputs = $$("#otp input");
+
+function startVerify(res) {
+  verify.email = res.email;
+  $(".auth-card").dataset.mode = "verify";
+  $("#auth-title").textContent = "驗證你的 Email";
+  $("#auth-sub").innerHTML = `我們寄了 6 位數驗證碼到<br><b>${esc(res.email)}</b>`;
+  $(".verify-dev").classList.toggle("hidden", !res.dev_mode);
+  verifyError("");
+  otpInputs.forEach((i) => { i.value = ""; i.classList.remove("filled"); });
+  setTimeout(() => otpInputs[0].focus(), 80);
+  verify.resendAt = Date.now() + (res.resend_in ?? 60) * 1000;
+  verify.expiresAt = Date.now() + (res.expires_in ?? 600) * 1000;
+  clearInterval(verify.timer); tickVerify(); verify.timer = setInterval(tickVerify, 1000);
+  if (res.dev_code) showMailPop(res.dev_code, res.email);
+  else if (res.dev_mode) toast("驗證碼剛才已寄出，請看伺服器視窗", "mail");
+}
+function tickVerify() {
+  const r = Math.ceil((verify.resendAt - Date.now()) / 1000), e = Math.ceil((verify.expiresAt - Date.now()) / 1000);
+  $("#verify-resend").disabled = r > 0;
+  $("#verify-resend").textContent = r > 0 ? `重新寄送（${r}）` : "重新寄送";
+  $("#verify-timer").textContent = e > 0 ? `驗證碼 ${Math.floor(e / 60)}:${pad(e % 60)} 後失效` : "驗證碼已過期，請重新寄送";
+  $("#verify-timer").classList.toggle("expired", e <= 0);
+}
+function stopVerify() { if (verify) clearInterval(verify.timer); hideMailPop(); }
+function verifyError(msg) {
+  const box = $("#verify-error");
+  $("#otp").classList.toggle("err", !!msg);
+  if (!msg) { box.classList.add("hidden"); return; }
+  box.querySelector("span").textContent = msg; box.classList.remove("hidden");
+  box.classList.remove("shake"); void box.offsetWidth; box.classList.add("shake");
+}
+const otpValue = () => otpInputs.map((i) => i.value).join("");
+function fillOtp(code) {
+  const d = String(code).replace(/\D/g, "").slice(0, 6).split("");
+  otpInputs.forEach((inp, i) => { inp.value = d[i] || ""; inp.classList.toggle("filled", !!d[i]); });
+  (otpInputs[Math.min(d.length, 5)]).focus();
+  if (d.length === 6) $("#verify-form").requestSubmit();
+}
+otpInputs.forEach((inp, i) => {
+  inp.addEventListener("input", () => {
+    const v = inp.value.replace(/\D/g, "");
+    if (v.length > 1) { fillOtp(otpValue().slice(0, i) + v); return; }
+    inp.value = v; inp.classList.toggle("filled", !!v); verifyError("");
+    if (v && i < 5) otpInputs[i + 1].focus();
+    if (otpValue().length === 6) $("#verify-form").requestSubmit();
+  });
+  inp.addEventListener("keydown", (e) => {
+    if (e.key === "Backspace" && !inp.value && i > 0) { otpInputs[i - 1].value = ""; otpInputs[i - 1].classList.remove("filled"); otpInputs[i - 1].focus(); }
+    if (e.key === "ArrowLeft" && i > 0) otpInputs[i - 1].focus();
+    if (e.key === "ArrowRight" && i < 5) otpInputs[i + 1].focus();
+  });
+  inp.addEventListener("paste", (e) => { e.preventDefault(); fillOtp((e.clipboardData.getData("text") || "")); });
+  inp.addEventListener("focus", () => inp.select());
+});
+$("#verify-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const code = otpValue();
+  if (code.length !== 6) return verifyError("請輸入完整的 6 位數驗證碼");
+  const btn = $("#verify-submit"); if (btn.disabled) return;
+  btn.disabled = true; btn.innerHTML = `<span class="spinner"></span>驗證中…`;
+  try {
+    const res = await postJSON("/api/auth/verify", { email: verify.email, code });
+    stopVerify();
+    setAuthMode("login");
+    await finishLogin(res, true, true);
+  } catch (err) {
+    verifyError(err.message);
+    otpInputs.forEach((i) => { i.value = ""; i.classList.remove("filled"); }); otpInputs[0].focus();
+  } finally { btn.disabled = false; btn.innerHTML = "驗證並完成註冊"; }
+});
+$("#verify-resend").addEventListener("click", async () => {
+  try { startVerify(await postJSON("/api/auth/resend", { email: verify.email })); toast("已重新寄出驗證碼", "mail"); }
+  catch (err) { verifyError(err.message); }
+});
+$("#verify-back").addEventListener("click", () => { stopVerify(); setAuthMode("register"); });
+
+function showMailPop(code, email) {
+  const pop = $("#mail-pop");
+  $("#mail-pop-code").textContent = code.replace(/(\d{3})(\d{3})/, "$1 $2");
+  $("#mail-pop-to").textContent = `寄給 ${email}`;
+  pop.dataset.code = code;
+  pop.classList.remove("hidden", "show"); void pop.offsetWidth; pop.classList.add("show");
+  clearTimeout(showMailPop._t); showMailPop._t = setTimeout(hideMailPop, 20000);
+}
+function hideMailPop() { $("#mail-pop").classList.remove("show"); }
+$("#mail-pop-x").addEventListener("click", hideMailPop);
+$("#mail-pop-fill").addEventListener("click", () => { fillOtp($("#mail-pop").dataset.code); hideMailPop(); });
+$("#mail-pop-copy").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText($("#mail-pop").dataset.code); toast("已複製驗證碼"); }
+  catch (e) { toast("無法複製，請手動輸入", "alert"); }
 });
 
 /* Google 登入（模擬）：跳出選擇帳號的視窗 */
@@ -1192,6 +1742,7 @@ $("#btn-logout").addEventListener("click", async () => {
 async function startApp() {
   initMap();
   setMode(state.mode, false);
+  refreshClipCount();
   try {
     [state.presets, state.cities, state.profile] = await Promise.all([api("/api/presets"), api("/api/cities"), api("/api/profile")]);
   } catch (e) { toast("無法連到伺服器", "alert"); return; }

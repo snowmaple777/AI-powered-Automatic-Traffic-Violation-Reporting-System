@@ -17,17 +17,18 @@ import threading
 import traceback
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from core import auth, geo, gps_parser, store  # noqa: E402
+from core import address, auth, clips, geo, gps_parser, gps_sim, store  # noqa: E402
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 # 這些路徑要登入，而且只能存取自己的資料
-PRIVATE_PREFIXES = ("/api/jobs", "/api/cases", "/api/drafts", "/api/profile", "/api/upload", "/files/")
+PRIVATE_PREFIXES = ("/api/jobs", "/api/cases", "/api/drafts", "/api/profile", "/api/upload", "/files/",
+                    "/api/clips", "/api/import", "/api/longs")
 FILE_ROOTS = {"uploads": store.UPLOAD_DIR, "jobs": store.JOB_DIR, "cases": store.CASE_DIR}
 mimetypes.add_type("video/mp4", ".mp4")
 mimetypes.add_type("application/javascript", ".js")
@@ -100,8 +101,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(end - start + 1))
         self.send_header("Cache-Control", "no-cache")
-        if download_name:
-            self.send_header("Content-Disposition", f"attachment; filename=\"{download_name}\"")
+        if download_name:  # 中文檔名用 filename*（RFC 5987），舊瀏覽器退回英數檔名
+            ascii_name = "".join(c if 32 <= ord(c) < 127 and c not in '"\\' else "_" for c in download_name)
+            self.send_header("Content-Disposition",
+                             f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(download_name)}")
         self.end_headers()
         try:
             with open(path, "rb") as f:
@@ -175,6 +178,8 @@ class Handler(BaseHTTPRequestHandler):
             if not f.startswith(WEB_DIR):
                 return self._error("forbidden", 403)
             return self._send_file(f)
+        if p.startswith("/files/clips/"):  # 片段庫：只能看自己帳號的
+            return self._send_file(clips.clip_path(p[len("/files/clips/"):]))
         if p.startswith("/files/"):
             parts = p.split("/")[2:]
             root = FILE_ROOTS.get(parts[0]) if parts else None
@@ -183,17 +188,29 @@ class Handler(BaseHTTPRequestHandler):
             f = os.path.normpath(os.path.join(root, *[store.safe_name(x) for x in parts[1:]]))
             if not f.startswith(root):
                 return self._error("forbidden", 403)
-            return self._send_file(f)
+            dl = (q.get("dl") or [None])[0]  # ?dl=檔名 → 直接下載
+            if dl:
+                dl = "".join(c for c in dl if c not in '\\/:*?"<>|\r\n').strip() or os.path.basename(f)
+                if not os.path.splitext(dl)[1]:
+                    dl += os.path.splitext(f)[1]
+            return self._send_file(f, download_name=dl)
         if p == "/api/autofill/health":
             return self._json(store.autofill_health())
         if p == "/api/inference/health":
             return self._json(store.inference_health())
         if p == "/api/presets":
             return self._json(geo.PRESETS)
+        if p == "/api/geocode/address":  # 線上反查路名（查不到回 ok: false）
+            res = address.reverse_address(float(q["lat"][0]), float(q["lon"][0]))
+            return self._json({"ok": bool(res), **(res or {})})
         if p == "/api/geocode":
             return self._json(geo.reverse_geocode(float(q["lat"][0]), float(q["lon"][0])))
         if p == "/api/cities":
             return self._json([{"name": k, "code": v} for k, v in geo.CITY_CODES.items()])
+        if p == "/api/clips":
+            return self._json(clips.list_clips())
+        if p == "/api/longs":
+            return self._json(clips.list_longs())
         if p == "/api/jobs":
             return self._json(store.list_jobs())
         if p.startswith("/api/jobs/"):
@@ -235,6 +252,22 @@ class Handler(BaseHTTPRequestHandler):
             if n <= 0:
                 return self._error("沒有收到檔案")
             return self._json(store.save_upload(q.get("filename", ["video.mp4"])[0], self.rfile, n))
+        if p == "/api/clips/use":
+            return self._json(clips.use_clip(self._body_json().get("id")))
+        if p == "/api/import/url":
+            return self._json(clips.import_url(self._body_json().get("url")))
+        if p == "/api/longs":
+            n = int(self.headers.get("Content-Length") or 0)
+            if n <= 0:
+                return self._error("沒有收到檔案")
+            return self._json(clips.save_long(q.get("filename", ["long.mp4"])[0], self.rfile, n))
+        if p == "/api/gps/simulate":  # 沒有 GPS 檔時產生模擬軌跡（展示用）
+            b = self._body_json()
+            lat, lon = float(b.get("lat", geo.PRESETS[0]["lat"])), float(b.get("lon", geo.PRESETS[0]["lon"]))
+            duration = min(max(float(b.get("duration") or 60), 5), 3600)
+            track = gps_sim.simulate(lat, lon, gps_sim.parse_local(b.get("start")), duration, b.get("seed"))
+            return self._json({"count": len(track), "track": gps_parser.track_to_json(track), "simulated": True,
+                               "geo": geo.reverse_geocode(lat, lon), "gpx": gps_sim.to_gpx(track, b.get("name") or "simulated")})
         if p == "/api/gps/parse":
             n = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(n)
@@ -276,6 +309,10 @@ def _auth_dispatch(handler, action, body):
     try:
         if action == "register":
             return handler._json(auth.register(body.get("name"), body.get("email"), body.get("password")))
+        if action == "verify":
+            return handler._json(auth.verify_email(body.get("email"), body.get("code")))
+        if action == "resend":
+            return handler._json(auth.resend_code(body.get("email")))
         if action == "login":
             return handler._json(auth.login(body.get("email"), body.get("password")))
         if action == "google":
@@ -308,6 +345,7 @@ def main():
     print("  馬路三寶檢舉輔助系統 — 介面已啟動")
     print(f"  本機：{url}")
     print(f"  推論服務：{store.CONFIG['inference_url']}（真實模型模式會連到這裡）")
+    print(f"  片段庫：{clips.clips_root()}（每個帳號一個子資料夾）")
     if args.lan:
         for ip in lan_ips():
             print(f"  手機（同一個 Wi-Fi）：http://{ip}:{args.port}")

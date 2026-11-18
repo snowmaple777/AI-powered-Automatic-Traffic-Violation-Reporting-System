@@ -18,6 +18,10 @@ from violation_engine import create_rules, RuleContext
 LANE_CHANGE = [(125, 200), (125, 195), (125, 190), (140, 185), (154, 180),
                (170, 175), (185, 170), (185, 165), (185, 160)]
 U_TURN = LANE_CHANGE[:6] + [(185, 185), (185, 190), (185, 195)]
+# 以下合成序列依 4ay 以前的側別邊距（4 px＋線帶寬 0.2，約 6 px）設計：例如 (140, 185) 的車底點落在邊距內，
+# 用來測狀態機、方向分類與各種中斷。4ay 起預設邊距近乎為零、4az 起方向分類另設取樣邊距；機制測試固定沿用
+# 4ay 以前的設定，新預設另見 C3MarginDefaultTests、DirectionMarginTests。
+LEGACY_MARGIN = {"side_margin_px": 4.0, "margin_width_ratio": .2, "direction_side_margin_px": 0.0}
 
 
 def sequence(points, color="yellow", camera_shift=0):
@@ -48,7 +52,9 @@ def sequence(points, color="yellow", camera_shift=0):
     return records
 
 
-def run_records(records, color="yellow", settings=None):
+def run_records(records, color="yellow", settings=None, legacy_margin=True):
+    if legacy_margin:
+        settings = {**LEGACY_MARGIN, **(settings or {})}
     rule = create_rules([f"double_{color}_line_crossing"], RuleContext("test", 10, 400, 300),
                         {f"double_{color}_line_crossing": {"settings": settings}})[0]
     events = []
@@ -287,10 +293,12 @@ class DoubleLineRuleTests(unittest.TestCase):
             source, output = root / "input.jsonl", root / "events.jsonl"
             records = sequence(LANE_CHANGE)
             source.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+            legacy = root / "legacy_margin.json"
+            legacy.write_text(json.dumps({"version": 1, **LEGACY_MARGIN}), encoding="utf-8")
             with patch("sys.argv", ["evaluate_violations.py", str(source), "--output", str(output),
-                                    "--rules", "double_yellow_line_crossing"]):
+                                    "--rules", "double_yellow_line_crossing", "--double-line-config", str(legacy)]):
                 evaluate_violations.main()
-            events = [json.loads(s) for s in output.read_text(encoding="utf-8").splitlines()]
+            events =[json.loads(s) for s in output.read_text(encoding="utf-8").splitlines()]
             self.assertEqual(len(events), 1)
             video = root / "input.mp4"
             writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 10, (400, 300))
@@ -311,6 +319,81 @@ class DoubleLineRuleTests(unittest.TestCase):
                                     "--double-line-config", str(config)]):
                 evaluate_violations.main()
             self.assertEqual(output.read_text(encoding="utf-8"), "")
+
+
+
+class C3MarginDefaultTests(unittest.TestCase):
+    """4ay 預設：側別邊距近乎為零，車底點一離開線帶本身就算該側（配準誤差項仍保留）。"""
+
+    def test_default_margin_values_and_config_agree(self):
+        from double_lines import RULE_DEFAULTS
+        config = json.loads((Path(__file__).resolve().parents[1] / "configs/double_line_rules.json").read_text(encoding="utf-8"))
+        for key, value in (("side_margin_px", .01), ("margin_width_ratio", .001), ("direction_side_margin_px", 4.0),
+                           ("direction_margin_width_ratio", .2), ("direction_min_samples", 2)):
+            self.assertEqual(RULE_DEFAULTS[key], value)
+            self.assertEqual(config[key], value)
+
+    def test_points_just_outside_band_count_as_side(self):
+        # (140, 185)：右側車底點 x=147，離線帶左緣 150 只有 3 px；舊邊距下為 0，新預設下算原側。
+        events = run_records(sequence(LANE_CHANGE), legacy_margin=False)
+        self.assertEqual([e["status"] for e in events], ["confirmed"])
+        # 事件時間（過線幀）不變；對側更早達到穩定，確認幀比舊邊距早一幀（7 對 8）。
+        legacy = run_records(sequence(LANE_CHANGE))[0]
+        self.assertEqual(events[0]["frame"], legacy["frame"])
+        self.assertEqual(events[0]["confirmation_frame"], legacy["confirmation_frame"] - 1)
+
+    def test_lateral_samples_near_band_degrade_maneuver_label_without_direction_margin(self):
+        # 4ay 副作用（4az 以方向取樣邊距修正）：停用方向邊距時，靠近線帶的橫移樣本進入方向判斷，
+        # 變換車道／迴轉退回 complete_crossing。
+        for path in (LANE_CHANGE, U_TURN):
+            events = run_records(sequence(path), settings={"direction_side_margin_px": 0.0}, legacy_margin=False)
+            self.assertEqual([e["behavior"] for e in events], ["complete_crossing"])
+
+    def test_touch_and_return_still_do_not_emit(self):
+        for points in (LANE_CHANGE[:5] + [(125, 180)] * 5, [(125, 180), (130, 180)] * 6):
+            self.assertEqual(run_records(sequence(points), legacy_margin=False), [])
+
+
+class DirectionMarginTests(unittest.TestCase):
+    """4az：方向分類只用離線帶夠遠的樣本；只改 behavior／direction，不改事件成立、時間與狀態。"""
+    ON = {"direction_side_margin_px": 4.0, "direction_margin_width_ratio": .2}
+
+    def test_restores_maneuver_labels_under_small_side_margin(self):
+        # 10 fps 合成序列每步 5 px，確認時對側只有 2 個夠遠的樣本（位移 5 px），故此測試把位移門檻降到 4 px；
+        # 真實 29 fps 影片對側約有 6 個樣本，預設 8 px 即可（見 refactor_log 4az）。
+        coarse = {**self.ON, "min_heading_displacement_px": 4.0}
+        for path, behavior in ((LANE_CHANGE, "lane_change"), (U_TURN, "u_turn")):
+            for shift in (0, 4):
+                plain = run_records(sequence(path, camera_shift=shift), legacy_margin=False,
+                                    settings={"min_heading_displacement_px": 4.0, "direction_side_margin_px": 0.0})
+                fixed = run_records(sequence(path, camera_shift=shift), settings=coarse, legacy_margin=False)
+                self.assertEqual([e["behavior"] for e in fixed], [behavior])
+                for key in ("event_id", "status", "frame", "confirmation_frame", "timestamp_sec", "conditions"):
+                    self.assertEqual(fixed[0][key], plain[0][key])
+                self.assertEqual(fixed[0]["evidence"]["parameters"]["direction_side_margin_px"], 4.0)
+
+    def test_lateral_only_crossing_stays_unclassified(self):
+        events = run_records(sequence([(x, 190) for x, _ in LANE_CHANGE]), settings=self.ON, legacy_margin=False)
+        self.assertEqual([(e["behavior"], e["status"]) for e in events], [("complete_crossing", "confirmed")])
+
+    def test_too_few_clear_samples_fall_back_to_unclassified(self):
+        events = run_records(sequence(LANE_CHANGE), settings={**self.ON, "direction_min_samples": 4},
+                             legacy_margin=False)
+        self.assertEqual([e["behavior"] for e in events], ["complete_crossing"])
+
+    def test_enabled_by_default_and_zero_disables(self):
+        default = run_records(sequence(LANE_CHANGE), legacy_margin=False)[0]
+        self.assertEqual(default["evidence"]["parameters"]["direction_side_margin_px"], 4.0)
+        off = run_records(sequence(LANE_CHANGE), settings={"direction_side_margin_px": 0.0}, legacy_margin=False)[0]
+        self.assertEqual(off["evidence"]["parameters"]["direction_side_margin_px"], 0.0)
+        for key in ("event_id", "status", "frame", "confirmation_frame", "conditions"):
+            self.assertEqual(default[key], off[key])
+
+    def test_invalid_values_fail(self):
+        for settings in ({"direction_side_margin_px": -1}, {"direction_margin_width_ratio": -.1},
+                         {"direction_min_samples": 1}, {"direction_min_samples": 2.5}):
+            with self.assertRaises(ValueError):
+                validate_rule_settings(settings)
 
 
 if __name__ == "__main__":

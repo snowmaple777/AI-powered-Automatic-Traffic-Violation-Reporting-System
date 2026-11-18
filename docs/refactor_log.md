@@ -1417,3 +1417,67 @@ stage1／stage2 是中止或被取代的初版，不作結論。圖板覆核是 
   tests/test_crosswalk_boundary.py、eval/confirmation_experiments/stage6_crosswalk_boundary.json
   仍留在工作目錄。
 - 重驗輸出：outputs/eval/verify_4aw_off、verify_4aw_r23、verify_new_4aw_off、verify_new_4aw_r23。
+
+### 4ay：雙線側別邊距預設改為近乎零（C3；Opus，2026-11-18，切換預設）
+
+修改：`configs/double_line_rules.json` 與 `double_lines.RULE_DEFAULTS` 的 `side_margin_px` 4→0.01、`margin_width_ratio` 0.2→0.001
+（驗證要求 >0，以此近似零）。側別誤差帶只剩配準誤差項（`max_motion_error_px` 上限 5 px，不變）：車底三點離開線帶本身即算該側。
+其他門檻、確認條件、方向分類與狀態機不變。使用者於比較減半／四分之一邊距後決定採用。
+
+驗證方式：`dl_margin.py` 離線只跑雙黃／雙白規則（設定經 `rule_options()` 載入，off 與來源 violations 的雙線事件 ID 逐片相同），
+再以 `tools/rule_eval.py` 走正式入口確認（eval_4aj 全部 31 支事件與來源相同；new_20261114 有差異的影片以 `--only` 重算，
+四筆新增事件與離線結果一致，其他規則事件不變）。
+
+| 設定 | 正式 31 支（0.08 h） | 新影片雙黃類（50 支／58 筆，粗略 GT） | 其他類別影片 | 長片 A1／A5（0.61 h） |
+| --- | --- | --- | --- | --- |
+| 舊預設 4／0.2 | TP 1 FP 0 FN 7 | TP 1 FP 0 FN 57 | 0 | 0 |
+| 減半 2／0.1 | TP 1 FP 0 FN 7 | TP 3 FP 0 FN 55 | 0 | 0 |
+| 四分之一 1／0.05 | TP 1 FP 0 FN 7 | TP 3 FP 0 FN 55 | 0 | 0 |
+| **C3 0.01／0.001（新預設）** | TP 1 FP 0 FN 7 | **TP 5 FP 0 FN 53** | 0 | 0 |
+
+- 新增 cy006 18.07 秒、cy009 20.45 秒、cy018 6.03 秒、cy030 6.11 秒，全部 suspected，已逐片看圖確認為標註車輛越線；
+  cy009／cy018 在減半時即出現，cy006／cy030 只有 C3 才出現（車底點距線帶僅數 px）。
+  四筆疑似原因：`directly_observed_pair` 全部不成立，另有位置缺口 3、外插車底 2、換線編號 2、運動缺口 1。
+- confirmed 數 0→0，雙白事件 0→0，正式集與長片無任何事件變動。長片 0.61 小時零事件，誤報率上限約 5 筆／小時（rule of three），樣本小。
+- 已知副作用（4az 以方向取樣邊距修正）：靠近線帶的橫移樣本進入方向分類，`behavior` 可能退回 `complete_crossing`。cy045 事件時間與狀態不變，
+  lane_change→complete_crossing；cdy01、cy009 仍為 lane_change。確認幀可能提早（合成序列 8→7），事件時間（過線幀）不變。
+  理論上較小邊距可能讓先前不成立的事件變成 confirmed；本輪三個集合沒有發生。
+- 測試：合成序列依舊邊距（約 6 px）設計，`tests/test_double_line_rules.py` 的機制測試以 `LEGACY_MARGIN` 固定舊邊距，
+  另新增 `C3MarginDefaultTests`（預設值與設定檔一致、線帶外 3 px 即算該側、方向標籤退化、觸線返回仍不輸出）。完整 323 項通過。
+
+回退：把兩個值改回 4.0／0.2（或以 `--double-line-config` 指定含舊值的設定檔）。
+重現：outputs/c3_margin_20261118/（dl_margin.py、dls_score.py、m_*.json、c3_check.py 與四張覆核圖）；正式入口輸出 outputs/eval/c3default_4aj、c3default_new5、c3default_long。
+
+### 4az：方向分類取樣邊距（Opus，2026-11-18，預設啟用；修正 4ay 副作用）
+
+問題：4ay 把側別邊距降到近乎零後，靠近線帶的橫移樣本進入 `classify_maneuver` 的跨越前／後軌跡，
+變換車道或迴轉可能退回 `complete_crossing`（cy045）。
+
+修改：新增 `direction_side_margin_px`／`direction_margin_width_ratio`／`direction_min_samples`（4／0.2／2）。
+`vehicle_line_position` 另以「固定值＋線帶寬度比例＋配準誤差」（即 4ay 以前的側別邊距）算出 `direction_side`，
+軌跡樣本標 `direction_clear`；方向分類只用 clear 樣本，每側至少 2 個（原本沿用 stable_observations＝3）。
+其他門檻（位移 8 px、一致性 0.8、角度 35°／140°、縱向 0.7）不變。只影響 behavior 與 evidence.direction，
+不影響事件是否成立、事件／確認時間、狀態與條件；`direction_side_margin_px`＝0 恢復原本的全部樣本。
+先以預設關閉實作並驗證關閉時輸出不變，取得數字後切換預設。
+
+驗證：
+- 關閉時：eval_4aj 31 支以 `rule_eval` 重算，violations 檔與 4ay（c3default_4aj）逐位元相同。
+- 開／關比較（只跑雙線規則；正式 31 支＋新影片 141 支）：所有事件的 event_id、狀態、幀、時間完全相同，只有 behavior 不同。
+
+| 事件 | 4ay 以前（4／0.2） | 4ay（C3） | 4az（C3＋方向邊距） |
+| --- | --- | --- | --- |
+| cdy01 5.30 秒 | lane_change | lane_change | lane_change |
+| cy045 9.37 秒 | lane_change | complete_crossing | **lane_change** |
+| cy009 20.45 秒 | （無事件） | lane_change | lane_change |
+| cy006／cy018／cy030 | （無事件） | complete_crossing | complete_crossing |
+
+- 長片 A1／A5 在 4ay 沒有雙線事件，方向分類不會有差異，未重跑。
+- 正式入口：新設定下 `rule_eval --only` 重算上述六支，結果同表（outputs/eval/c3dir_new5、c3dir_4aj）。
+- 探針（outputs/c3_margin_20261118/dir_probe.py）：真實 29 fps 影片確認時跨越後軌跡約 6 個樣本，clear 樣本 3–5 個；
+  cy030（機車）跨越後沒有 clear 樣本，退回 complete_crossing，與 4ay 相同。cy045 方向夾角 54.6°→33.9°，
+  略低於 35° 門檻，屬邊界值。行為標籤沒有人工標註，只能與 4ay 以前的分類比對一致性，不能宣稱準確率改善。
+- 測試：10 fps 合成序列每步 5 px，確認時只有 2 個 clear 樣本（位移 5 px < 8 px），新設定下仍是 complete_crossing；
+  `DirectionMarginTests` 以 4 px 位移門檻測試恢復效果並註明原因。機制測試的 `LEGACY_MARGIN` 同時關閉方向邊距。
+  新增 `DirectionMarginTests` 5 項；預設啟用後完整 328 項通過。
+
+回退：`direction_side_margin_px` 設為 0。

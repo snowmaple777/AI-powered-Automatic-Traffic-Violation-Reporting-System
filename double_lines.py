@@ -23,7 +23,8 @@ DOUBLE_LINE_CLASSES = {"solid double yellow", "solid double white"}
 RULE_DEFAULTS = dict(
     min_line_observations=3, min_line_length_px=30.0, min_pair_gap_px=2.0,
     max_pair_angle_deg=20.0, max_pair_gap_ratio=4.0, endpoint_margin_px=6.0,
-    side_margin_px=4.0, margin_width_ratio=.2, max_motion_error_px=5.0,
+    # 4ay：側別邊距近乎為零（驗證要求 >0），車底點離開線帶即算該側；配準誤差項仍保留。
+    side_margin_px=.01, margin_width_ratio=.001, max_motion_error_px=5.0,
     min_vehicle_confidence=.35, stable_observations=3, stable_seconds=.15,
     max_observation_gap_sec=.3, max_frame_gap_sec=.2, max_crossing_seconds=6.0,
     max_box_scale_ratio=1.7, max_step_box_ratio=1.0, rearm_seconds=1.0,
@@ -57,7 +58,14 @@ RULE_DEFAULTS = dict(
     # 同一車（不分雙線追蹤編號）的多次壓線合併為一筆。
     straddle_min_seconds=0.0,  # 線帶內最短停留秒數（0＝停用）
     straddle_merge_seconds=2.0,
-    confirm_short_position_gap=False)  # 短位置缺口的確認替代路徑，預設關閉
+    confirm_short_position_gap=False,  # 短位置缺口的確認替代路徑，預設關閉
+    # 4az 方向分類取樣邊距（預設啟用，等於 4ay 以前的側別邊距）。側別邊距很小時（4ay），靠近線帶的橫移樣本
+    # 會進入方向判斷，使變換車道／迴轉退回 complete_crossing。啟用時方向分類只用車底三點離線帶超過
+    # 「固定值＋線帶寬度比例＋配準誤差」的樣本，至少 direction_min_samples 個；只影響 behavior／direction，
+    # 不改變事件是否成立、時間、狀態與條件。
+    direction_side_margin_px=4.0,  # 方向取樣的固定邊距（0＝停用，沿用原跨越前後全部樣本）
+    direction_margin_width_ratio=.2,  # 方向取樣邊距中的線帶寬度比例
+    direction_min_samples=2)  # 啟用時每側至少需要的方向樣本數
 
 # 4ao 選項：同 OCCLUSION_OPTION_KEYS，等於預設值時不放進規則設定。
 STRADDLE_OPTION_KEYS = ("straddle_min_seconds", "straddle_merge_seconds")
@@ -79,9 +87,10 @@ def validate_rule_settings(overrides=None):
                    "curve_extrapolation", "extend_near_endpoint", "confirm_short_position_gap"):
             if type(value) is not bool:
                 raise ValueError(f"{key} must be boolean")
-        elif type(value) not in (int, float) or not math.isfinite(value) or (value < 0 if key in ("footprint_inset_ratio", "max_extrapolation_ratio", "max_line_handoff_px", "line_memory_seconds", "max_origin_interruption_sec", "straddle_min_seconds", "straddle_merge_seconds") else value <= 0):
+        elif type(value) not in (int, float) or not math.isfinite(value) or (value < 0 if key in ("footprint_inset_ratio", "max_extrapolation_ratio", "max_line_handoff_px", "line_memory_seconds", "max_origin_interruption_sec", "straddle_min_seconds", "straddle_merge_seconds",
+                                                                                                         "direction_side_margin_px", "direction_margin_width_ratio") else value <= 0):
             raise ValueError(f"{key} must be finite and positive")
-    for key in ("min_line_observations", "stable_observations"):
+    for key in ("min_line_observations", "stable_observations", "direction_min_samples"):
         if type(settings[key]) is not int or settings[key] < 2:
             raise ValueError(f"{key} must be an integer >= 2")
     for key in ("min_vehicle_confidence", "heading_consistency", "min_longitudinal_alignment",
@@ -573,7 +582,8 @@ def vehicle_line_position(vehicle, line, settings, motion_error=0, *, diagnostic
                         line, extrapolated = extended, True
     inset = (x2 - x1) * settings["footprint_inset_ratio"]
     points = [[x1 + inset, y2], [(x1 + x2) / 2, y2], [x2 - inset, y2]]
-    sides, measurements = [], []
+    sides, measurements, direction_sides = [], [], []
+    direction_margin = settings.get("direction_side_margin_px", RULE_DEFAULTS["direction_side_margin_px"])
     for point in points:
         position = finite_line_position(point, line["centerline"])
         if position is None or position["endpoint_distance_px"] < settings["endpoint_margin_px"]:
@@ -599,19 +609,34 @@ def vehicle_line_position(vehicle, line, settings, motion_error=0, *, diagnostic
         margin = settings["side_margin_px"] + (high - low) * settings["margin_width_ratio"] + motion_error
         distance = position["signed_distance_px"]
         sides.append(-1 if distance < low - margin else 1 if distance > high + margin else 0)
+        if direction_margin:
+            wide = direction_margin + (high - low) * settings.get(
+                "direction_margin_width_ratio", RULE_DEFAULTS["direction_margin_width_ratio"]) + motion_error
+            direction_sides.append(-1 if distance < low - wide else 1 if distance > high + wide else 0)
         measurements.append({**position, "in_band": low <= distance <= high})
-    return {"side": sides[0] if sides[0] == sides[1] == sides[2] else 0,
+    result = {"side": sides[0] if sides[0] == sides[1] == sides[2] else 0,
             "point": points[1], "center_in_band": measurements[1]["in_band"],
             "band_points": sum(m["in_band"] for m in measurements),  # 落在線帶本身（不含邊距）的車底點數
             "tangent": measurements[1]["tangent"], "box": box.tolist(), "extrapolated": extrapolated}
+    if direction_margin:  # 4az：停用（0）時不加欄位
+        result["direction_side"] = direction_sides[0] if direction_sides[0] == direction_sides[1] == direction_sides[2] else 0
+    return result
 
 
 
 def classify_maneuver(before, after, tangent, settings):
-    """Infer maneuver from camera-compensated ground trajectories, not box heading."""
+    """Infer maneuver from camera-compensated ground trajectories, not box heading.
+
+    4az：direction_side_margin_px > 0 時只用離線帶夠遠的樣本（direction_clear），門檻改為 direction_min_samples。
+    """
     vectors = []
+    needed = settings["stable_observations"]
+    if settings.get("direction_side_margin_px", RULE_DEFAULTS["direction_side_margin_px"]):
+        before = [s for s in before if s.get("direction_clear")]
+        after = [s for s in after if s.get("direction_clear")]
+        needed = settings.get("direction_min_samples", RULE_DEFAULTS["direction_min_samples"])
     for samples in (before, after):
-        if len(samples) < settings["stable_observations"]:
+        if len(samples) < needed:
             return "complete_crossing", {"reason": "insufficient_direction_samples"}
         points = np.asarray([s["point"] for s in samples], dtype=float)
         vector = points[-1] - points[0]

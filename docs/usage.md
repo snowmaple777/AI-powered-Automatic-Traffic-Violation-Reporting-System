@@ -278,7 +278,8 @@ rearm_seconds 後才可重新建立起始側，辨識下一次反向跨越。
 | min_pair_gap_px / max_pair_gap_ratio | 2 / 4 | 兩線最小間隙／最大與最小間隙比 |
 | max_pair_angle_deg | 20 | 兩線局部走向差 |
 | endpoint_margin_px | 6 | 排除線段端點附近 |
-| side_margin_px / margin_width_ratio | 4 / 0.2 | 側別誤差帶：固定值＋線帶寬度比例＋配準誤差 |
+| side_margin_px / margin_width_ratio | 0.01 / 0.001 | 側別誤差帶：固定值＋線帶寬度比例＋配準誤差；4ay 起近乎為零（舊值 4 / 0.2），只剩配準誤差 |
+| direction_side_margin_px / direction_margin_width_ratio / direction_min_samples | 4 / 0.2 / 2 | 方向分類（變換車道／迴轉）只用車底三點離線帶超過「固定值＋線帶寬度比例＋配準誤差」的樣本，每側至少 2 個；只影響 behavior，不改事件成立、時間與狀態（4az；direction_side_margin_px＝0 恢復使用全部樣本） |
 | max_motion_error_px | 5 | 可接受的配準誤差上限（沿用補償層提供的值） |
 | min_vehicle_confidence | 0.35 | 車輛最低信心度 |
 | stable_observations / stable_seconds | 3 / 0.15 | 每側同時需達到的觀測次數與穩定時間 |

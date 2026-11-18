@@ -1405,6 +1405,8 @@ class DoubleLineCrossingRule(ViolationRule):
                         state = None
                 sample = {"time": now, "point": list(point),
                           "geometry": line.get("geometry_source", self._frame_geometry)}
+                if "direction_side" in position:  # 4az：此樣本離線帶夠遠，可用於方向分類
+                    sample["direction_clear"] = side != 0 and position["direction_side"] == side
                 if state is None:
                     if side == 0:
                         continue  # Starting on a line cannot establish an origin side.

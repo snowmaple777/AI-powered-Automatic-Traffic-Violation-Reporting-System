@@ -161,64 +161,17 @@ class TaipeiDriver(BaseDriver):
         self.page.fill(self.config["selectors"]["address_remark_input"], remark_val)
 
         # 4. 違規事實項目匹配與說明
-        subcat = (violation_data.get("violation_subcategory", "") or "") + " " + (violation_data.get("violation_description", "") or "")
-        subcat = subcat.strip()
-        
-        print(f"  - 搜尋並配對違規項目 (關鍵字: '{subcat}')...")
+        # 違規事實：Vuetify 清單，依共用違規目錄模糊比對；比對不到就關閉選單並標紅框
         self.page.click(self.config["selectors"]["law_input"], force=True)
         self.page.wait_for_timeout(800)
-        
-        options = self.page.locator(".v-menu__content:visible .v-list-item").all()
-        matched_opt = None
-        
-        # 關鍵字規則比對
-        for opt in options:
-            txt = opt.evaluate("el => el.innerText").strip()
-            if "身障" in subcat or "身心障礙" in subcat:
-                if "身心障礙" in txt:
-                    matched_opt = opt
-                    break
-            elif "併排" in subcat:
-                if "併排" in txt:
-                    matched_opt = opt
-                    break
-            elif "不依順" in subcat:
-                if "不依順" in txt or "逆向" in txt:
-                    matched_opt = opt
-                    break
-            elif "人行道" in subcat and "臨時停車" in subcat:
-                if "人行道" in txt and "臨時停車" in txt:
-                    matched_opt = opt
-                    break
-            elif "人行道" in subcat and "停車" in subcat:
-                if "人行道" in txt and "停車" in txt and "臨時" not in txt:
-                    matched_opt = opt
-                    break
-            elif "紅線" in subcat or "黃線" in subcat or "臨時停車" in subcat:
-                if "設有禁止" in txt or "臨時停車" in txt:
-                    matched_opt = opt
-                    break
-            elif "闖紅燈" in subcat:
-                if "闖紅燈" in txt:
-                    matched_opt = opt
-                    break
-                    
-        # 模糊降級選取
-        if not matched_opt:
-            for opt in options:
-                txt = opt.evaluate("el => el.innerText").strip()
-                if "停車" in txt or "臨時停車" in txt:
-                    matched_opt = opt
-                    break
-                    
-        if matched_opt:
-            matched_txt = matched_opt.evaluate("el => el.innerText").strip()
-            print(f"    - 配對法規成功: '{matched_txt}'")
-            matched_opt.click(force=True)
+        items = self.page.locator(".v-menu__content:visible .v-list-item").all()
+        texts = [(str(i), it.evaluate("el => el.innerText").strip()) for i, it in enumerate(items)]
+        result = self.match_violation(texts, violation_data, field_label="違規事實")
+        if result:
+            items[int(result.value)].click(force=True)
         else:
-            if len(options) > 1:
-                options[1].click(force=True)
-                print("    - 無法配對法規，選取預設第二項項目。")
+            self.page.keyboard.press("Escape")
+            self.violation_unmatched(self.config["selectors"]["law_input"], violation_data, field_label="違規事實")
         self.page.wait_for_timeout(500)
 
         # 違規描述

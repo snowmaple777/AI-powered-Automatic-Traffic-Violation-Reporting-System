@@ -129,23 +129,8 @@ class HsinchuCountyDriver(BaseDriver):
         self.page.fill(self.config["selectors"]["license_plate_suffix"], suffix)
         
         # 4. 法條選擇 (ddlLegislation)
-        fact_desc = (violation_data.get("violation_subcategory", "") or violation_data.get("violation_description", "")).strip()
-        print(f"  - 搜尋並配對違規法條 (關鍵字: '{fact_desc}')...")
-        options = self.page.locator(f"{self.config['selectors']['violation_fact_select']} option").all()
-        selected = False
-        for opt in options:
-            txt = opt.evaluate("el => el.innerText")
-            val = opt.evaluate("el => el.value")
-            if "56" in txt or "人行道" in txt or "停車" in txt:
-                self.page.select_option(self.config["selectors"]["violation_fact_select"], value=val)
-                selected = True
-                print(f"    - 成功配對法條: '{txt[:30]}...'")
-                break
-                
-        if not selected and len(options) > 1:
-            val = options[1].evaluate("el => el.value")
-            self.page.select_option(self.config["selectors"]["violation_fact_select"], value=val)
-            print("    - 選取預設法條。")
+        # 違規項目：依共用違規目錄（configs/violation_catalog.json）模糊比對；比對不到就標紅框，請使用者手動選擇
+        self.select_violation(self.config["selectors"]["violation_fact_select"], violation_data, field_label="違規法條")
             
         # 5. 詳細描述內容
         desc_text = violation_data.get("violation_description", "")

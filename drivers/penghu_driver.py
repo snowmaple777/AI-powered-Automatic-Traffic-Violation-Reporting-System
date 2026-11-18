@@ -77,23 +77,8 @@ class PenghuDriver(BaseDriver):
         self.page.select_option(self.config["selectors"]["mm"], value=min_str)
 
         # 4. 違規項目選取
-        fact_desc = (violation_data.get("violation_subcategory", "") or violation_data.get("violation_description", "")).strip()
-        print(f"  - 搜尋並配對違規項目 (關鍵字: '{fact_desc}')...")
-        options = self.page.locator(f"{self.config['selectors']['subject']} option").all()
-        selected = False
-        for opt in options:
-            txt = opt.evaluate("el => el.innerText")
-            val = opt.evaluate("el => el.value")
-            if "人行道" in txt or "停車" in txt or "臨時停車" in txt or "標誌" in txt:
-                self.page.select_option(self.config["selectors"]["subject"], value=val)
-                selected = True
-                print(f"    - 成功配對項目: '{txt[:30]}...'")
-                break
-                
-        if not selected and len(options) > 1:
-            val = options[1].evaluate("el => el.value")
-            self.page.select_option(self.config["selectors"]["subject"], value=val)
-            print("    - 選取預設違規項目。")
+        # 違規項目：依共用違規目錄（configs/violation_catalog.json）模糊比對；比對不到就標紅框，請使用者手動選擇
+        self.select_violation(self.config["selectors"]["subject"], violation_data, field_label="違規項目")
 
     def upload_media(self, media_paths: List[str]) -> None:
         if not media_paths:

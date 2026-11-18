@@ -208,61 +208,15 @@ class TaichungDriver(BaseDriver):
                 break
                 
         # 獲取所有已渲染的選項
+        # 依共用違規目錄模糊比對；比對不到就關閉選單並標紅框
         opts = self.page.locator("div.v-menu__content:visible .v-list-item").all()
-        fact_desc = violation_data.get("violation_subcategory", "") or violation_data.get("violation_description", "")
-        
-        # 進行多層級優先度匹配，確保選中正確法條 (如：優先選取 56 條或 55 條)
-        target_option = None
-        
-        # 級別 1: 包含 56 且包含 停車 (最精確的紅線/禁止停車處所停車)
-        for opt in opts:
-            text = opt.evaluate("el => el.innerText").strip()
-            if "56" in text and "停車" in text:
-                target_option = opt
-                break
-                
-        # 級別 2: 包含 55 (臨時停車)
-        if not target_option:
-            for opt in opts:
-                text = opt.evaluate("el => el.innerText").strip()
-                if "55" in text:
-                    target_option = opt
-                    break
-                    
-        # 級別 3: 包含 56
-        if not target_option:
-            for opt in opts:
-                text = opt.evaluate("el => el.innerText").strip()
-                if "56" in text:
-                    target_option = opt
-                    break
-                    
-        # 級別 4: 包含重要關鍵字 (紅線/人行道/紅燈)
-        if not target_option:
-            for kw in ["紅線", "人行道", "紅燈", "公車", "公交"]:
-                if kw in fact_desc:
-                    for opt in opts:
-                        text = opt.evaluate("el => el.innerText").strip()
-                        if kw in text:
-                            target_option = opt
-                            break
-                if target_option:
-                    break
-                    
-        # 級別 5: 包含 停車 且不包含 快速公路/鐵路平交道/身障
-        if not target_option:
-            for opt in opts:
-                text = opt.evaluate("el => el.innerText").strip()
-                if "停車" in text and "鐵路" not in text and "快速" not in text:
-                    target_option = opt
-                    break
-                    
-        if target_option:
-            print(f"  - 尋找到符合的違規事實選項: '{target_option.evaluate('el => el.innerText').strip()}'")
-            target_option.click()
+        texts = [(str(i), o.evaluate("el => el.innerText").strip()) for i, o in enumerate(opts)]
+        result = self.match_violation(texts, violation_data, field_label="違規事實")
+        if result:
+            opts[int(result.value)].click()
         else:
-            print("[Taichung 警告] 無法由滾動搜尋到 55/56/停車 等關鍵字選項，將預設點選第一個有效項目。")
-            self.page.locator("div.v-menu__content:visible .v-list-item").first.click()
+            self.page.keyboard.press("Escape")
+            self.violation_unmatched(self.config["selectors"]["violation_fact"], violation_data, field_label="違規事實")
             
         self.page.wait_for_timeout(500)
         

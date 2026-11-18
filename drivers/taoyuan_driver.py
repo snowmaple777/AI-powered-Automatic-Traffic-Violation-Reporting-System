@@ -230,38 +230,17 @@ class TaoyuanDriver(BaseDriver):
     def _select_violation_law(self, violation_data: Dict[str, Any]) -> None:
         category = violation_data.get("violation_category", "")
         subcat = violation_data.get("violation_subcategory", "") or violation_data.get("violation_description", "")
-        
-        # 判斷是靜態還是動態違規 (靜態如停車、臨時停車、排隊)
-        is_static = "停車" in category or "停車" in subcat or "臨時停車" in subcat or "併排" in subcat or "人行道" in subcat
-        
-        if is_static:
-            print("  - 違規類型判定為: [靜態違規]")
-            self.page.select_option(self.config["selectors"]["violation_type"], label="靜態違規")
-            self.page.wait_for_timeout(1000)
-            law_selector = self.config["selectors"]["fact_static"]
-        else:
-            print("  - 違規類型判定為: [動態違規]")
-            self.page.select_option(self.config["selectors"]["violation_type"], label="動態違規")
-            self.page.wait_for_timeout(1000)
-            law_selector = self.config["selectors"]["fact_dynamic"]
-            
-        # 搜尋並匹配法條
-        fact_desc = subcat.strip()
-        options = self.page.locator(f"{law_selector} option").all()
-        selected = False
-        for opt in options:
-            txt = opt.evaluate("el => el.innerText")
-            val = opt.evaluate("el => el.value")
-            if "56" in txt or "55" in txt or "人行道" in txt or "停車" in txt or "臨時停車" in txt:
-                self.page.select_option(law_selector, value=val)
-                selected = True
-                print(f"    - 成功配對法條: '{txt[:30]}...'")
-                break
-                
-        if not selected and len(options) > 1:
-            val = options[1].evaluate("el => el.value")
-            self.page.select_option(law_selector, value=val)
-            print("    - 選取預設法條。")
+        # 違規類型：違規目錄有標 kind 就照用；沒有時沿用原本的判斷（停車類為靜態違規）
+        kind = self.violation_kind(violation_data)
+        if kind is None:
+            is_static = "停車" in category or "停車" in subcat or "臨時停車" in subcat or "併排" in subcat or "人行道" in subcat
+            kind = "static" if is_static else "dynamic"
+        type_label, sel_key = ("靜態違規", "fact_static") if kind == "static" else ("動態違規", "fact_dynamic")
+        print(f"  - 違規類型判定為: [{type_label}]")
+        self.page.select_option(self.config["selectors"]["violation_type"], label=type_label)
+        self.page.wait_for_timeout(1000)
+        # 法條：依共用違規目錄模糊比對；比對不到就標紅框
+        self.select_violation(self.config["selectors"][sel_key], violation_data, field_label="違規法條")
 
     def upload_media(self, media_paths: List[str]) -> None:
         if not media_paths:

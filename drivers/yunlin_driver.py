@@ -104,22 +104,8 @@ class YunlinDriver(BaseDriver):
         self.page.fill(self.config["selectors"]["violation_time"], time_str)
         
         # 5. 違規項目 (ViolationId dropdown)
-        category = violation_data.get("violation_category", "")
-        subcategory = violation_data.get("violation_subcategory", "") or violation_data.get("violation_description", "")
-        
-        print(f"  - 選擇違規項目: '{category}' (小類關鍵字: '{subcategory[:10]}')")
-        # 優先以小類關鍵字比對
-        kw = subcategory[:10] if subcategory else category
-        success = self._select_option_by_keyword(self.config["selectors"]["violation_category"], kw)
-        if not success:
-            # 備用大類比對
-            success = self._select_option_by_keyword(self.config["selectors"]["violation_category"], category)
-        if not success:
-            print("[Yunlin 警告] 無法匹配違規項目，將嘗試選擇第一個可選項目。")
-            try:
-                self.page.select_option(self.config["selectors"]["violation_category"], index=1)
-            except Exception:
-                pass
+        # 違規項目：依共用違規目錄（configs/violation_catalog.json）模糊比對；比對不到就標紅框，請使用者手動選擇
+        self.select_violation(self.config["selectors"]["violation_category"], violation_data, field_label="違規項目")
                 
         # 6. 詳細違規地點
         self.page.fill(self.config["selectors"]["violation_location_address"], violation_data.get("violation_location", ""))

@@ -106,23 +106,8 @@ class HsinchuCityDriver(BaseDriver):
         self._parse_and_fill_location(full_location, district_name)
 
         # 4. 違規事實法條選取
-        fact_desc = (violation_data.get("violation_subcategory", "") or violation_data.get("violation_description", "")).strip()
-        print(f"  - 搜尋並配對違規法條 (關鍵字: '{fact_desc}')...")
-        options = self.page.locator(f"{self.config['selectors']['illegality_code']} option").all()
-        selected = False
-        for opt in options:
-            txt = opt.evaluate("el => el.innerText")
-            val = opt.evaluate("el => el.value")
-            if "55" in txt or "56" in txt or "人行道" in txt or "停車" in txt:
-                self.page.select_option(self.config["selectors"]["illegality_code"], value=val)
-                selected = True
-                print(f"    - 成功配對法條: '{txt[:30]}...'")
-                break
-                
-        if not selected and len(options) > 1:
-            val = options[1].evaluate("el => el.value")
-            self.page.select_option(self.config["selectors"]["illegality_code"], value=val)
-            print("    - 選取預設法條。")
+        # 違規項目：依共用違規目錄（configs/violation_catalog.json）模糊比對；比對不到就標紅框，請使用者手動選擇
+        self.select_violation(self.config["selectors"]["illegality_code"], violation_data, field_label="違規法條")
 
         # 5. 違規說明 (case_illegality_details，若可見時填寫)
         desc_text = violation_data.get("violation_description", "")

@@ -173,15 +173,8 @@ class NantouDriver(BaseDriver):
         self.page.select_option(self.config["selectors"]["violation_minute"], value=min_str)
         
         # 8. 法條樣態 (rlid)
-        fact_desc = (violation_data.get("violation_subcategory", "") or violation_data.get("violation_description", "")).strip()
-        target_rlid = "56101" # 預設人行道停車
-        for pattern, rlid_val in self.FACT_MAP:
-            if pattern in fact_desc or pattern in violation_data.get("violation_category", ""):
-                target_rlid = rlid_val
-                break
-                
-        print(f"  - 選擇法條樣態 (rlid): {target_rlid}")
-        self.page.select_option(self.config["selectors"]["violation_fact_select"], value=target_rlid)
+        # 違規項目：依共用違規目錄（configs/violation_catalog.json）模糊比對；比對不到就標紅框，請使用者手動選擇
+        self.select_violation(self.config["selectors"]["violation_fact_select"], violation_data, field_label="法條樣態")
         self.page.wait_for_timeout(500)
         
         # 9. 違規事實文字敘述 (mcarblack)

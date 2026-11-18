@@ -198,20 +198,8 @@ class ChiayiCityDriver(BaseDriver):
         self.page.fill(self.config["selectors"]["violation_time"], time_str)
         
         # 5. 違規項目 (檢舉法條 select)
-        category = violation_data.get("violation_category", "")
-        subcategory = violation_data.get("violation_subcategory", "") or violation_data.get("violation_description", "")
-        
-        print(f"  - 選擇違規項目: '{category}' (小類關鍵字: '{subcategory[:10]}')")
-        kw = subcategory[:10] if subcategory else category
-        success = self._select_option_by_keyword(self.config["selectors"]["violation_category"], kw)
-        if not success:
-            success = self._select_option_by_keyword(self.config["selectors"]["violation_category"], category)
-        if not success:
-            print("[Chiayi City 警告] 無法匹配違規法條，將嘗試選擇第一個可選項目。")
-            try:
-                self.page.select_option(self.config["selectors"]["violation_category"], index=1)
-            except Exception:
-                pass
+        # 違規項目：依共用違規目錄（configs/violation_catalog.json）模糊比對；比對不到就標紅框，請使用者手動選擇
+        self.select_violation(self.config["selectors"]["violation_category"], violation_data, field_label="違規項目")
                 
         # 6. 違規詳細發生地點 (連動縣市/行政區/詳細地址)
         location = violation_data.get("violation_location", "")

@@ -71,22 +71,8 @@ class PingtungDriver(BaseDriver):
         print("[Pingtung] 正在填寫違規內容與時間...")
         
         # 1. 違規事項 (qclass select)
-        category = violation_data.get("violation_category", "")
-        subcategory = violation_data.get("violation_subcategory", "") or violation_data.get("violation_description", "")
-        
-        print(f"  - 選擇違規事項: '{category}' (小類關鍵字: '{subcategory[:10]}')")
-        # 優先用小類關鍵字比對 (例如 "闖紅燈" 匹配 "(53)交岔路口闖紅燈...")
-        kw = subcategory[:10] if subcategory else category
-        success = self._select_option_by_keyword(self.config["selectors"]["violation_category"], kw)
-        if not success:
-            # 備用大類比對
-            success = self._select_option_by_keyword(self.config["selectors"]["violation_category"], category)
-        if not success:
-            print("[Pingtung 警告] 無法匹配違規事項，將嘗試選擇第一個可選項目。")
-            try:
-                self.page.select_option(self.config["selectors"]["violation_category"], index=1)
-            except Exception:
-                pass
+        # 違規項目：依共用違規目錄（configs/violation_catalog.json）模糊比對；比對不到就標紅框，請使用者手動選擇
+        self.select_violation(self.config["selectors"]["violation_category"], violation_data, field_label="違規事項")
                 
         # 2. 車牌號碼拆分 (屏東拆分為前/後兩欄)
         license_plate = violation_data.get("license_plate", "")

@@ -93,54 +93,22 @@ class ChanghuaDriver(BaseDriver):
         self.page.fill(self.config["selectors"]["violation_time"], formatted_time)
         
         # 7. 勾選違規項目 Checkbox (點選對應 label 以防 pointer-events 攔截)
-        fact_desc = (violation_data.get("violation_subcategory", "") or violation_data.get("violation_description", "")).strip()
-        print(f"  - 正在匹配違規事實項目... 描述: '{fact_desc[:15]}'")
-        
-        kw = ""
-        for code in ["56", "55", "53", "43", "44", "42", "45", "48", "49", "30", "31", "33"]:
-            if code in fact_desc or code in violation_data.get("violation_category", ""):
-                kw = code
-                break
-        if not kw:
-            if "停" in fact_desc:
-                kw = "停車"
-            elif "紅燈" in fact_desc or "紅綠燈" in fact_desc:
-                kw = "紅燈"
-            elif "燈" in fact_desc:
-                kw = "燈光"
-                
+        # 違規項目 Checkbox：讀出每個項目的標籤文字，依共用違規目錄模糊比對；比對不到就標紅框
         checkboxes = self.page.locator("input[name='ViolationItems']").all()
-        target_cb_id = None
-        target_lbl = ""
-        
+        items = []
         for cb in checkboxes:
             cb_id = cb.get_attribute("id") or ""
-            lbl_text = ""
-            if cb_id:
-                lbl = self.page.locator(f"label[for='{cb_id}']")
-                if lbl.count() > 0:
-                    lbl_text = lbl.evaluate("el => el.innerText").strip()
-            if kw and kw in lbl_text:
-                target_cb_id = cb_id
-                target_lbl = lbl_text
-                if kw == "56" and "五十六" not in lbl_text:
-                    target_cb_id = None
-                    continue
-                if kw == "55" and "五十五" not in lbl_text:
-                    target_cb_id = None
-                    continue
-                break
-                
-        if target_cb_id:
+            if not cb_id:
+                continue
+            lbl = self.page.locator(f"label[for='{cb_id}']")
+            if lbl.count() > 0:
+                items.append((cb_id, lbl.evaluate("el => el.innerText").strip()))
+        result = self.match_violation(items, violation_data, field_label="違規項目")
+        if result:
             # 點選與其 ID 綁定的 label，避開 invisible checkbox 的 click 限制
-            self.page.locator(f"label[for='{target_cb_id}']").click()
-            print(f"    - 已匹配並點選違規項目標籤: '{target_lbl}'")
+            self.page.locator(f"label[for='{result.value}']").click()
         else:
-            # 預設選取最後一個「其他」項目
-            other_cb = self.page.locator("input[name='ViolationItems']").last
-            other_id = other_cb.get_attribute("id")
-            self.page.locator(f"label[for='{other_id}']").click()
-            print("    - 未能匹配特定項目，已預設點選「其他」選項標籤。")
+            self.violation_unmatched("input[name='ViolationItems']", violation_data, field_label="違規項目")
             
         # 8. 違規事實說明
         self.page.fill(self.config["selectors"]["violation_description"], violation_data.get("violation_description", ""))

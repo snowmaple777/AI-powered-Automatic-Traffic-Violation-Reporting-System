@@ -1,8 +1,10 @@
 import os
+import re
 import json
 import time
+import unicodedata
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 from playwright.sync_api import Page, BrowserContext
 from utils.network_interceptor import NetworkInterceptor
 from utils.option_matcher import (
@@ -278,6 +280,110 @@ class BaseDriver(ABC):
                 print(f"  - [{child_label or child_selector}] 等待 {timeout_ms // 1000} 秒子選單仍未更新，以目前選項嘗試比對。")
 
         return pick(child_selector, child_query, child_label)
+
+    # ==================== 違規項目：共用目錄查表 + 模糊比對 ====================
+    # 流程（與高雄 violation_map 同一套名稱）：
+    #   1. info.txt 的「違規事實」優先、其次「違規類別」，對照 configs/violation_catalog.json 的名稱與 aliases
+    #      （只忽略空白與全半形差異，文字須相同），確定是哪一種違規
+    #   2. 用該違規的 queries（標準用語＋條號）到各縣市網站的選項中模糊比對
+    #   3. 目錄裡沒有這種違規時，退回用 info.txt 原文模糊比對
+    #   4. 比對不到就不選，標紅框交給使用者手動選（不會預設亂選）
+
+    VIOLATION_THRESHOLD = 0.6
+    _violation_catalog: Optional[Dict[str, Dict[str, Any]]] = None
+
+    @staticmethod
+    def _violation_key(text: Any) -> str:
+        s = unicodedata.normalize("NFKC", str(text or ""))
+        return re.sub(r"\s+", "", s)
+
+    @classmethod
+    def load_violation_catalog(cls) -> Dict[str, Dict[str, Any]]:
+        if BaseDriver._violation_catalog is None:
+            path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "configs", "violation_catalog.json")
+            data: Dict[str, Any] = {}
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            BaseDriver._violation_catalog = {
+                k: v for k, v in (data.get("violations") or {}).items() if not k.startswith("_")
+            }
+        return BaseDriver._violation_catalog
+
+    def resolve_violation(self, violation_data: Dict[str, Any]) -> Optional[Tuple[str, Dict[str, Any]]]:
+        """依違規事實／違規類別查目錄，回傳 (違規名稱, 目錄項目)；查不到回傳 None"""
+        catalog = self.load_violation_catalog()
+        lookup: Dict[str, str] = {}
+        for name, entry in catalog.items():
+            for n in [name] + list(entry.get("aliases", [])):
+                lookup[self._violation_key(n)] = name
+        for text in (violation_data.get("violation_subcategory"), violation_data.get("violation_category")):
+            key = self._violation_key(text)
+            if key and key in lookup:
+                name = lookup[key]
+                return name, catalog[name]
+        return None
+
+    def violation_queries(self, violation_data: Dict[str, Any]) -> List[str]:
+        """模糊比對用的查詢文字：目錄有這種違規就用目錄的 queries，否則用 info.txt 原文"""
+        resolved = self.resolve_violation(violation_data)
+        if resolved:
+            name, entry = resolved
+            return list(entry.get("queries") or [name])
+        return [t.strip() for t in (violation_data.get("violation_subcategory"),
+                                    violation_data.get("violation_category")) if t and t.strip()]
+
+    def violation_kind(self, violation_data: Dict[str, Any]) -> Optional[str]:
+        """目錄中的 kind：static（停車類）/ dynamic（行駛類）；目錄沒有這種違規時回傳 None"""
+        resolved = self.resolve_violation(violation_data)
+        return resolved[1].get("kind") if resolved else None
+
+    def match_violation(self, options: Sequence[Any], violation_data: Dict[str, Any],
+                        field_label: str = "違規事實") -> Optional[MatchResult]:
+        """
+        從任意選項清單（<select> 選項、radio/checkbox 標籤、Vuetify 清單文字…）中找出符合的違規項目。
+        只比對、不操作網頁；options 可為 Option、(value, text) 或純文字。
+        """
+        resolved = self.resolve_violation(violation_data)
+        queries = self.violation_queries(violation_data)
+        source = f"違規項目「{resolved[0]}」" if resolved else "info.txt 原文（不在違規目錄中）"
+        if not queries:
+            print(f"  - [{field_label}] info.txt 沒有違規事實/違規類別，略過。")
+            return None
+        result = best_match(queries, options, threshold=self.VIOLATION_THRESHOLD)
+        if result is None:
+            print(f"  - [{field_label}] 依{source}比對不到：")
+            print("    " + explain_no_match(queries, options).replace("\n", "\n    "))
+            return None
+        flag = "（分數接近，請確認）" if result.ambiguous else ""
+        print(f"  - [{field_label}] 依{source} → {result.text} (分數 {result.score:.2f}){flag}")
+        if result.ambiguous:
+            print("    " + result.explain(top=3).replace("\n", "\n    "))
+        return result
+
+    def violation_unmatched(self, selector: str, violation_data: Dict[str, Any],
+                            field_label: str = "違規事實", detail: str = "") -> None:
+        """違規項目比對不到：標紅框並記錄，請使用者手動選擇"""
+        queries = self.violation_queries(violation_data)
+        self._record_unmatched(selector, field_label, queries,
+                               detail or "依違規目錄比對不到符合的選項，請手動選擇")
+
+    def select_violation(self, selector: str, violation_data: Dict[str, Any],
+                         field_label: str = "違規事實") -> Optional[MatchResult]:
+        """原生 <select> 的違規項目選單：比對到就選取，比對不到就標紅框"""
+        try:
+            options = self.read_select_options(selector)
+        except Exception as e:
+            print(f"  - [{field_label}] 讀取選項失敗: {e}")
+            self.violation_unmatched(selector, violation_data, field_label, f"讀取選項失敗: {e}")
+            return None
+        result = self.match_violation(options, violation_data, field_label)
+        if result is None:
+            self.violation_unmatched(selector, violation_data, field_label)
+            return None
+        self._apply_select(selector, result.value)
+        return result
 
     def _record_unmatched(self, selector: str, label: str, queries: Any, detail: str) -> None:
         self.unmatched_fields.append({"selector": selector, "label": label, "query": queries, "detail": detail})

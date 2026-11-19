@@ -65,7 +65,19 @@ RULE_DEFAULTS = dict(
     # 不改變事件是否成立、時間、狀態與條件。
     direction_side_margin_px=4.0,  # 方向取樣的固定邊距（0＝停用，沿用原跨越前後全部樣本）
     direction_margin_width_ratio=.2,  # 方向取樣邊距中的線帶寬度比例
-    direction_min_samples=2)  # 啟用時每側至少需要的方向樣本數
+    direction_min_samples=2,  # 啟用時每側至少需要的方向樣本數
+    # 4ba 起點與終點推定（方案二，預設關閉；同樣不寫入預設設定）。原規則某（車, 線）候選剛建立穩定起點
+    # （seeding→armed）時，用目前這條線重新量測同車較早、經運動補償帶到目前座標的車框：另一側至少
+    # direction_min_samples 個方向邊距外（4az）的樣本（彼此相距 1 秒內），與終點側方向邊距外樣本的間隔
+    # 不超過此秒數（中間可缺車框或量不到位置）時，輸出疑似事件（stable_origin／complete_band_crossing=False，
+    # 永遠不會確認）。需要 direction_side_margin_px > 0。
+    endpoint_inference_seconds=0.0,  # 起點與終點最長間隔秒數（0＝停用）
+    # 遠方小車防護：建立終點穩定時的車框高度至少為畫面高度的此比例（0＝不檢查）。試算的誤報多是壓在線
+    # 遠端的遠方小車（車框約畫面高 5–6%），真違規車框 ≥ 8.8%；此值參考少量人工覆核選定，見 refactor_log 4ba。
+    endpoint_min_box_height_ratio=.07)
+
+# 4ba 選項：同 OCCLUSION_OPTION_KEYS，等於預設值時不放進規則設定。
+ENDPOINT_OPTION_KEYS = ("endpoint_inference_seconds", "endpoint_min_box_height_ratio")
 
 # 4ao 選項：同 OCCLUSION_OPTION_KEYS，等於預設值時不放進規則設定。
 STRADDLE_OPTION_KEYS = ("straddle_min_seconds", "straddle_merge_seconds")
@@ -88,8 +100,13 @@ def validate_rule_settings(overrides=None):
             if type(value) is not bool:
                 raise ValueError(f"{key} must be boolean")
         elif type(value) not in (int, float) or not math.isfinite(value) or (value < 0 if key in ("footprint_inset_ratio", "max_extrapolation_ratio", "max_line_handoff_px", "line_memory_seconds", "max_origin_interruption_sec", "straddle_min_seconds", "straddle_merge_seconds",
-                                                                                                         "direction_side_margin_px", "direction_margin_width_ratio") else value <= 0):
+                                                                                                         "direction_side_margin_px", "direction_margin_width_ratio",
+                                                                                                         "endpoint_inference_seconds", "endpoint_min_box_height_ratio") else value <= 0):
             raise ValueError(f"{key} must be finite and positive")
+    if settings["endpoint_min_box_height_ratio"] >= 1:
+        raise ValueError("endpoint_min_box_height_ratio must be less than 1")
+    if settings["endpoint_inference_seconds"] > 0 and not settings["direction_side_margin_px"]:
+        raise ValueError("endpoint_inference_seconds requires direction_side_margin_px > 0")
     for key in ("min_line_observations", "stable_observations", "direction_min_samples"):
         if type(settings[key]) is not int or settings[key] < 2:
             raise ValueError(f"{key} must be an integer >= 2")

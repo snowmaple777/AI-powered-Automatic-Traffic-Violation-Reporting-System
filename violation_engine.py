@@ -12,7 +12,7 @@ import numpy as np
 from double_lines import (validate_rule_settings, line_quality, vehicle_line_position,
                           project_points, classify_maneuver, resolve_rule_lines,
                           project_line_geometry, RULE_DEFAULTS as DOUBLE_LINE_DEFAULTS,
-                          OCCLUSION_OPTION_KEYS, ORIGIN_OPTION_KEYS, STRADDLE_OPTION_KEYS)
+                          OCCLUSION_OPTION_KEYS, ORIGIN_OPTION_KEYS, STRADDLE_OPTION_KEYS, ENDPOINT_OPTION_KEYS)
 from signal_state import CombinedSignalState
 from core.trajectory import TrackHistory
 from core.continuity import is_continuous
@@ -931,6 +931,10 @@ class RedLightStopLineCrossingRule(ViolationRule):
         return events
 
 
+# 4ba 起點與終點推定：另一側樣本彼此最多相距的秒數（與試算相同）。
+ENDPOINT_CLUSTER_SECONDS = 1.0
+
+
 class DoubleLineCrossingRule(ViolationRule):
     """Complete footprint-proxy crossings, with conservative maneuver inference."""
 
@@ -946,12 +950,19 @@ class DoubleLineCrossingRule(ViolationRule):
         # 診斷控制不進入原 settings／事件 evidence.parameters，停用時序列化保持原樣。
         self.detailed_diagnostics = self.settings.pop("detailed_diagnostics")
         # 4am 選項維持預設（關閉）時不留在 settings，事件參數與診斷與先前逐位元相同。
-        for key in OCCLUSION_OPTION_KEYS + ORIGIN_OPTION_KEYS + STRADDLE_OPTION_KEYS + ("confirm_short_position_gap",):
+        for key in (OCCLUSION_OPTION_KEYS + ORIGIN_OPTION_KEYS + STRADDLE_OPTION_KEYS + ENDPOINT_OPTION_KEYS
+                    + ("confirm_short_position_gap",)):
             if self.settings[key] == DOUBLE_LINE_DEFAULTS[key]:
                 del self.settings[key]
         self.straddle_seconds = self.settings.get("straddle_min_seconds", 0.0)
         self.straddle_merge = self.settings.get("straddle_merge_seconds", DOUBLE_LINE_DEFAULTS["straddle_merge_seconds"])
         self.pending_straddles = {}  # object_id -> 待合併的壓線事件（4ao）
+        # 4ba 起點與終點推定：停用時不保留車框歷史，也不多做任何投影。
+        self.endpoint_seconds = self.settings.get("endpoint_inference_seconds", 0.0)
+        self.endpoint_min_height = self.settings.get("endpoint_min_box_height_ratio",
+                                                     DOUBLE_LINE_DEFAULTS["endpoint_min_box_height_ratio"]) * context.frame_height
+        self.endpoint_history = {}  # object_id -> 經運動補償帶到目前座標的較早車框
+        self.endpoint_last = {}     # object_id -> 同車最後一筆雙線事件（原規則或推定）的確認時間
         self._current_frame = None
         self.memory_seconds = self.settings.get("line_memory_seconds", 0.0)
         self.remembered_lines = {}
@@ -1016,6 +1027,7 @@ class DoubleLineCrossingRule(ViolationRule):
         if matrix is None:
             self._diagnose_all_states("motion_unavailable")
             self.states.clear()
+            self.endpoint_history.clear()
             self.line_memory.clear()
             self.remembered_lines.clear()
             self.diagnostics.update(status="blocked", reset_reason="motion_unavailable")
@@ -1024,6 +1036,7 @@ class DoubleLineCrossingRule(ViolationRule):
         if reset:
             self._diagnose_all_states("discontinuous_input")
             self.states.clear()
+            self.endpoint_history.clear()
             self.line_memory.clear()
             self.remembered_lines.clear()
             self.diagnostics["reset_reason"] = reset
@@ -1075,6 +1088,8 @@ class DoubleLineCrossingRule(ViolationRule):
             except ValueError:
                 self._diagnose_state(key, "projection_invalid")
                 del self.states[key]
+        if self.endpoint_history:
+            self._project_endpoint_history(matrix, error, motion_gap)
         if motion_gap:
             self.diagnostics["motion_gap"] = True
             for state in self.states.values():
@@ -1340,6 +1355,7 @@ class DoubleLineCrossingRule(ViolationRule):
     def _evaluate_crossing(self, frame, vehicles, lines, motion_error=0, motion_gap=False):
         events = []
         now, cfg = frame["timestamp_sec"], self.settings
+        armed_now = [] if self.endpoint_seconds > 0 else None  # 4ba：本幀剛建立穩定起點的候選
         for vehicle in vehicles:
             object_id = vehicle.get("object_id")
             if (not object_id or vehicle.get("class_name") not in
@@ -1447,6 +1463,8 @@ class DoubleLineCrossingRule(ViolationRule):
                     path[:] = [s for s in path if now - s["time"] <= max(cfg["heading_window_sec"], cfg["stable_seconds"])]
                     state["before"] = self._snapshot(frame, vehicle, line, position)
                     if len(path) >= cfg["stable_observations"] and now - state["origin_since"] >= cfg["stable_seconds"]:
+                        if armed_now is not None and state["phase"] == "seeding" and not line.get("remembered"):
+                            armed_now.append((key, vehicle, line, position["tangent"]))
                         state["phase"] = "armed"
                     continue
                 if state["phase"] == "seeding":
@@ -1525,7 +1543,108 @@ class DoubleLineCrossingRule(ViolationRule):
                         "；缺少線帶內觀測，待覆核。")
                     events.append(event)
                 state.update(phase="reported", destination=side, rearm_since=now)
+        if armed_now is not None:
+            events += self._infer_endpoints(frame, vehicles, events, armed_now, motion_error)
         return events
+
+    def _project_endpoint_history(self, matrix, error, motion_gap):
+        """4ba：把保留的車框帶到目前路面座標；累積誤差以每幀配準誤差的平方和開根號估計。"""
+        for object_id, samples in list(self.endpoint_history.items()):
+            corners = [corner for s in samples for corner in
+                       ([s["box"][0], s["box"][1]], [s["box"][2], s["box"][1]],
+                        [s["box"][2], s["box"][3]], [s["box"][0], s["box"][3]])]
+            try:
+                projected = np.asarray(project_points(corners, matrix), dtype=float).reshape(-1, 4, 2)
+            except ValueError:
+                del self.endpoint_history[object_id]
+                continue
+            for sample, box in zip(samples, projected):
+                sample["box"] = [*box.min(axis=0).tolist(), *box.max(axis=0).tolist()]
+                sample["error2"] += error * error
+                sample["motion_gap"] = sample["motion_gap"] or motion_gap
+
+    def _infer_endpoints(self, frame, vehicles, events, armed_now, motion_error):
+        """4ba 起點與終點推定（方案二）：剛建立穩定起點的候選，回頭找另一側的較早樣本。
+
+        另一側：以目前這條線重新量測較早車框，至少 direction_min_samples 個落在方向邊距（4az）外、
+        彼此相距 ENDPOINT_CLUSTER_SECONDS 內；終點側：候選 before_path 中至少同樣數量的方向邊距外樣本；
+        兩段間隔不超過 endpoint_inference_seconds，中間可缺車框或量不到位置。兩端都量得到位置代表都落在
+        同一條線的可見列範圍內，而線為 y 單調，起訖連線必定穿過該段線帶，不另做相交檢查。
+        同一車在上一筆雙線事件（原規則或推定）之後的樣本才使用，事件後 window 秒內不再推定，避免重複。
+        """
+        now, cfg = frame["timestamp_sec"], self.settings
+        window = self.endpoint_seconds + ENDPOINT_CLUSTER_SECONDS + max(cfg["heading_window_sec"], cfg["stable_seconds"])
+        needed = cfg["direction_min_samples"]
+        for event in events:
+            self.endpoint_last[event["object_id"]] = now
+        for object_id, samples in list(self.endpoint_history.items()):
+            while samples and now - samples[0]["time"] > window:
+                samples.pop(0)
+            if not samples:
+                del self.endpoint_history[object_id]
+        inferred = []
+        for key, vehicle, line, tangent in armed_now:
+            object_id, state = key[0], self.states.get(key)
+            floor = self.endpoint_last.get(object_id, -math.inf)
+            if state is None or state["phase"] != "armed" or now - floor <= window or not cfg["emit_suspected"]:
+                continue
+            destination = [s for s in state["before_path"] if s.get("direction_clear")]
+            box = state["last_box"]  # 本幀車框（遠方小車防護）
+            if len(destination) < needed or box[3] - box[1] < self.endpoint_min_height:
+                continue
+            t_destination = min(s["time"] for s in destination)
+            samples = [s for s in self.endpoint_history.get(object_id, ()) if floor < s["time"] < state["origin_since"]]
+            origin, clear = -state["origin"], []
+            for index, sample in enumerate(samples):
+                position = vehicle_line_position({"bbox_xyxy": sample["box"]}, line, cfg,
+                                                 motion_error + math.sqrt(sample["error2"]))
+                if position is not None and position["side"] == origin and position.get("direction_side") == origin:
+                    clear.append((index, position))
+            if not clear:
+                continue
+            newest_index = clear[-1][0]
+            newest = samples[newest_index]
+            cluster = [(samples[i], p) for i, p in clear
+                       if newest["time"] - samples[i]["time"] <= ENDPOINT_CLUSTER_SECONDS]
+            gap = t_destination - newest["time"]
+            if len(cluster) < needed or gap > self.endpoint_seconds + 1e-9:
+                continue
+            after = samples[newest_index + 1] if newest_index + 1 < len(samples) else newest
+            origin_path = [{"time": s["time"], "point": p["point"], "direction_clear": True} for s, p in cluster]
+            maneuver, direction = classify_maneuver(origin_path, destination, tangent, cfg)
+            conditions = dict(
+                stable_origin=False, stable_destination=True, complete_band_crossing=False,
+                continuous_tracks=True, geometry_verified=True, uninterrupted_positions=False,
+                directly_observed_pair=line.get("component_count") == 2 and not line.get("partial_support", False),
+                transition_observed=False,
+                line_observed_at_footprint=not (state.get("extrapolated") or any(p.get("extrapolated") for _, p in cluster)),
+                same_line_track=not state.get("line_handoff", False),
+                camera_motion_compensated=not (state.get("motion_gap") or any(s["motion_gap"] for s, _ in cluster)))
+            evidence = {"before": None, "transition": None, "after": state["before"], "direction": direction,
+                        "reference_point_method": "bbox_inset_bottom_edge_proxy", "parameters": cfg, "maneuver": maneuver,
+                        "endpoint_inference": {
+                            "origin_frames": [cluster[0][0]["frame"]["index"], newest["frame"]["index"]],
+                            "origin_samples": len(cluster), "gap_sec": round(gap, 3),
+                            "max_accumulated_motion_error_px": round(max(math.sqrt(s["error2"]) for s, _ in cluster), 3)}}
+            event = self.build_event(after["frame"], after["vehicle"], line, status="suspected",
+                                     conditions=conditions, evidence=evidence)
+            event.update(behavior=maneuver, confirmation_frame=frame["index"], confirmation_timestamp_sec=now)
+            if vehicle.get("plate_text"):
+                event["evidence"]["vehicle"]["plate_text"] = vehicle["plate_text"]
+            event["description"] = (self.label + "：車輛先在雙線一側、之後已在另一側穩定，中間缺少連續的車輛參考點，"
+                                    "以起點與終點推定跨越，待覆核。")
+            inferred.append(event)
+            self.endpoint_last[object_id] = now
+        stamp = dict(frame)
+        for vehicle in vehicles:
+            confidence, box = vehicle.get("confidence"), vehicle.get("bbox_xyxy")
+            if (vehicle.get("object_id") and vehicle.get("class_name") in {"car", "truck", "bus", "motorcycle", "bicycle"}
+                    and isinstance(confidence, (int, float)) and math.isfinite(confidence)
+                    and confidence >= cfg["min_vehicle_confidence"] and isinstance(box, (list, tuple)) and len(box) == 4):
+                self.endpoint_history.setdefault(vehicle["object_id"], []).append(
+                    {"time": now, "frame": stamp, "vehicle": vehicle, "box": [float(b) for b in box],
+                     "error2": 0., "motion_gap": False})
+        return inferred
 
     def finalize(self):
         # Incomplete approaches never become events merely because the video ends
@@ -1542,6 +1661,8 @@ class DoubleLineCrossingRule(ViolationRule):
         self.states.clear()
         self.line_memory.clear()
         self.remembered_lines.clear()
+        self.endpoint_history.clear()
+        self.endpoint_last.clear()
         self.previous_frame = None
         released = self._release_straddles() if self.pending_straddles else []
         self._current_frame = None

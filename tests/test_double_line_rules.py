@@ -396,5 +396,114 @@ class DirectionMarginTests(unittest.TestCase):
                 validate_rule_settings(settings)
 
 
+
+def gap_sequence(left=3, missing=5, right=5, y=200, color="yellow"):
+    """車輛在左側出現 left 幀、偵測器漏掉 missing 幀（原規則候選逾時刪除），之後在右側出現 right 幀。"""
+    points = [(125, y)] * left + [(155, y)] * missing + [(185, y)] * right
+    records = sequence(points, color)
+    for record in records[left:left + missing]:
+        record["observations"]["vehicles"] = []
+        record["observations"].pop("rule_vehicles", None)
+    return records
+
+
+class EndpointInferenceTests(unittest.TestCase):
+    """4ba 起點與終點推定：預設關閉；只補原規則因中段缺車框而漏掉的跨越，且只能是疑似。"""
+    ON = {"endpoint_inference_seconds": 1.5}
+
+    def test_disabled_by_default_and_not_in_parameters(self):
+        from double_lines import ENDPOINT_OPTION_KEYS, RULE_DEFAULTS
+        self.assertEqual(RULE_DEFAULTS["endpoint_inference_seconds"], 0.0)
+        self.assertEqual(run_records(gap_sequence(), legacy_margin=False), [])
+        default = run_records(sequence(LANE_CHANGE), legacy_margin=False)[0]
+        self.assertFalse(set(ENDPOINT_OPTION_KEYS) & set(default["evidence"]["parameters"]))
+        rule = create_rules(["double_yellow_line_crossing"], RuleContext("test", 10, 400, 300))[0]
+        self.assertFalse(set(ENDPOINT_OPTION_KEYS) & set(rule.settings))
+
+    def test_gap_crossing_becomes_suspected_endpoint_event(self):
+        for color in ("yellow", "white"):
+            for reverse in (False, True):
+                records = gap_sequence(color=color)
+                if reverse:  # 右到左：左右對調
+                    records = gap_sequence(color=color)
+                    for record in records:
+                        for vehicle in record["observations"]["vehicles"]:
+                            x1, y1, x2, y2 = vehicle["bbox_xyxy"]
+                            vehicle["bbox_xyxy"] = [310 - x2, y1, 310 - x1, y2]
+                with self.subTest(color=color, reverse=reverse):
+                    events = run_records(records, color, settings=self.ON, legacy_margin=False)
+                    self.assertEqual(len(events), 1)
+                    event = events[0]
+                    self.assertEqual(event["status"], "suspected")
+                    self.assertFalse(event["conditions"]["stable_origin"])
+                    self.assertFalse(event["conditions"]["complete_band_crossing"])
+                    self.assertTrue(event["conditions"]["stable_destination"])
+                    info = event["evidence"]["endpoint_inference"]
+                    self.assertEqual(info["origin_frames"], [0, 2])
+                    self.assertAlmostEqual(info["gap_sec"], .6)
+                    self.assertEqual(event["frame"], 2)
+                    self.assertEqual(event["confirmation_frame"], 10)
+                    self.assertEqual(event["evidence"]["vehicle"]["plate_text"], "ABC-1234")
+                    self.assertEqual(event["evidence"]["parameters"]["endpoint_inference_seconds"], 1.5)
+                    json.dumps(event, allow_nan=False)
+
+    def test_gap_longer_than_limit_or_suspected_disabled_emits_nothing(self):
+        self.assertEqual(run_records(gap_sequence(), settings={"endpoint_inference_seconds": .5}, legacy_margin=False), [])
+        self.assertEqual(run_records(gap_sequence(), settings={**self.ON, "emit_suspected": False}, legacy_margin=False), [])
+
+    def test_same_side_reappearance_and_too_few_origin_samples_emit_nothing(self):
+        same = gap_sequence()
+        for record in same[8:]:
+            for vehicle in record["observations"]["vehicles"]:
+                vehicle["bbox_xyxy"][0] -= 60
+                vehicle["bbox_xyxy"][2] -= 60
+        self.assertEqual(run_records(same, settings=self.ON, legacy_margin=False), [])
+        # 只有 1 個另一側樣本（少於 direction_min_samples），原規則也不會建立起點。
+        self.assertEqual(run_records(gap_sequence(left=1, missing=7), settings=self.ON, legacy_margin=False), [])
+
+    def test_observed_crossings_are_unchanged_and_not_duplicated(self):
+        for path in (LANE_CHANGE, U_TURN):
+            for shift in (0, 4):
+                off = run_records(sequence(path, camera_shift=shift), legacy_margin=False)
+                on = run_records(sequence(path, camera_shift=shift), settings=self.ON, legacy_margin=False)
+                self.assertEqual(len(on), 1)
+                for key in ("event_id", "status", "frame", "confirmation_frame", "behavior", "conditions"):
+                    self.assertEqual(on[0][key], off[0][key])
+        for points in (LANE_CHANGE[:5] + [(125, 180)] * 5, [(125, 180), (130, 180)] * 6):
+            self.assertEqual(run_records(sequence(points), settings=self.ON, legacy_margin=False), [])
+
+    def test_camera_motion_is_compensated_in_history(self):
+        events = run_records(gap_sequence(), settings=self.ON, legacy_margin=False)
+        shifted = gap_sequence()
+        for index, record in enumerate(shifted):
+            offset = 3 * index
+            record["postprocessing"]["road_marking_compensation"]["motion"]["matrix"] = [[1, 0, 3], [0, 1, 0], [0, 0, 1]]
+            for line in record["observations"]["double_lines"]:
+                for part in [line] + line["members"]:
+                    for key in ("centerline", "left_boundary", "right_boundary"):
+                        for p in part[key]:
+                            p[0] += offset
+            for vehicle in record["observations"]["vehicles"]:
+                vehicle["bbox_xyxy"][0] += offset
+                vehicle["bbox_xyxy"][2] += offset
+        moved = run_records(shifted, settings=self.ON, legacy_margin=False)
+        self.assertEqual([(e["frame"], e["status"]) for e in moved], [(e["frame"], e["status"]) for e in events])
+        self.assertTrue(moved[0]["conditions"]["camera_motion_compensated"])
+
+    def test_small_vehicle_guard(self):
+        # 畫面高 300、車框高 40（13%）：預設下限 7% 通過；下限 20% 時擋掉；0 不檢查。
+        self.assertEqual(len(run_records(gap_sequence(), settings=self.ON, legacy_margin=False)), 1)
+        self.assertEqual(run_records(gap_sequence(), settings={**self.ON, "endpoint_min_box_height_ratio": .2},
+                                     legacy_margin=False), [])
+        loose = run_records(gap_sequence(), settings={**self.ON, "endpoint_min_box_height_ratio": 0.0}, legacy_margin=False)
+        self.assertEqual([e["status"] for e in loose], ["suspected"])
+
+    def test_invalid_values_fail(self):
+        for settings in ({"endpoint_inference_seconds": -1}, {"endpoint_min_box_height_ratio": float("nan")}, {"endpoint_min_box_height_ratio": 1.0},
+                         {"endpoint_inference_seconds": 1.0, "direction_side_margin_px": 0.0}):
+            with self.assertRaises(ValueError):
+                validate_rule_settings(settings)
+
+
 if __name__ == "__main__":
     unittest.main()

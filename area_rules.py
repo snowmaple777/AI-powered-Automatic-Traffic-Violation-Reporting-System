@@ -38,6 +38,7 @@ BOOLEAN = {"crosswalk_two_wheelers", "crosswalk_suppress_on_green", "crosswalk_e
 # 區域、燈號與接地幾何仍用 min_confidence。區域規則事件一律是疑似。
 OPTIONAL = {"min_vehicle_confidence", "stationary_window_seconds", "tolerate_overlap_dips", "stationary_scale_tolerance"}
 OPTIONAL |= {"confirm_waiting_area", "confirm_crosswalk", "confirm_waiting_occupancy", "confirmation_min_footprint_px"}
+OPTIONAL |= {"crosswalk_boundary_guard", "crosswalk_min_footprint_px"}
 # 4ar 選用設定（斑馬線，預設不存在＝行為不變）：
 #   stationary_window_seconds：靜止判定改為「最近這段時間內」的接地中心位移不超過半徑，
 #     而不是與第一次的位置比較；拍攝者走動時的推移誤差不會一路累積到重置。
@@ -54,15 +55,16 @@ def settings_for(overrides=None):
     if overrides is not None and (not isinstance(overrides, dict) or set(overrides) - DEFAULTS.keys() - OPTIONAL):
         raise ValueError("Unknown area-rule settings")
     settings = {**DEFAULTS, **(overrides or {})}
-    for key in ("confirm_waiting_area", "confirm_crosswalk", "confirm_waiting_occupancy"):
+    for key in ("confirm_waiting_area", "confirm_crosswalk", "confirm_waiting_occupancy", "crosswalk_boundary_guard"):
         if key in settings and type(settings[key]) is not bool:
             raise ValueError(f"{key} must be boolean")
         if settings.get(key) is False:
             settings.pop(key)  # 明確關閉也保持原參數與事件內容。
-    if 'confirmation_min_footprint_px' in settings:
-        value = settings['confirmation_min_footprint_px']
-        if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
-            raise ValueError('confirmation_min_footprint_px must be finite and positive')
+    for key in ('confirmation_min_footprint_px', 'crosswalk_min_footprint_px'):
+        if key in settings:
+            value = settings[key]
+            if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f'{key} must be finite and positive')
     if "min_vehicle_confidence" in settings:
         value = settings["min_vehicle_confidence"]
         if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 1:
@@ -490,6 +492,28 @@ def occluded_band_overlap(region_polygon, footprint, box, gap_ratio):
     return float(intersection / cv2.contourArea(footprint))
 
 
+def crosswalk_boundary_evidence(area, footprint, box, gap_ratio, threshold):
+    """量測原區域與遮擋延伸在四向位置誤差下的最小重疊，不修改觀測。
+
+    沿用 4aw 的車寬 3%／至少 2px 誤差，不代表機率或條紋真值。
+    遮擋延伸只保留疑似資格；不可藉由此函式增加直接觀測證據。
+    """
+    error = max(2., (box[2] - box[0]) * .03)
+    direct, estimated = [], []
+    size = cv2.contourArea(footprint)
+    for shift in ((0, 0), (error, 0), (-error, 0), (0, error), (0, -error)):
+        moved = (footprint + shift).astype(np.float32)
+        overlap = float(cv2.intersectConvexConvex(moved, area)[0] / size)
+        direct.append(overlap)
+        estimated.append(max(overlap, occluded_band_overlap(area, moved, box, gap_ratio))
+                         if overlap + 1e-6 < threshold else overlap)
+    direct_min, estimated_min = min(direct), min(estimated)
+    support = ('interior' if direct_min + 1e-6 >= threshold else
+               'occlusion_estimated' if estimated_min + 1e-6 >= threshold else 'boundary_uncertain')
+    return dict(error_px=error, direct_min_overlap=direct_min,
+                estimated_min_overlap=estimated_min, support=support)
+
+
 def front_overlap(edge, region):
     """Clip the finite front segment to a convex region, including crossing ends."""
     edge = np.asarray(edge, dtype=float)
@@ -799,6 +823,14 @@ class AreaOccupancyRule:
                         point, duration, edge = None, cfg["intrusion_seconds"], None
                     else:
                         footprint = polygon(geometry.get("footprint"))
+                        boundary = None
+                        if 'crosswalk_min_footprint_px' in cfg:
+                            footprint_px = float(min(np.ptp(footprint, axis=0)))
+                            self.diagnostics['measurements'].append(dict(object_id=identity, region_id=region_id,
+                                name='footprint_min_extent_px', measurement=footprint_px,
+                                threshold=cfg['crosswalk_min_footprint_px']))
+                            if footprint_px < cfg['crosswalk_min_footprint_px']:
+                                raise ValueError('crosswalk_footprint_unresolved')
                         intersection, _ = cv2.intersectConvexConvex(footprint, area)
                         measured = float(intersection / cv2.contourArea(footprint))
                         occluded = False
@@ -807,6 +839,16 @@ class AreaOccupancyRule:
                             extended = occluded_band_overlap(area, footprint, vehicle["bbox_xyxy"], cfg["occlusion_gap_ratio"])
                             if extended + 1e-6 >= cfg["overlap_ratio"]:
                                 measured, occluded = extended, True
+                        if cfg.get('crosswalk_boundary_guard'):
+                            boundary = crosswalk_boundary_evidence(area, footprint, vehicle['bbox_xyxy'],
+                                cfg['occlusion_gap_ratio'], cfg['overlap_ratio'])
+                            self.diagnostics['measurements'].append(dict(object_id=identity, region_id=region_id,
+                                name='crosswalk_boundary_support', **boundary))
+                            if boundary['support'] == 'boundary_uncertain':
+                                raise ValueError('crosswalk_boundary_uncertain')
+                            measured = (boundary['direct_min_overlap'] if boundary['support'] == 'interior'
+                                        else boundary['estimated_min_overlap'])
+                            occluded = boundary['support'] == 'occlusion_estimated'
                         self.diagnostics["measurements"].append(dict(object_id=identity, region_id=region_id,
                             measurement=measured, threshold=cfg["overlap_ratio"], name="footprint_overlap_ratio",
                             occlusion_extended=occluded))
@@ -834,6 +876,8 @@ class AreaOccupancyRule:
                         elif state and any(moved(p, e) for t, p, e in state["track"] if now - t <= window + 1e-6):
                             state = None
                     snapshot = clone(dict(frame=frame, vehicle=vehicle, region=region, measurement=measured))
+                    if self.kind == 'crosswalk' and boundary is not None:
+                        snapshot['boundary_review'] = clone(boundary)
                     if state is None:
                         state = dict(since=now, count=0, anchor=point, before=snapshot, reported=False)
                         if point is not None and cfg.get("stationary_window_seconds") is not None:
@@ -886,6 +930,8 @@ class AreaOccupancyRule:
                                                measurement=measured, duration_sec=now-state["since"], parameters=cfg,
                                                measurement_name="front_overlap_px" if point is None else "footprint_overlap_ratio"))
                     event["conditions"]["estimated_vehicle_geometry"] = bool(geometry.get("estimated"))
+                    if self.kind == 'crosswalk' and boundary is not None:
+                        event['evidence']['boundary_review'] = clone(boundary)
                     if "track" in state:
                         event["evidence"]["stationary_drift_from_start_px"] = state["max_drift_px"]
                     if "edge" in state:

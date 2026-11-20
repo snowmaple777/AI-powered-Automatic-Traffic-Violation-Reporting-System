@@ -1,0 +1,61 @@
+{
+  "rules": [
+    "crosswalk_stopping"
+  ],
+  "variants": {
+    "baseline": {
+      "crosswalk_stopping": {
+        "settings": {
+          "confirm_crosswalk": true,
+          "confirmation_min_footprint_px": 8.0
+        }
+      }
+    },
+    "boundary": {
+      "crosswalk_stopping": {
+        "settings": {
+          "confirm_crosswalk": true,
+          "confirmation_min_footprint_px": 8.0,
+          "crosswalk_boundary_guard": true
+        }
+      }
+    },
+    "resolution": {
+      "crosswalk_stopping": {
+        "settings": {
+          "confirm_crosswalk": true,
+          "confirmation_min_footprint_px": 8.0,
+          "crosswalk_min_footprint_px": 8.0
+        }
+      }
+    },
+    "combined": {
+      "crosswalk_stopping": {
+        "settings": {
+          "confirm_crosswalk": true,
+          "confirmation_min_footprint_px": 8.0,
+          "crosswalk_boundary_guard": true,
+          "crosswalk_min_footprint_px": 8.0
+        }
+      }
+    }
+  },
+  "sources": [
+    {
+      "name": "formal",
+      "path": "outputs/eval/eval_4aj",
+      "truth": "eval/ground_truth.json"
+    },
+    {
+      "name": "rough",
+      "path": "outputs/eval/new_20261114",
+      "truth": "outputs/rough_truth_20261115.json",
+      "primary_only": true
+    },
+    {
+      "name": "long",
+      "path": "outputs/analysis/long_video_20261108/run_01/phase1",
+      "review": "eval/long_video_review.json"
+    }
+  ]
+}

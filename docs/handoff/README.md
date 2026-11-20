@@ -19,5 +19,6 @@
 | 4ah | [double_yellow_miss_review_4ah.md](double_yellow_miss_review_4ah.md) | 雙黃線漏報逐片覆核與修正順序 | 已整合（4aj，feature/conservative-marking-schedule） |
 | 4ai | [double_line_diagnostics_4ai.md](double_line_diagnostics_4ai.md)、[原始 prompt](double_line_diagnostics_prompt.md) | 雙線持久診斷拆分（預設關）；33 片事件逐位元不變 | 已整合（4aj，feature/conservative-marking-schedule） |
 | 4aw | [confirmation_rules_4aw.md](confirmation_rules_4aw.md) | 七組確認規則對照、逐件誤報檢查與選用設定 | 已整合（Opus 重驗，feature/conservative-marking-schedule）；主預設不變 |
+| 4ax | [crosswalk_boundary_4ax.md](crosswalk_boundary_4ax.md) | 斑馬線四組對照、召回退步與長片誤報檢查 | 已驗證，未提交；主預設不變 |
 
 展示成果：`產生展示成果.cmd`／`tools/make_showcase.py`，最新輸出 `outputs/showcase_20261110`（不進 git）。

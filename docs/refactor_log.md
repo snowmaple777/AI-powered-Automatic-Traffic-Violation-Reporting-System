@@ -1418,6 +1418,44 @@ stage1／stage2 是中止或被取代的初版，不作結論。圖板覆核是 
   仍留在工作目錄。
 - 重驗輸出：outputs/eval/verify_4aw_off、verify_4aw_r23、verify_new_4aw_off、verify_new_4aw_r23。
 
+### 4ax：斑馬線邊界與候選解析度檢查（Codex，2026-11-17，選用、主預設不變）
+
+使用者要求從斑馬線改進開始，對比前後成果並檢查長片是否增加誤報。
+本輪只修改 area_rules.py 的斑馬線候選條件，使用既有區域多邊形；長片缺逐幀遮罩，未重建條紋。
+新增 crosswalk_boundary_guard（四向位置誤差下的最小重疊，區分原區域／遮擋延伸／不確定邊界），
+以及 crosswalk_min_footprint_px（接地範圍 x／y 跨度中的較小值）。兩者預設不啟用。
+前者誤差沿用 4aw 的 max(2px, 車寬×3%)，後者本輪固定 8px，沒有按影片或標註時間設定例外。
+
+四組獨立引擎各完成正式 31、粗略 141、長片 A1／A5 2 支。基準使用 4aw 斑馬線確認＋確認用 8px，
+與 stage4b/resolved 的 174 支事件 JSON 完全相同；不是把先前增加的兩筆確認算成這輪收益。
+
+| 設定 | 正式全部 TP／FP／FN | 粗略主類別全部 TP／FP／FN | 粗略 confirmed TP／FP | 粗略全部事件 | 長片事件／已知 FP |
+| --- | --- | --- | --- | --- | --- |
+| 改動前 | 1／3／3 | 15／5／17 | 2／0 | 45 | 2／1 |
+| 邊界檢查 | 1／3／3 | 10／3／22 | 3／0 | 31 | 2／1 |
+| 僅 8px 候選檢查 | 1／3／3 | 15／5／17 | 2／0 | 36 | 1／1 |
+| 合用 | 1／3／3 | 10／3／22 | 3／0 | 26 | 1／1 |
+
+- 邊界檢查損失 SOZ008／013／017／026／028 五筆 GT 命中，覆核車輛身份相符；不採用此方案或合用方案。
+  SOZ024 原 4.079 秒疑似延後至 8.634 秒、9.178 秒確認（L8-1760 與 GT 相符），不足以抵銷召回退步。
+  同物件事件可能延後超過三秒，差異工具的 added／removed 不直接等於新車或新違規。
+- 僅 8px 候選檢查無新增、延後或狀態變動事件，保留主類別全部命中及兩筆確認；刪除九筆跨類未標註事件：
+  CIM015 兩筆、CIM019 兩筆、CIM027、cy005、cy020、vr006、vr021。均已看前後圖板，但不把疑義當人工誤報定論。
+- 長片完整 2187.247 秒：A1 985.751 秒遠處車輛疑義事件移除，A5 156.533 秒既有人工誤報仍在，
+  A5 保留事件除設定參數外逐欄相同。斑馬線事件率 3.29→1.65 筆／小時、known FP 1→1、confirmed 0→0，
+  沒有新增長片事件或重複事件。這兩支中沒有新增誤報，但不能宣稱已知誤報減半、完整誤報率改善或對所有長片保證。
+- 提供 configs/area_crosswalk_resolution_guard.json（4aw 確認＋8px 候選門檻），只作減少低解析度候選的選用設定。
+  遠處真實違規可能也被移除，主預設與舊選用設定不變；本輪沒有正確命中或確認數的提升。
+
+驗證：完整 319 項測試通過（228.594 秒）；SOZ019／vr021 以全規則真實 JSONL 入口驗證，前者保留斑馬線 confirmed、
+後者只移除原斑馬線疑義，保留闖紅燈事件。正式／粗略 GT、長片人工覆核與兩份原區域設定 SHA-256 不變。
+評估啟動 HEAD e3873b3＋4aw 工作目錄；期間 Opus 提交 4aw 為 0aee18c，本輪未提交變更仍保留，
+核心程式指紋與評估快照全部一致。未量測或宣稱 FPS 改善。
+
+重現 manifest：eval/confirmation_experiments/stage6_crosswalk_boundary.json；
+輸出 outputs/crosswalk_boundary_20261117/ 的 eval/report.json、comparison.json、visual_review.json、verification.json、review/、tests.log。
+完整條件、採用邊界與逐件紀錄見 [交接](handoff/crosswalk_boundary_4ax.md)。本輪未提交／推送／合併。
+
 ### 4ay：雙線側別邊距預設改為近乎零（C3；Opus，2026-11-18，切換預設）
 
 修改：`configs/double_line_rules.json` 與 `double_lines.RULE_DEFAULTS` 的 `side_margin_px` 4→0.01、`margin_width_ratio` 0.2→0.001

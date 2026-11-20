@@ -144,6 +144,9 @@
   `confirmation_basis` 也適用區域／雙線事件，不能假設雙線 confirmed 的原條件全為 true。
   主預設不變；選用 `configs/red_light_confirm_r23.json` 啟用 R2＋R3，`configs/area_confirm_crosswalk.json` 啟用斑馬線確認與 8px 足跡門檻。
   其他實驗沒有可認列的新增收益，不納入建議設定；8px 尚未經獨立資料驗證，詳見本輪報告。
+- 4ax：斑馬線新增預設關閉的候選幾何檢查；邊界檢查損失五筆粗略 GT 命中，不採用。
+  `configs/area_crosswalk_resolution_guard.json` 為 4aw 確認＋8px 候選解析度的選用設定，保留已標註命中、減少未標註疑義事件。
+  A1／A5 無新增事件、已知誤報不變；不代表所有長片皆安全或遠處召回無損，見 `docs/handoff/crosswalk_boundary_4ax.md`。
 
 ### 5.5 事件車牌補充（4w；預設關閉）
 
@@ -212,7 +215,7 @@
 指標摘要：`batch_eval.summarize(label)` 或 `eval/metrics.py`。影片層級＝該片是否輸出目標規則事件；事件層級只計 `reviewed: true` 的影片。
 
 ### 7.3 回報格式
-每次交付或整合，在 `docs/refactor_log.md` 新增一節（目前編號到 4aw；4aa 保留給 Astra 的標線尺度實驗），包含：修改內容、原因、驗證方式、
+每次交付或整合，在 `docs/refactor_log.md` 新增一節（目前編號到 4ax；4aa 保留給 Astra 的標線尺度實驗），包含：修改內容、原因、驗證方式、
 前後數字（影片層級、事件層級 TP／FP／FN、速度）、逐片變動的事件、已知副作用、是否採用。
 
 ---

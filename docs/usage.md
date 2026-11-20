@@ -172,6 +172,12 @@ confirm_short_position_gap（雙線設定）；這些實驗沒有可認列的新
 替代路徑的原 conditions 可能仍為 false，請讀 confirmation_basis 與 evidence.confirmation_review，不要將全部條件做 all()。
 完整條件、收益、誤報檢查與重現方式見 docs/handoff/confirmation_rules_4aw.md。
 
+4ax 低解析度候選篩選：--area-rule-config configs/area_crosswalk_resolution_guard.json 保留上述斑馬線確認，
+另要求候選接地範圍的影像 x／y 跨度較小值至少 8px（crosswalk_min_footprint_px）。主預設與原確認設定不變。
+本輪已標註命中不變，九筆跨類疑義候選與一筆長片未定事件被排除；不是已證實消除十筆誤報，遠處真實違規也可能漏掉。
+A1／A5 無新增事件，既有人工誤報仍有一筆。crosswalk_boundary_guard 邊界實驗會損失五筆命中，不納入此設定。
+詳細比較及限制見 docs/handoff/crosswalk_boundary_4ax.md。
+
 從原影片與既有 JSONL 重算停止線補償：
 
 ~~~powershell

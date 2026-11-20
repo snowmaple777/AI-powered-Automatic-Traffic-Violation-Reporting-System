@@ -314,9 +314,24 @@ rearm_seconds 後才可重新建立起始側，辨識下一次反向跨越。
 | straddle_min_seconds | 0 | 壓線：已在原側穩定的車，車底至少一點進入線帶本身（不含邊距）後退回原側或在線帶附近結束追蹤，線帶內首末觀測相距達此秒數（且次數達 stable_observations）時輸出疑似事件，behavior＝line_straddle（0＝停用；4ao 實驗選項；永遠不會確認） |
 | straddle_merge_seconds | 2 | 壓線結束後等待的秒數；期間同一車完成跨越則併入跨越事件（evidence.merged_straddles），同一車多次壓線合併為一筆 |
 | endpoint_inference_seconds / endpoint_min_box_height_ratio | 0 / 0.07 | 起點與終點推定：原規則剛在某側建立穩定起點時，以目前雙線重新量測同車較早（運動補償後）的車框；另一側有至少 2 個方向邊距外的樣本、與終點側樣本間隔不超過此秒數（中間可缺車框）且本幀車框高度至少為畫面高度的此比例時，輸出疑似事件（0＝停用；4ba 實驗選項；需要 direction_side_margin_px > 0；永遠不會確認） |
+| band_dwell_seconds / band_dwell_min_observations / band_dwell_min_line_ratio / band_dwell_min_box_height_ratio | 0 / 3 / 0.15 / 0.07 | 壓線停留跨越：不經原規則狀態機，看每台車逐幀相對同幀雙線的側別（不分線追蹤編號，鏡頭運動失效時不中斷）；一側至少 2 個方向邊距外樣本 → 至少 3 次車底點落在線帶本身 → 另一側穩定，起點到終點不超過此秒數時輸出疑似事件。只採用可見長度達畫面高度 0.15 的雙線（排除碎片線），確認時車框高度至少為畫面高度 0.07（0＝停用；4bb 實驗選項；需要 direction_side_margin_px > 0；永遠不會確認） |
 
 4am 的三個選項、4an 的起點容忍與 4ao 的壓線在 31 支評估影片上都沒有追回任何漏報（見 refactor_log 4am、4an、4ao），因此預設關閉；
 維持預設值時不寫入事件 parameters 與診斷 settings，輸出與未加入選項前逐位元相同。
+
+雙線幾何選項（4bg，預設關閉）寫在同一份設定檔的 geometry 子物件，屬於後處理而非規則參數：
+
+~~~json
+"geometry": {"trim_wide_rows": true}
+~~~
+
+- trim_wide_rows：分割常把兩條漆線連同中間間隔標成同一塊；彎道、近處或斜度大的雙線在畫面下方會變得很寬。
+  預設只要某一列寬度超過畫面寬 8%，整個元件就丟棄；啟用後只去掉過寬的列，保留最長一段連續的合格列（至少 8 列）。
+  截短後的元件仍是單一語意帶，不會成為成對元件，因此不影響 confirmed 條件。
+- 只在重新計算幾何時生效：run_pipeline 辨識，以及 tools/real_replay.py（在 -- 之後加上 --double-line-config）。
+  evaluate_violations.py、tools/rule_eval.py 只重算規則，沿用 JSONL 裡已計算的幾何，會忽略此選項。
+- 不論 --rules 是否包含雙線規則，run_pipeline 都會讀取此設定檔的 geometry，因為雙線幾何每幀都會寫入 JSONL。
+- 評估見 refactor_log 4be、4bf、4bg：新影片可信的雙黃事件增加，但只有粗略標註；長片幾乎沒有過寬元件，無法代表彎道的誤報率。
 
 建議先查看診斷的 blocked_lines、skipped_vehicles、reset_reason 與 states，再調整對應門檻。
 若一直無法取得 paired 或追蹤 ID 持續改變，僅降低規則門檻不能補回缺失幾何。

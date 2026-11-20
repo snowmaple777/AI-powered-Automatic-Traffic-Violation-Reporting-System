@@ -12,7 +12,8 @@ import numpy as np
 from double_lines import (validate_rule_settings, line_quality, vehicle_line_position,
                           project_points, classify_maneuver, resolve_rule_lines,
                           project_line_geometry, RULE_DEFAULTS as DOUBLE_LINE_DEFAULTS,
-                          OCCLUSION_OPTION_KEYS, ORIGIN_OPTION_KEYS, STRADDLE_OPTION_KEYS, ENDPOINT_OPTION_KEYS)
+                          OCCLUSION_OPTION_KEYS, ORIGIN_OPTION_KEYS, STRADDLE_OPTION_KEYS, ENDPOINT_OPTION_KEYS,
+                          BAND_DWELL_OPTION_KEYS)
 from signal_state import CombinedSignalState
 from core.trajectory import TrackHistory
 from core.continuity import is_continuous
@@ -951,7 +952,7 @@ class DoubleLineCrossingRule(ViolationRule):
         self.detailed_diagnostics = self.settings.pop("detailed_diagnostics")
         # 4am 選項維持預設（關閉）時不留在 settings，事件參數與診斷與先前逐位元相同。
         for key in (OCCLUSION_OPTION_KEYS + ORIGIN_OPTION_KEYS + STRADDLE_OPTION_KEYS + ENDPOINT_OPTION_KEYS
-                    + ("confirm_short_position_gap",)):
+                    + BAND_DWELL_OPTION_KEYS + ("confirm_short_position_gap",)):
             if self.settings[key] == DOUBLE_LINE_DEFAULTS[key]:
                 del self.settings[key]
         self.straddle_seconds = self.settings.get("straddle_min_seconds", 0.0)
@@ -963,6 +964,15 @@ class DoubleLineCrossingRule(ViolationRule):
                                                      DOUBLE_LINE_DEFAULTS["endpoint_min_box_height_ratio"]) * context.frame_height
         self.endpoint_history = {}  # object_id -> 經運動補償帶到目前座標的較早車框
         self.endpoint_last = {}     # object_id -> 同車最後一筆雙線事件（原規則或推定）的確認時間
+        # 4bb 壓線停留跨越：停用時不保留側別序列。
+        self.dwell_seconds = self.settings.get("band_dwell_seconds", 0.0)
+        option = lambda key: self.settings.get(key, DOUBLE_LINE_DEFAULTS[key])
+        self.dwell_min_band = option("band_dwell_min_observations")
+        self.dwell_min_line = option("band_dwell_min_line_ratio") * context.frame_height
+        self.dwell_min_height = option("band_dwell_min_box_height_ratio") * context.frame_height
+        self.dwell_series = {}   # object_id -> 逐幀側別樣本（每幀一個）
+        self.dwell_last = {}     # object_id -> 同車最後一筆雙線事件的確認時間
+        self.dwell_pending = []
         self._current_frame = None
         self.memory_seconds = self.settings.get("line_memory_seconds", 0.0)
         self.remembered_lines = {}
@@ -1037,6 +1047,7 @@ class DoubleLineCrossingRule(ViolationRule):
             self._diagnose_all_states("discontinuous_input")
             self.states.clear()
             self.endpoint_history.clear()
+            self.dwell_series.clear()
             self.line_memory.clear()
             self.remembered_lines.clear()
             self.diagnostics["reset_reason"] = reset
@@ -1356,6 +1367,7 @@ class DoubleLineCrossingRule(ViolationRule):
         events = []
         now, cfg = frame["timestamp_sec"], self.settings
         armed_now = [] if self.endpoint_seconds > 0 else None  # 4ba：本幀剛建立穩定起點的候選
+        self.dwell_pending = []
         for vehicle in vehicles:
             object_id = vehicle.get("object_id")
             if (not object_id or vehicle.get("class_name") not in
@@ -1404,6 +1416,8 @@ class DoubleLineCrossingRule(ViolationRule):
                     continue
                 side, point, box = position["side"], position["point"], position["box"]
                 self._diagnose_position(key, frame, position)
+                if self.dwell_seconds > 0:
+                    self._band_dwell_sample(frame, vehicle, line, position)
                 state = self.states.get(key)
                 if state:
                     if cfg.get("confirm_short_position_gap") and state.get("position_gap"):
@@ -1543,9 +1557,104 @@ class DoubleLineCrossingRule(ViolationRule):
                         "；缺少線帶內觀測，待覆核。")
                     events.append(event)
                 state.update(phase="reported", destination=side, rearm_since=now)
+        if self.dwell_seconds > 0:
+            reported = {event["object_id"] for event in events}
+            for event in events:
+                self.dwell_last[event["object_id"]] = now
+            # 原規則同一幀已報這台車時不重複輸出（原規則在同一幀稍後才處理到這台車的情形）。
+            events += [event for event in self.dwell_pending if event["object_id"] not in reported]
+            self.dwell_pending = []
         if armed_now is not None:
             events += self._infer_endpoints(frame, vehicles, events, armed_now, motion_error)
         return events
+
+    def _band_dwell_sample(self, frame, vehicle, line, position):
+        """4bb：記錄這台車本幀相對同幀雙線的側別；同一幀有多條線時保留較明確的一個（方向樣本＞線帶＞其他）。"""
+        center = np.asarray(line["centerline"], dtype=float)
+        if float(np.linalg.norm(np.diff(center, axis=0), axis=1).sum()) < self.dwell_min_line:
+            return  # 碎片線上的量測不採用
+        now, side = frame["timestamp_sec"], position["side"]
+        sample = {"time": now, "index": frame["index"], "side": side, "frame": frame, "vehicle": vehicle, "line": line,
+                  "clear": side != 0 and position.get("direction_side") == side,
+                  "band": side == 0 and position.get("band_points", 0) > 0,
+                  "height": position["box"][3] - position["box"][1], "extrapolated": position.get("extrapolated", False)}
+        series = self.dwell_series.setdefault(vehicle["object_id"], [])
+        if series and series[-1]["index"] == frame["index"]:
+            if (sample["clear"], sample["band"]) <= (series[-1]["clear"], series[-1]["band"]):
+                return
+            series.pop()
+        series.append(sample)
+        horizon = self.dwell_seconds + ENDPOINT_CLUSTER_SECONDS + 1.
+        while series and now - series[0]["time"] > horizon:
+            series.pop(0)
+        event = self._band_dwell_check(vehicle["object_id"], series, frame)
+        if event is not None:
+            self.dwell_pending.append(event)
+
+    def _band_dwell_check(self, object_id, series, frame):
+        """4bb 壓線停留跨越：起點側方向樣本 → 線帶內觀測 → 終點側穩定（見 double_lines.RULE_DEFAULTS 說明）。"""
+        now, cfg = frame["timestamp_sec"], self.settings
+        needed = cfg["direction_min_samples"]
+        floor = self.dwell_last.get(object_id, -math.inf)
+        if now - floor <= self.dwell_seconds:
+            return None
+        samples = [s for s in series if s["time"] > floor]
+        if not samples or samples[-1]["side"] == 0:
+            return None
+        destination = samples[-1]["side"]
+        start = len(samples)
+        while start and samples[start - 1]["side"] == destination:
+            start -= 1
+        tail, head = samples[start:], samples[:start]
+        if (len(tail) < cfg["stable_observations"] or tail[-1]["time"] - tail[0]["time"] < cfg["stable_seconds"] - 1e-9
+                or sum(s["clear"] for s in tail) < needed or tail[-1]["height"] < self.dwell_min_height):
+            return None
+        # 起點側方向樣本必須全在第一個線帶樣本之前：起點→線帶→終點的順序要乾淨；
+        # 線帶與起點側交替（例如車停在線的遠端尖點附近、側別來回跳動）不視為跨越的起點。
+        first_band = next((i for i, s in enumerate(head) if s["band"]), len(head))
+        origin = [i for i, s in enumerate(head[:first_band]) if s["side"] == -destination and s["clear"]]
+        if not origin:
+            return None
+        newest = head[origin[-1]]
+        cluster = [head[i] for i in origin if newest["time"] - head[i]["time"] <= ENDPOINT_CLUSTER_SECONDS]
+        band = [s for s in head[first_band:] if s["band"]]
+        first_clear = next(s for s in tail if s["clear"])
+        if (len(cluster) < needed or len(band) < self.dwell_min_band
+                or first_clear["time"] - newest["time"] > self.dwell_seconds + 1e-9):
+            return None
+        if any(key[0] == object_id and state["phase"] == "crossing" and state["origin"] == -destination
+               for key, state in self.states.items()):
+            return None  # 原規則對這台車有同方向跨越中的候選，交給原規則
+        used = cluster + band + tail
+        line_ids = sorted({s["line"].get("track_id") for s in used}, key=str)
+        conditions = dict(
+            stable_origin=False, stable_destination=True, complete_band_crossing=True, continuous_tracks=True,
+            geometry_verified=True, uninterrupted_positions=False,
+            directly_observed_pair=all(s["line"].get("component_count") == 2 and not s["line"].get("partial_support", False)
+                                       for s in used),
+            transition_observed=True, line_observed_at_footprint=not any(s["extrapolated"] for s in used),
+            same_line_track=len(line_ids) == 1, camera_motion_compensated=False)
+        crossing = band[0]
+        snapshot = lambda s: {"frame": s["frame"], "vehicle": s["vehicle"], "double_line": s["line"],
+                              "side": s["side"]}
+        evidence = {"before": snapshot(newest), "transition": snapshot(crossing), "after": snapshot(tail[-1]),
+                    "direction": {"reason": "band_dwell_not_classified"},
+                    "reference_point_method": "bbox_inset_bottom_edge_proxy", "parameters": cfg,
+                    "maneuver": "complete_crossing",
+                    "band_dwell": {"origin_frames": [cluster[0]["index"], newest["index"]],
+                                   "band_observations": len(band),
+                                   "dwell_sec": round(first_clear["time"] - newest["time"], 3),
+                                   "line_track_ids": line_ids}}
+        event = self.build_event(crossing["frame"], crossing["vehicle"], crossing["line"], status="suspected",
+                                 conditions=conditions, evidence=evidence)
+        event.update(behavior="complete_crossing", confirmation_frame=frame["index"], confirmation_timestamp_sec=now)
+        vehicle = tail[-1]["vehicle"]
+        if vehicle.get("plate_text"):
+            event["evidence"]["vehicle"]["plate_text"] = vehicle["plate_text"]
+        event["description"] = (self.label + "：車底代理點先在雙線一側，之後壓在線帶上一段時間，再於另一側穩定；"
+                                "起點不夠穩定或過程中斷，以逐幀側別判斷，待覆核。")
+        self.dwell_last[object_id] = now
+        return event
 
     def _project_endpoint_history(self, matrix, error, motion_gap):
         """4ba：把保留的車框帶到目前路面座標；累積誤差以每幀配準誤差的平方和開根號估計。"""
@@ -1663,6 +1772,8 @@ class DoubleLineCrossingRule(ViolationRule):
         self.remembered_lines.clear()
         self.endpoint_history.clear()
         self.endpoint_last.clear()
+        self.dwell_series.clear()
+        self.dwell_last.clear()
         self.previous_frame = None
         released = self._release_straddles() if self.pending_straddles else []
         self._current_frame = None

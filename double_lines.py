@@ -74,10 +74,24 @@ RULE_DEFAULTS = dict(
     endpoint_inference_seconds=0.0,  # 起點與終點最長間隔秒數（0＝停用）
     # 遠方小車防護：建立終點穩定時的車框高度至少為畫面高度的此比例（0＝不檢查）。試算的誤報多是壓在線
     # 遠端的遠方小車（車框約畫面高 5–6%），真違規車框 ≥ 8.8%；此值參考少量人工覆核選定，見 refactor_log 4ba。
-    endpoint_min_box_height_ratio=.07)
+    endpoint_min_box_height_ratio=.07,
+    # 4bb 壓線停留跨越（預設關閉；同樣不寫入預設設定）。不經原規則狀態機，只看每台車逐幀相對「同一幀雙線」的
+    # 側別序列（不分雙線追蹤編號；每幀量測本身不需要運動補償，鏡頭運動失效或線換編號時序列不中斷）：
+    # 一側至少 direction_min_samples 個方向邊距外樣本（彼此 1 秒內）→ 至少 band_dwell_min_observations 次
+    # 車底點落在線帶本身 → 另一側連續 stable_observations 次、跨 stable_seconds（其中至少 direction_min_samples
+    # 個方向邊距外樣本）。只採用可見長度達 band_dwell_min_line_ratio × 畫面高度的雙線上的量測（排除碎片線）。
+    # 輸出疑似事件（stable_origin=False，永遠不會確認）；需要 direction_side_margin_px > 0。
+    band_dwell_seconds=0.0,  # 起點側最後一個方向樣本到終點側第一個方向樣本的最長秒數（0＝停用）
+    band_dwell_min_observations=3,  # 起點與終點之間落在線帶本身的最少觀測次數
+    band_dwell_min_line_ratio=.15,  # 採用量測的雙線最短可見長度（畫面高度比例）
+    band_dwell_min_box_height_ratio=.07)  # 確認時車框高度下限（畫面高度比例；0＝不檢查）
 
 # 4ba 選項：同 OCCLUSION_OPTION_KEYS，等於預設值時不放進規則設定。
 ENDPOINT_OPTION_KEYS = ("endpoint_inference_seconds", "endpoint_min_box_height_ratio")
+
+# 4bb 選項：同 OCCLUSION_OPTION_KEYS，等於預設值時不放進規則設定。
+BAND_DWELL_OPTION_KEYS = ("band_dwell_seconds", "band_dwell_min_observations", "band_dwell_min_line_ratio",
+                          "band_dwell_min_box_height_ratio")
 
 # 4ao 選項：同 OCCLUSION_OPTION_KEYS，等於預設值時不放進規則設定。
 STRADDLE_OPTION_KEYS = ("straddle_min_seconds", "straddle_merge_seconds")
@@ -87,6 +101,34 @@ ORIGIN_OPTION_KEYS = ("max_origin_interruption_sec", "origin_interruption_min_co
 
 # 4am 選項：等於預設值時不放進規則的設定字典（事件 evidence.parameters 不變）。
 OCCLUSION_OPTION_KEYS = ("curve_extrapolation", "extend_near_endpoint", "line_memory_seconds")
+
+
+# 4bg 雙線幾何選項（後處理，不是規則參數；寫在雙線設定檔的 "geometry" 子物件，預設關閉）。
+# trim_wide_rows：過寬元件（某列寬度 > 畫面寬 WIDE_ROW_RATIO）原本整個丟棄；啟用時只去掉過寬的列，
+# 保留最長一段連續的合格列（至少 MIN_TRIMMED_ROWS 列），沒有就仍丟棄。分割常把兩條漆線連同中間間隔
+# 標成同一塊，彎道、近處或斜度大的雙線因此在畫面下方變寬；截掉那幾列後，其餘幾何與追蹤流程不變，
+# 截短後的元件仍是單一語意帶，不會成為成對元件。只在 FrameProcessor 重算幾何時生效（run_pipeline、
+# real_replay）；rule_eval 等只重算規則的工具沿用 JSONL 裡的幾何。評估見 refactor_log 4be／4bf／4bg。
+GEOMETRY_DEFAULTS = dict(trim_wide_rows=False)
+WIDE_ROW_RATIO = .08
+MIN_TRIMMED_ROWS = 8
+
+
+def validate_geometry_settings(overrides=None):
+    overrides = {} if overrides is None else overrides
+    if not isinstance(overrides, dict) or set(overrides) - GEOMETRY_DEFAULTS.keys():
+        raise ValueError("Unknown double-line geometry settings")
+    settings = {**GEOMETRY_DEFAULTS, **overrides}
+    if type(settings["trim_wide_rows"]) is not bool:
+        raise ValueError("geometry.trim_wide_rows must be boolean")
+    return settings
+
+
+def double_line_geometry_options(path):
+    data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    if not isinstance(data, dict) or data.get("version") != 1:
+        raise ValueError("Double-line rule config requires version=1")
+    return validate_geometry_settings(data.get("geometry"))
 
 
 def validate_rule_settings(overrides=None):
@@ -101,10 +143,17 @@ def validate_rule_settings(overrides=None):
                 raise ValueError(f"{key} must be boolean")
         elif type(value) not in (int, float) or not math.isfinite(value) or (value < 0 if key in ("footprint_inset_ratio", "max_extrapolation_ratio", "max_line_handoff_px", "line_memory_seconds", "max_origin_interruption_sec", "straddle_min_seconds", "straddle_merge_seconds",
                                                                                                          "direction_side_margin_px", "direction_margin_width_ratio",
-                                                                                                         "endpoint_inference_seconds", "endpoint_min_box_height_ratio") else value <= 0):
+                                                                                                         "endpoint_inference_seconds", "endpoint_min_box_height_ratio",
+                                                                                                         "band_dwell_seconds", "band_dwell_min_line_ratio",
+                                                                                                         "band_dwell_min_box_height_ratio") else value <= 0):
             raise ValueError(f"{key} must be finite and positive")
-    if settings["endpoint_min_box_height_ratio"] >= 1:
-        raise ValueError("endpoint_min_box_height_ratio must be less than 1")
+    for key in ("endpoint_min_box_height_ratio", "band_dwell_min_line_ratio", "band_dwell_min_box_height_ratio"):
+        if settings[key] >= 1:
+            raise ValueError(f"{key} must be less than 1")
+    if type(settings["band_dwell_min_observations"]) is not int or settings["band_dwell_min_observations"] < 1:
+        raise ValueError("band_dwell_min_observations must be an integer >= 1")
+    if settings["band_dwell_seconds"] > 0 and not settings["direction_side_margin_px"]:
+        raise ValueError("band_dwell_seconds requires direction_side_margin_px > 0")
     if settings["endpoint_inference_seconds"] > 0 and not settings["direction_side_margin_px"]:
         raise ValueError("endpoint_inference_seconds requires direction_side_margin_px > 0")
     for key in ("min_line_observations", "stable_observations", "direction_min_samples"):
@@ -129,6 +178,7 @@ def double_line_rule_options(path):
     data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     if not isinstance(data, dict) or data.pop("version", None) != 1:
         raise ValueError("Double-line rule config requires version=1")
+    validate_geometry_settings(data.pop("geometry", None))  # 幾何選項由 double_line_geometry_options 讀取
     settings = validate_rule_settings(data)
     return {f"double_{color}_line_crossing": {"settings": settings}
             for color in ("yellow", "white")}
@@ -146,7 +196,21 @@ def _distance(first, second):
                                np.interp(ys, b[:, 1], b[:, 0]))))
 
 
-def extract_double_lines(mask, markings, min_area=40):
+def _longest_narrow_block(rows, limit):
+    """回傳列寬都不超過 limit 的最長連續列（等長時取較下方者）；不足 MIN_TRIMMED_ROWS 列時回傳 None。"""
+    best, start = (0, 0), None
+    for i, row in enumerate(rows + [None]):
+        narrow = row is not None and row[1] - row[0] <= limit
+        if narrow and start is None:
+            start = i
+        elif not narrow and start is not None:
+            best = max(best, (i - start, start))
+            start = None
+    length, start = best
+    return rows[start:start + length] if length >= MIN_TRIMMED_ROWS else None
+
+
+def extract_double_lines(mask, markings, min_area=40, trim_wide_rows=False):
     """Extract row envelopes from the current segmentation, never from fitLine.
 
     Nearby, mutually unique components of the same semantic double-line class
@@ -175,8 +239,13 @@ def extract_double_lines(mask, markings, min_area=40):
             last = x + width - 1 - crop[:, ::-1].argmax(axis=1)
             rows = [[float(first[r]), float(last[r]), y + r] for r in np.flatnonzero(present).tolist()]
             # Very broad/branching components are not usable line geometry.
-            if max(right - left for left, right, _ in rows) > mask.shape[1] * .08:
-                continue
+            if max(right - left for left, right, _ in rows) > mask.shape[1] * WIDE_ROW_RATIO:
+                if not trim_wide_rows:
+                    continue
+                # 4bg：只去掉過寬的列（元件仍是 8 連通，保留的列在 y 上連續）
+                rows = _longest_narrow_block(rows, mask.shape[1] * WIDE_ROW_RATIO)
+                if rows is None:
+                    continue
             strips.append(rows)
         curves = [[[.5 * (left + right), y] for left, right, y in rows]
                   for rows in strips]
@@ -674,8 +743,10 @@ def classify_maneuver(before, after, tangent, settings):
                       "longitudinal_directions": longitudinal, "inferred": True}
 
 
-def attach_double_lines(record, mask, state):
+def attach_double_lines(record, mask, state, geometry=None):
     """Mutate the frame record and a caller-owned dict; retain observed tracks only.
+
+    geometry：validate_geometry_settings() 的結果（None＝預設，等同 4bg 以前的行為）。
 
     Motion maps previous-frame coordinates into the current frame. Missing or
     ambiguous matches get new IDs; IDs are never reused within a video.
@@ -701,7 +772,8 @@ def attach_double_lines(record, mask, state):
     if mask is not None and np.asarray(mask).shape != (frame["height"], frame["width"]):
         mask, reset_reason = None, "mask_shape_mismatch"
     lines = extract_double_lines(mask, observations.get("road_markings_raw",
-                                                          observations.get("road_markings", [])))
+                                                          observations.get("road_markings", [])),
+                                 trim_wide_rows=bool((geometry or {}).get("trim_wide_rows")))
     # 標線降頻時本幀遮罩可能是推移估計：observed_frames 仍計入（追蹤品質，行為不變），
     # direct_observed_frames 只計模型直接觀測，供規則的確認條件使用。
     evidence = marking_evidence(record)

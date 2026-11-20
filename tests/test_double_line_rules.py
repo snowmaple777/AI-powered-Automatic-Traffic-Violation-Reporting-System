@@ -10,7 +10,8 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from double_lines import extract_double_lines, validate_rule_settings, line_quality
+from double_lines import (extract_double_lines, validate_rule_settings, line_quality, attach_double_lines,
+                          double_line_geometry_options, double_line_rule_options, validate_geometry_settings)
 from observation_schema import build_frame_observation
 from violation_engine import create_rules, RuleContext
 
@@ -503,6 +504,179 @@ class EndpointInferenceTests(unittest.TestCase):
                          {"endpoint_inference_seconds": 1.0, "direction_side_margin_px": 0.0}):
             with self.assertRaises(ValueError):
                 validate_rule_settings(settings)
+
+
+
+def dwell_sequence(origin=2, band=6, destination=5, color="yellow"):
+    """起點只出現 origin 幀（原規則建立不了穩定起點），之後壓在線帶 band 幀，再到另一側 destination 幀。"""
+    return sequence([(125, 200)] * origin + [(155, 200)] * band + [(185, 200)] * destination, color)
+
+
+def mirror(records):
+    for record in records:
+        for vehicle in record["observations"]["vehicles"]:
+            x1, y1, x2, y2 = vehicle["bbox_xyxy"]
+            vehicle["bbox_xyxy"] = [310 - x2, y1, 310 - x1, y2]
+    return records
+
+
+class BandDwellTests(unittest.TestCase):
+    """4bb 壓線停留跨越：預設關閉；起點短暫、壓線停留後到另一側時補疑似事件，不依賴原規則狀態機。"""
+    ON = {"band_dwell_seconds": 6.0}
+
+    def test_disabled_by_default_and_not_in_parameters(self):
+        from double_lines import BAND_DWELL_OPTION_KEYS, RULE_DEFAULTS
+        self.assertEqual(RULE_DEFAULTS["band_dwell_seconds"], 0.0)
+        self.assertEqual(run_records(dwell_sequence(), legacy_margin=False), [])
+        default = run_records(sequence(LANE_CHANGE), legacy_margin=False)[0]
+        self.assertFalse(set(BAND_DWELL_OPTION_KEYS) & set(default["evidence"]["parameters"]))
+        rule = create_rules(["double_yellow_line_crossing"], RuleContext("test", 10, 400, 300))[0]
+        self.assertFalse(set(BAND_DWELL_OPTION_KEYS) & set(rule.settings))
+
+    def test_brief_origin_band_dwell_becomes_suspected_event(self):
+        for color in ("yellow", "white"):
+            for reverse in (False, True):
+                records = dwell_sequence(color=color)
+                if reverse:
+                    mirror(records)
+                with self.subTest(color=color, reverse=reverse):
+                    events = run_records(records, color, settings=self.ON, legacy_margin=False)
+                    self.assertEqual(len(events), 1)
+                    event = events[0]
+                    self.assertEqual(event["status"], "suspected")
+                    self.assertFalse(event["conditions"]["stable_origin"])
+                    self.assertTrue(event["conditions"]["complete_band_crossing"])
+                    info = event["evidence"]["band_dwell"]
+                    self.assertEqual(info["origin_frames"], [0, 1])
+                    self.assertEqual(info["band_observations"], 6)
+                    self.assertAlmostEqual(info["dwell_sec"], .7)
+                    self.assertEqual((event["frame"], event["confirmation_frame"]), (2, 10))
+                    self.assertEqual(event["evidence"]["vehicle"]["plate_text"], "ABC-1234")
+                    self.assertEqual(event["evidence"]["parameters"]["band_dwell_seconds"], 6.0)
+                    json.dumps(event, allow_nan=False)
+
+    def test_thresholds_block(self):
+        cases = ((dwell_sequence(band=2), {}), (dwell_sequence(), {"band_dwell_seconds": .5}),
+                 (dwell_sequence(), {"band_dwell_min_line_ratio": .9}),  # 線長 260 px < 0.9 × 300
+                 (dwell_sequence(), {"band_dwell_min_box_height_ratio": .2}),  # 車框高 40 px < 0.2 × 300
+                 (dwell_sequence(origin=1, band=7), {}),  # 起點只有 1 個方向樣本
+                 (dwell_sequence(), {"emit_suspected": True, "band_dwell_min_observations": 7}))
+        for records, extra in cases:
+            with self.subTest(extra=extra):
+                self.assertEqual(run_records(records, settings={**self.ON, **extra}, legacy_margin=False), [])
+        loose = run_records(dwell_sequence(band=2), settings={**self.ON, "band_dwell_min_observations": 1}, legacy_margin=False)
+        self.assertEqual([e["status"] for e in loose], ["suspected"])
+
+    def test_origin_must_precede_first_band_sample(self):
+        # 先壓在線帶、之後才短暫出現起點側（側別來回跳動）再到另一側：起點不在第一個線帶樣本之前，不判定
+        records = sequence([(155, 200)] * 4 + [(125, 200)] * 2 + [(155, 200)] * 4 + [(185, 200)] * 5)
+        self.assertEqual(run_records(records, settings=self.ON, legacy_margin=False), [])
+
+    def test_survives_motion_failure_and_line_track_change(self):
+        records = dwell_sequence(band=14)
+        for record in records[2:16]:  # 壓線期間鏡頭運動失效 1.4 秒（超過 max_motion_gap_sec，原規則清除候選）
+            record["postprocessing"]["road_marking_compensation"]["motion"] = {"valid": False}
+        for record in records[9:]:  # 雙線追蹤換編號
+            for line in record["observations"]["double_lines"]:
+                line["track_id"] = "line-2"
+        events = run_records(records, settings=self.ON, legacy_margin=False)
+        self.assertEqual([e["status"] for e in events], ["suspected"])
+        self.assertFalse(events[0]["conditions"]["same_line_track"])
+        self.assertEqual(len(events[0]["evidence"]["band_dwell"]["line_track_ids"]), 2)
+
+    def test_observed_crossings_unchanged_and_not_duplicated(self):
+        for path in (LANE_CHANGE, U_TURN):
+            for shift in (0, 4):
+                off = run_records(sequence(path, camera_shift=shift), legacy_margin=False)
+                on = run_records(sequence(path, camera_shift=shift), settings=self.ON, legacy_margin=False)
+                self.assertEqual(len(on), 1)
+                for key in ("event_id", "status", "frame", "confirmation_frame", "behavior", "conditions"):
+                    self.assertEqual(on[0][key], off[0][key])
+        for points in (LANE_CHANGE[:5] + [(125, 180)] * 5, [(125, 180), (130, 180)] * 6,
+                       [(125, 200)] * 2 + [(155, 200)] * 6 + [(125, 200)] * 5):
+            self.assertEqual(run_records(sequence(points), settings=self.ON, legacy_margin=False), [])
+
+    def test_combined_with_endpoint_inference_does_not_duplicate(self):
+        events = run_records(dwell_sequence(), settings={**self.ON, "endpoint_inference_seconds": 1.5}, legacy_margin=False)
+        self.assertEqual(len(events), 1)
+
+    def test_invalid_values_fail(self):
+        for settings in ({"band_dwell_seconds": -1}, {"band_dwell_min_observations": 0},
+                         {"band_dwell_min_observations": 2.5}, {"band_dwell_min_line_ratio": 1.0},
+                         {"band_dwell_min_box_height_ratio": float("nan")},
+                         {"band_dwell_seconds": 6.0, "direction_side_margin_px": 0.0}):
+            with self.assertRaises(ValueError):
+                validate_rule_settings(settings)
+
+
+class TrimWideRowsTests(unittest.TestCase):
+    """4bg 過寬列截除：預設維持整個元件丟棄；啟用時保留最長一段合格列。"""
+    MARKINGS = [{"class_id": 8, "class_name": "solid double yellow"}]
+
+    @staticmethod
+    def flared_mask(narrow=(20, 201), wide=(201, 281)):
+        # 畫面寬 400（過寬門檻 32 px）：上段 11 px 寬，下段 81 px 寬，兩段相連成同一個元件
+        mask = np.zeros((300, 400), dtype=np.uint8)
+        mask[narrow[0]:narrow[1], 150:161] = 8
+        mask[wide[0]:wide[1], 120:201] = 8
+        return mask
+
+    def test_default_drops_the_whole_wide_component(self):
+        self.assertEqual(extract_double_lines(self.flared_mask(), self.MARKINGS), [])
+
+    def test_enabled_keeps_the_narrow_rows_only(self):
+        lines = extract_double_lines(self.flared_mask(), self.MARKINGS, trim_wide_rows=True)
+        self.assertEqual(len(lines), 1)
+        line = lines[0]
+        self.assertEqual(line["bbox_xyxy"], [150.0, 20, 160.0, 200])
+        self.assertEqual((line["component_count"], line["geometry_status"]), (1, "provisional"))
+        self.assertTrue(all(r[0] - l[0] <= 32 for l, r in zip(line["left_boundary"], line["right_boundary"])))
+
+    def test_narrow_components_are_unchanged(self):
+        mask = np.zeros((300, 400), dtype=np.uint8)
+        mask[20:281, 150:153], mask[20:281, 158:161] = 8, 8
+        self.assertEqual(extract_double_lines(mask, self.MARKINGS, trim_wide_rows=True),
+                         extract_double_lines(mask, self.MARKINGS))
+
+    def test_short_remaining_block_is_still_dropped(self):
+        mask = self.flared_mask(narrow=(20, 27), wide=(27, 120))
+        self.assertEqual(extract_double_lines(mask, self.MARKINGS, trim_wide_rows=True), [])
+
+    def test_equal_blocks_keep_the_lower_one(self):
+        mask = np.zeros((300, 400), dtype=np.uint8)
+        mask[20:60, 150:161] = mask[100:140, 150:161] = 8
+        mask[60:100, 120:201] = 8
+        lines = extract_double_lines(mask, self.MARKINGS, trim_wide_rows=True)
+        self.assertEqual(lines[0]["bbox_xyxy"][1::2], [100, 139])
+
+    def test_attach_uses_the_geometry_option(self):
+        def attach(geometry):
+            record = build_frame_observation(0, 0, 400, 300, 10, [], [], self.MARKINGS)
+            attach_double_lines(record, self.flared_mask(), {}, geometry)
+            return record["observations"]["double_lines"]
+        self.assertEqual(attach(None), [])
+        self.assertEqual(attach(validate_geometry_settings()), [])
+        self.assertEqual(len(attach(validate_geometry_settings({"trim_wide_rows": True}))), 1)
+
+    def test_config_geometry_is_read_separately_from_rule_settings(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "rules.json"
+            path.write_text(json.dumps({"version": 1, "geometry": {"trim_wide_rows": True}}), encoding="utf-8")
+            self.assertEqual(double_line_geometry_options(path), {"trim_wide_rows": True})
+            settings = double_line_rule_options(path)["double_yellow_line_crossing"]["settings"]
+            self.assertEqual(settings, validate_rule_settings())
+            path.write_text(json.dumps({"version": 1}), encoding="utf-8")
+            self.assertEqual(double_line_geometry_options(path), {"trim_wide_rows": False})
+            for geometry in ({"trim_wide_rows": 1}, {"wide_row_ratio": .1}, [True]):
+                path.write_text(json.dumps({"version": 1, "geometry": geometry}), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    double_line_geometry_options(path)
+                with self.assertRaises(ValueError):
+                    double_line_rule_options(path)
+
+    def test_default_config_keeps_the_option_off(self):
+        path = Path(__file__).resolve().parents[1] / "configs/double_line_rules.json"
+        self.assertEqual(double_line_geometry_options(path), {"trim_wide_rows": False})
 
 
 if __name__ == "__main__":

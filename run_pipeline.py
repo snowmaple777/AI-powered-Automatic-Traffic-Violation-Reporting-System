@@ -12,7 +12,7 @@ from model_library import FrameContext, ModelPipeline, load_config
 from violation_engine import RuleContext, ViolationEngine, create_rules, red_light_rule_options
 from violation_clips import add_clip_arguments, validate_clip_options, export_violation_clips
 from road_compensation import CompensationConfig, EgoMotionTracker, RoadMarkingCompensator
-from double_lines import double_line_rule_options, write_final_double_line_diagnostics
+from double_lines import double_line_geometry_options, double_line_rule_options, write_final_double_line_diagnostics
 from area_rules import AREA_RULES, area_rule_options, area_geometry_options
 from frame_processing import FrameProcessor
 from pipeline_outputs import DetectionCsv, annotate_frame
@@ -51,7 +51,8 @@ def parse_args(argv=None):
                         help="逗號分隔的違規規則；all 啟用所有已註冊規則（含未來新增規則）")
     parser.add_argument("--crossing-direction", choices=["away", "toward"], default="away")
     parser.add_argument("--double-line-config", type=Path, default=ROOT / "configs/double_line_rules.json",
-                        help="雙實線跨越規則參數 JSON；辨識與重算共用")
+                        help="雙實線跨越規則參數 JSON；辨識與重算共用。"
+                             "其中的 geometry 子物件是雙線幾何選項，不論是否啟用雙線規則都會套用")
     add_clip_arguments(parser)
     add_plate_arguments(parser)
     add_motion_arguments(parser)
@@ -138,7 +139,8 @@ def run(args, resources, pipeline=None):
     reported_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
     expected_frames = round(reported_frames) if math.isfinite(reported_frames) and reported_frames > 0 else None
     processor = FrameProcessor(fps, width, height, list(pipeline.models), compensator, area_config,
-                               EgoMotionTracker(motion_config))
+                               EgoMotionTracker(motion_config),
+                               double_line_geometry_options(args.double_line_config))
     resources.callback(processor.close)
     pending_motion = {}
 

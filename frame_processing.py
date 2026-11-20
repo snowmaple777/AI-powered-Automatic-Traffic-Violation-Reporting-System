@@ -14,7 +14,7 @@ import numpy as np
 from observation_schema import build_frame_observation
 from road_compensation import attach_compensation
 from rider_tracking import RiderTracker, attach_riders
-from double_lines import attach_double_lines
+from double_lines import attach_double_lines, validate_geometry_settings
 from area_rules import attach_area_geometry
 from core.timing import StageTimer
 
@@ -32,7 +32,7 @@ class FrameResult:
 
 class FrameProcessor:
     def __init__(self, fps, width, height, enabled_models, compensator=None, area_config=None,
-                 ego_motion=None):
+                 ego_motion=None, double_line_geometry=None):
         self.fps, self.width, self.height = fps, width, height
         self.enabled_models = list(enabled_models)
         self.ego_motion = ego_motion
@@ -44,6 +44,8 @@ class FrameProcessor:
         self._motion_executor = None
         self.rider_tracker = RiderTracker(fps)
         self.double_line_state = {}
+        # 雙線幾何選項（4bg，雙線設定檔的 "geometry"）；None＝預設
+        self.double_line_geometry = validate_geometry_settings(double_line_geometry)
         self.area_state = {}
         self._last_marking_mask = None  # 前一幀處理後的標線遮罩（標線降頻時推移用）
         self._last_marking_aligned = True  # 前一幀處理後的遮罩是否對齊該幀（推移鏈中有一步失效即為 False）
@@ -158,7 +160,7 @@ class FrameProcessor:
             attach_riders(record, self.rider_tracker)
         mask = marking.artifacts.get("mask")
         with timer.measure("double_lines"):
-            attach_double_lines(record, mask, self.double_line_state)
+            attach_double_lines(record, mask, self.double_line_state, self.double_line_geometry)
         if self.area_config is not None:
             with timer.measure("area_geometry"):
                 attach_area_geometry(record, mask, self.area_state, self.area_config)

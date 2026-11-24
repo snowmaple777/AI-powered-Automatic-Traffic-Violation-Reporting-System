@@ -14,6 +14,17 @@ except ImportError:  # 推論服務也能用沒有 OpenCV 的 Python 啟動
     cv2 = None
 
 
+def write_jpg(path, frame, quality):
+    """存 jpg。cv2.imwrite 在 Windows 遇到非 ASCII 路徑（如「新增資料夾」）會靜靜回傳 False，
+    所以先編碼成位元組，再用 Python 寫檔。"""
+    ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
+    if not ok:
+        return False
+    with open(path, "wb") as f:
+        f.write(buf.tobytes())
+    return True
+
+
 def find_ffmpeg():
     """找 ffmpeg：系統 PATH → imageio-ffmpeg 套件附的執行檔。"""
     exe = shutil.which("ffmpeg")
@@ -106,7 +117,8 @@ def draw_preview(frame, record, out_path, max_width=960):
     if w > max_width:
         frame = cv2.resize(frame, (max_width, int(h * max_width / w)))
     tmp = str(out_path) + ".tmp.jpg"
-    cv2.imwrite(tmp, frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+    if not write_jpg(tmp, frame, 80):
+        return False
     os.replace(tmp, out_path)
     return True
 
@@ -129,7 +141,7 @@ def snapshot(video_path, out_path, seconds=None, frame_index=None, max_width=128
         h, w = frame.shape[:2]
         if w > max_width:
             frame = cv2.resize(frame, (max_width, int(h * max_width / w)))
-        return bool(cv2.imwrite(str(out_path), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 88]))
+        return write_jpg(out_path, frame, 88)
     finally:
         cap.release()
 

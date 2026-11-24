@@ -1,0 +1,9 @@
+{
+  "_note": "4bn：現行預設的合併評估基準。新影片改用 2026-11-24 標註（outputs/rough_truth_20261124.json，由 input/六類違規影片_整理.txt 轉出，verified＝使用者以 * 確認的列）。usage：tools/confirmation_eval.py eval/confirmation_experiments/baseline_20261124.json --out <資料夾>",
+  "rules": ["all"],
+  "variants": {"defaults": {}},
+  "sources": [
+    {"name": "formal", "path": "outputs/eval/eval_4aj", "truth": "eval/ground_truth.json"},
+    {"name": "rough", "path": "outputs/eval/new_20261114", "truth": "outputs/rough_truth_20261124.json", "primary_only": true}
+  ]
+}

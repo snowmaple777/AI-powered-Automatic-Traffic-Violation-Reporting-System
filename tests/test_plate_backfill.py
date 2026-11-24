@@ -60,6 +60,19 @@ class PlateBackfillTests(unittest.TestCase):
             self.assertEqual(out[0]['plate']['source'],'none')
             self.assertEqual(out[0]['plate']['window_seconds'],0)
 
+    def test_entry_points_default_to_four_seconds(self):
+        # 4bm：建構子預設停用，三個入口預設 4 秒；明確 0 仍停用。
+        import argparse, inspect
+        import run_pipeline
+        from plate_backfill import add_plate_arguments, CLI_WINDOW_SECONDS
+        from tools.rule_eval import run_rules
+        self.assertEqual(CLI_WINDOW_SECONDS, 4.0)
+        parser = argparse.ArgumentParser(); add_plate_arguments(parser)
+        self.assertEqual(parser.parse_args([]).plate_backfill_seconds, 4.0)
+        self.assertEqual(parser.parse_args(['--plate-backfill-seconds', '0']).plate_backfill_seconds, 0.0)
+        self.assertEqual(run_pipeline.parse_args(['video.mp4']).plate_backfill_seconds, 4.0)
+        self.assertEqual(inspect.signature(run_rules).parameters['plate_backfill_seconds'].default, 4.0)
+
     def test_delayed_engine_event_uses_original_window(self):
         self.assertEqual(collect(sequence()),collect(sequence(),delayed=True))
 

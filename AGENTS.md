@@ -135,23 +135,30 @@
   必須依各規則的確認條件判斷；新增放寬路徑只能支持 `suspected`。
 - `ViolationEngine` 會把同一車輛的停等區事件併入闖紅燈事件的 `merged_events`：停等區事件至少保留 3 秒，車仍在畫面中（離開未滿 1 秒）或闖紅燈規則仍有它的待定事件時繼續保留；已報告闖紅燈的車，同片之後的停等區事件直接併入（延後輸出的事件帶 `released_timestamp_sec`，refactor_log 4n）。
 - 每幀診斷寫在 `rule.diagnostics`（阻擋原因），全片評估以此統計漏判原因；新規則也要提供。
-- 闖紅燈延後確認（4av，`configs/red_light_rules.json`，預設關閉）：疑似事件保留期間補齊的直接觀測可升級為 `confirmed`，
-  事件帶 `confirmation_basis`（`standard` 或替代路徑名）。替代路徑各自只取代一個阻擋條件（停止線交接、斑馬線代理線、
-  運動失效），被取代的條件在 `conditions` 中仍為 false；消費端判斷確認依據時讀 `confirmation_basis`。
+- 闖紅燈延後確認（4av，`configs/red_light_rules.json`；4bh 起預設啟用 R2、R3）：疑似事件保留期間補齊的直接觀測可升級為 `confirmed`，
+  事件帶 `confirmation_basis`（`standard` 或替代路徑名）。替代路徑各自只取代一個阻擋條件（停止線交接、斑馬線代理線），
+  被取代的條件在 `conditions` 中仍為 false；消費端判斷確認依據時讀 `confirmation_basis`。鏡頭運動失效仍阻擋確認。
   這是經使用者同意、有評估數字的確認定義擴充，不屬於第 6 節原則 1 所禁止的「暗中削弱」。
-- 4aw：使用者授權逐階段嘗試重新設計確認規則，新增預設關閉的紅燈時段、區域確認、雙線短缺口實驗。
-  見 `docs/handoff/confirmation_rules_4aw.md`；區域候選最多等 3 秒，保留原事件時間，確認時間另記。
-  `confirmation_basis` 也適用區域／雙線事件，不能假設雙線 confirmed 的原條件全為 true。
-  主預設不變；選用 `configs/red_light_confirm_r23.json` 啟用 R2＋R3，`configs/area_confirm_crosswalk.json` 啟用斑馬線確認與 8px 足跡門檻。
-  其他實驗沒有可認列的新增收益，不納入建議設定；8px 尚未經獨立資料驗證，詳見本輪報告。
-- 4ax：斑馬線新增預設關閉的候選幾何檢查；邊界檢查損失五筆粗略 GT 命中，不採用。
-  `configs/area_crosswalk_resolution_guard.json` 為 4aw 確認＋8px 候選解析度的選用設定，保留已標註命中、減少未標註疑義事件。
-  A1／A5 無新增事件、已知誤報不變；不代表所有長片皆安全或遠處召回無損，見 `docs/handoff/crosswalk_boundary_4ax.md`。
+- 4aw／4ax：區域確認（見 `docs/handoff/confirmation_rules_4aw.md`、`crosswalk_boundary_4ax.md`）。區域候選最多等 3 秒，
+  保留原事件時間，確認時間另記；`confirmation_basis` 也適用區域事件。
+- 4bh 預設組合（正式 31 支＋新影片 141 支合併，兩層級 precision、recall 皆不下降才採用；refactor_log 4bh）：
+  闖紅燈 R2＋R3；斑馬線確認＋確認／候選 8px 足跡門檻；停等區佔用確認；雙線 4ba 推定 1.5 秒＋4bb 停留 6 秒（只產生疑似）；
+  4bj 加上 4bb 事件時間取最後一個線帶樣本、同車 10 秒內疑似事件合併（雙線 16/1/50 → 17/0/49）。
+  全部寫在 `configs/*_rules.json`，程式建構子預設仍為關閉。沒有收益或降低 precision 的實驗選項已移除
+  （紅燈時段、運動失效確認、停等區車頭方向確認、斑馬線壓線容忍／邊界檢查、雙線 4am／4an／4ao／短缺口），
+  設定檔含這些鍵會報錯；舊程式見 commit `3598167`。雙線 `geometry.trim_wide_rows`（4bg）召回高但 precision 降，保留為選項；
+  闖紅燈停止線延伸 `stop_line_extension_widths`（4bk）同樣保留為選項（未計分影片出現靜止車誤報）；
+  停等區貼邊佔用 `waiting_side_occupancy_ratio`（4bl）也是選項（precision 微降，只產生疑似）。
+- 4bn 起合併評估的新影片標註改用 `outputs/rough_truth_20261124.json`（使用者 2026-11-24 更新，事件帶 `verified`），
+  基準 manifest 為 `eval/confirmation_experiments/baseline_20261124.json`；現行預設為全部候選 82/24/115、confirmed 16/1/181。
+  4at–4bm 的數字是舊標註 `rough_truth_20261115.json` 算的，不能直接比較。`primary_only` 同時略過跨類別標註（只部分列出）。
 
-### 5.5 事件車牌補充（4w；預設關閉）
+### 5.5 事件車牌補充（4w；4bm 起入口預設 4 秒）
 
 - 三個入口 `run_pipeline.py`、`evaluate_violations.py`、`tools/rule_eval.py` 共用 `plate_backfill.PlateBackfill`，
-  `--plate-backfill-seconds 0` 預設停用；停用仍產生頂層 `plate`（event_frame／none），不延遲事件、不建立暫存庫。
+  `--plate-backfill-seconds` 預設 `plate_backfill.CLI_WINDOW_SECONDS`＝4（4bm：車牌 21/60 → 25/60，事件不變，事件延後 4 秒輸出）；
+  `PlateBackfill()` 建構子預設仍為 0。設 0 停用時仍產生頂層 `plate`（event_frame／none），不延遲事件、不建立暫存庫。
+  `tools/confirmation_eval.py` 不經過補充，車牌數字以事件當下為準。
 - 補充只作用於引擎合併後的事件，不處理 `merged_events` 子事件，不改 `evidence`、狀態、條件、ID 與時間。
   `plate` 欄位與來源契約見 [開發 prompt 第 2 節](docs/handoff/plate_backfill_and_diagnostics_prompt.md)。
 - 候選須同 ID、新觀測 `source_frame == frame.index`，信心至少 0.8；相鄰新觀測間隔不得超過 0.3 秒，
@@ -212,10 +219,11 @@
 | 標線取樣策略（排程） | `tools/simulate_sampling.py --source outputs/eval/sampling_20261102_i1 --out <資料夾> --policy fixed:2 --policy <策略>`：以每幀直接觀測的遮罩離線模擬，不需 GPU；與實際 interval 2／refresh 的推論次數、未對齊幀逐片相同（4v） |
 | 效能 | `tools/verify_stage.py --label <名稱>`（測試＋三支短片完整辨識＋分段耗時＋與前次比較）；GPU 不可同時有其他工作 |
 
-指標摘要：`batch_eval.summarize(label)` 或 `eval/metrics.py`。影片層級＝該片是否輸出目標規則事件；事件層級只計 `reviewed: true` 的影片。
+合併評估（正式＋新影片主類別，兩層級）：`tools/confirmation_eval.py eval/confirmation_experiments/baseline_20261124.json --out <資料夾> --workers N`，
+再以 manifest 加變體比較。指標摘要：`batch_eval.summarize(label)` 或 `eval/metrics.py`。影片層級＝該片是否輸出目標規則事件；事件層級只計 `reviewed: true` 的影片。
 
 ### 7.3 回報格式
-每次交付或整合，在 `docs/refactor_log.md` 新增一節（目前編號到 4ax；4aa 保留給 Astra 的標線尺度實驗），包含：修改內容、原因、驗證方式、
+每次交付或整合，在 `docs/refactor_log.md` 新增一節（目前編號到 4bn；4aa 保留給 Astra 的標線尺度實驗），包含：修改內容、原因、驗證方式、
 前後數字（影片層級、事件層級 TP／FP／FN、速度）、逐片變動的事件、已知副作用、是否採用。
 
 ---

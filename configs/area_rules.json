@@ -19,6 +19,10 @@
   "crosswalk_exclude_lateral": true,
   "stationary_window_seconds": 0.5,
   "stationary_scale_tolerance": 0.35,
+  "confirm_crosswalk": true,
+  "confirmation_min_footprint_px": 8.0,
+  "crosswalk_min_footprint_px": 8.0,
+  "confirm_waiting_occupancy": true,
   "geometry": {
     "close_gap_ratio": 0.025,
     "min_region_pixels": 120,

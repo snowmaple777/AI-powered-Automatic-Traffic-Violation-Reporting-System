@@ -1,5 +1,7 @@
 # 4ax：斑馬線幾何可靠性與長片對照（2026-11-17）
 
+> 4bh 更新（2026-11-21）：crosswalk_min_footprint_px=8 已納入 `configs/area_rules.json` 預設；crosswalk_boundary_guard 已移除，下文的 area_crosswalk_resolution_guard.json 與 stage6 manifest 已刪除（保留於 commit 3598167）。見 refactor_log 4bh。
+
 ## 範圍與基準
 
 使用者要求先實作斑馬線改進、比較改動前後，並分析長片是否增加誤報。

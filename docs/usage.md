@@ -151,7 +151,7 @@ confirmed 需要：實際偵測到的停止線、強燈號證據（原本的燈�
 - proxy_requires_red／proxy_exclude_lateral（預設開）：斑馬線代理線的疑似事件必須在越線前後有紅燈證據（任何強度），
   且車輛最近 2 秒不是橫向移動（多為橫越路口或轉彎的車）。
 車框底邊僅為接地位置代理值；融合或漏檢延伸的機車框不等於輪胎偵測。
-延後確認（4av，預設關閉；configs/red_light_rules.json，或以 --red-light-config 指定）：疑似事件本來就保留到影片結束才輸出，
+延後確認（4av；4bh 起 configs/red_light_rules.json 預設啟用下列兩項，建構子預設仍關閉；可用 --red-light-config 指定其他設定檔）：疑似事件本來就保留到影片結束才輸出，
 以下選項讓首次越線後 deferred_confirmation_seconds（預設 3）秒內補齊的直接觀測，把同一次越線升級為 confirmed
 （沿用原事件編號，事件另記 confirmation_basis 與 evidence.first_after_line_frame；越線前紅燈、確認當下強紅燈、同一燈號、
 接地點可見等原條件仍須成立）：
@@ -159,24 +159,38 @@ confirmed 需要：實際偵測到的停止線、強燈號證據（原本的燈�
   條件是交接前的線在被車身遮住前曾達到確認所需的直接觀測、確認當下的線也有直接觀測。
 - confirm_crosswalk_proxy：斑馬線代理線的越線可以確認，條件是車輛接地點有 2 次直接觀測越過同一條直接觀測斑馬線的遠端邊緣
   （整台車通過斑馬線，必然已越過其前方的停止線；推移的斑馬線不計入）。事件時間是通過遠端的時間。
-- confirm_after_motion_gap：鏡頭運動短暫失效不再阻擋確認，條件是最後一次線前觀測與最近連續 2 次線後觀測都不在失效幀，
-  且停止線在失效之後重新被直接觀測。
+同一次確認最多使用一條替代路徑；鏡頭運動失效期間的越線仍只能是疑似。
 確認事件不受 green_veto_seconds 取消，與原本的確認事件相同。
+停止線延伸（4bk，選項，預設關閉；在 configs/red_light_rules.json 加上 "stop_line_extension_widths": 1.0 啟用）：
+車框沒有和任何真正停止線水平重疊時，線段端點離車框不超過「此值 × 車框寬」的真正停止線沿線方向延伸到車框中心判斷側別
+（停止線常只偵測到部分車道，左轉車在線段外越線）。線前或線後的真正重疊觀測不足 2 次、要靠延伸線湊滿時只能是疑似
+（條件 stop_line_under_vehicle=false、evidence.reference_point_method=extended_stop_line），並另外要求越線前後有紅燈證據、
+車輛最近 1 秒（運動補償後）沿越線方向前進至少車寬 0.1 倍。正式＋新影片合併：闖紅燈 25/5/34 → 27/5/32，確認事件不變；
+但新影片其他類別多出 2 筆未計分的闖紅燈疑似（路邊靜止機車、停等中的車），因此未納入預設（refactor_log 4bk）。
+停等區貼邊佔用（4bl，選項，預設關閉；在 configs/area_rules.json 加上 "waiting_side_occupancy_ratio": 0.8 啟用）：
+貼著畫面左右邊緣（side_margin_ratio 內）或車框被裁切但底邊仍在畫面內的汽車，原本因無法判定車頭而不報；啟用後改看
+接地梯形在停等區內的比例，達到此值並持續 0.5 秒時產生疑似（條件 front_direction_available=false、
+evidence.measurement_name=side_footprint_overlap_ratio），不會被佔用確認升級；與原車頭路徑的觀測分開累積。
+正式＋新影片合併：停等區 28/11/20 → 30/12/18（0.8；救回 CIM009、CIM014），確認不變。新增的 FP 是 CIM022 的 GT 車輛但車牌讀錯，
+闖紅燈影片另有 3 筆未計分的貼邊車疑似，precision 由 .718 降到 .714，因此未納入預設（refactor_log 4bl）。
 
-4aw 分階段確認實驗：可用 --red-light-config configs/red_light_confirm_r23.json 啟用已完成短片／長片對照的 R2＋R3。
-可另用 --area-rule-config configs/area_confirm_crosswalk.json 啟用斑馬線確認及 confirmation_min_footprint_px=8，
-本輪保留兩筆與標註目標一致的確認，排除兩筆遠處車輛的疑義確認；8px 尚未經獨立資料驗證。
-主預設仍關閉。另有 confirm_signal_episode（闖紅燈設定）、confirm_waiting_area／confirm_waiting_occupancy（區域設定）、
-confirm_short_position_gap（雙線設定）；這些實驗沒有可認列的新增收益，不納入建議設定。
+4bh 預設組合（正式 31 支＋新影片 141 支粗略 GT 合併評估；採用條件為全部候選與確認事件兩個層級的 precision、recall 都不下降，
+詳見 refactor_log 4bh）：
+- 闖紅燈：confirm_line_handoff＋confirm_crosswalk_proxy（R2＋R3，configs/red_light_rules.json）。
+- 斑馬線：confirm_crosswalk＋confirmation_min_footprint_px=8（確認），crosswalk_min_footprint_px=8（候選接地範圍的影像
+  x／y 跨度較小值至少 8px；排除解析度不足的遠處候選，遠處真實違規也可能漏掉）。
+- 停等區：confirm_waiting_occupancy（大部分接地範圍持續位於區域深處、車輛靜止且非橫移、強紅燈時確認）。
+- 雙線：endpoint_inference_seconds=1.5＋band_dwell_seconds=6（BDE，見雙線設定表；兩者事件永遠只是疑似）；
+  4bj 起另加 band_dwell_last_band_time＋same_vehicle_merge_seconds=10（雙線 TP/FP/FN 16/1/50 → 17/0/49，refactor_log 4bj）。
+合併結果：全部候選 TP/FP/FN 73/21/136 → 84/22/125，確認事件 8/2/201 → 15/2/194；長片 A1／A5 事件與已知誤報見 refactor_log 4bh。
+要恢復個別舊行為，以 --red-light-config／--area-rule-config／--double-line-config 指定把對應鍵設為 false／0（或刪除該鍵）的設定檔。
 區域確認最多等待原事件後 3 秒，確認即輸出；原事件時間保持不變，確認時間另存 confirmation_timestamp_sec。
 替代路徑的原 conditions 可能仍為 false，請讀 confirmation_basis 與 evidence.confirmation_review，不要將全部條件做 all()。
-完整條件、收益、誤報檢查與重現方式見 docs/handoff/confirmation_rules_4aw.md。
-
-4ax 低解析度候選篩選：--area-rule-config configs/area_crosswalk_resolution_guard.json 保留上述斑馬線確認，
-另要求候選接地範圍的影像 x／y 跨度較小值至少 8px（crosswalk_min_footprint_px）。主預設與原確認設定不變。
-本輪已標註命中不變，九筆跨類疑義候選與一筆長片未定事件被排除；不是已證實消除十筆誤報，遠處真實違規也可能漏掉。
-A1／A5 無新增事件，既有人工誤報仍有一筆。crosswalk_boundary_guard 邊界實驗會損失五筆命中，不納入此設定。
-詳細比較及限制見 docs/handoff/crosswalk_boundary_4ax.md。
+確認條件與 8px 門檻的來源見 docs/handoff/confirmation_rules_4aw.md、docs/handoff/crosswalk_boundary_4ax.md。
+4bh 已移除沒有收益或會降低 precision 的實驗選項，設定檔含這些鍵時會報錯：confirm_signal_episode、confirm_after_motion_gap
+（闖紅燈）、confirm_waiting_area、tolerate_overlap_dips、crosswalk_boundary_guard（區域）、curve_extrapolation、
+extend_near_endpoint、line_memory_seconds、max_origin_interruption_sec／origin_interruption_min_confidence、
+straddle_min_seconds／straddle_merge_seconds、confirm_short_position_gap（雙線）。舊程式在 commit 3598167。
 
 從原影片與既有 JSONL 重算停止線補償：
 
@@ -306,18 +320,15 @@ rearm_seconds 後才可重新建立起始側，辨識下一次反向跨越。
 | allow_motion_gaps / max_motion_gap_sec | true / 1.0 | 鏡頭運動估計短暫失敗時以「不動」近似、保留候選的最長時間（事件只能是疑似） |
 | max_extrapolation_ratio | 0.5 | 雙線遠端被車身遮住時，沿端點外插的上限（車框高度比例；0＝停用；事件只能是疑似） |
 | max_line_handoff_px | 25 | 雙線追蹤換編號時，依位置把候選轉移到新編號的距離上限（0＝停用；事件只能是疑似） |
-| curve_extrapolation | false | 被車身遮住的端點以二次曲線沿彎道延伸，擬合不可靠時退回直線（4am 實驗選項；事件只能是疑似） |
-| extend_near_endpoint | false | 雙線近端端點落在同一台車的車框內時也延伸到車底（4am 實驗選項；事件只能是疑似） |
-| line_memory_seconds | 0 | 已有候選的雙線短暫消失時，以運動補償後的最後幾何延續並轉交給新編號的秒數（0＝停用；4am 實驗選項；事件只能是疑似） |
-| max_origin_interruption_sec | 0 | 建立起點時，車底短暫落在線帶邊緣或車輛信心短暫偏低的最長容許秒數，中斷不計入穩定次數（0＝停用；4an 實驗選項；事件標 stable_origin=False，只能是疑似） |
-| origin_interruption_min_confidence | 0.25 | 上述容許期間的車輛信心下限（低於此值照常刪除候選） |
-| straddle_min_seconds | 0 | 壓線：已在原側穩定的車，車底至少一點進入線帶本身（不含邊距）後退回原側或在線帶附近結束追蹤，線帶內首末觀測相距達此秒數（且次數達 stable_observations）時輸出疑似事件，behavior＝line_straddle（0＝停用；4ao 實驗選項；永遠不會確認） |
-| straddle_merge_seconds | 2 | 壓線結束後等待的秒數；期間同一車完成跨越則併入跨越事件（evidence.merged_straddles），同一車多次壓線合併為一筆 |
-| endpoint_inference_seconds / endpoint_min_box_height_ratio | 0 / 0.07 | 起點與終點推定：原規則剛在某側建立穩定起點時，以目前雙線重新量測同車較早（運動補償後）的車框；另一側有至少 2 個方向邊距外的樣本、與終點側樣本間隔不超過此秒數（中間可缺車框）且本幀車框高度至少為畫面高度的此比例時，輸出疑似事件（0＝停用；4ba 實驗選項；需要 direction_side_margin_px > 0；永遠不會確認） |
-| band_dwell_seconds / band_dwell_min_observations / band_dwell_min_line_ratio / band_dwell_min_box_height_ratio | 0 / 3 / 0.15 / 0.07 | 壓線停留跨越：不經原規則狀態機，看每台車逐幀相對同幀雙線的側別（不分線追蹤編號，鏡頭運動失效時不中斷）；一側至少 2 個方向邊距外樣本 → 至少 3 次車底點落在線帶本身 → 另一側穩定，起點到終點不超過此秒數時輸出疑似事件。只採用可見長度達畫面高度 0.15 的雙線（排除碎片線），確認時車框高度至少為畫面高度 0.07（0＝停用；4bb 實驗選項；需要 direction_side_margin_px > 0；永遠不會確認） |
+| endpoint_inference_seconds / endpoint_min_box_height_ratio | 1.5 / 0.07（程式預設 0 / 0.07） | 起點與終點推定：原規則剛在某側建立穩定起點時，以目前雙線重新量測同車較早（運動補償後）的車框；另一側有至少 2 個方向邊距外的樣本、與終點側樣本間隔不超過此秒數（中間可缺車框）且本幀車框高度至少為畫面高度的此比例時，輸出疑似事件（0＝停用；4ba，4bh 起預設設定檔啟用；需要 direction_side_margin_px > 0；永遠不會確認） |
+| band_dwell_seconds / band_dwell_min_observations / band_dwell_min_line_ratio / band_dwell_min_box_height_ratio | 6 / 3 / 0.15 / 0.07（程式預設 0 / 3 / 0.15 / 0.07） | 壓線停留跨越：不經原規則狀態機，看每台車逐幀相對同幀雙線的側別（不分線追蹤編號，鏡頭運動失效時不中斷）；一側至少 2 個方向邊距外樣本 → 至少 3 次車底點落在線帶本身 → 另一側穩定，起點到終點不超過此秒數時輸出疑似事件。只採用可見長度達畫面高度 0.15 的雙線（排除碎片線），確認時車框高度至少為畫面高度 0.07（0＝停用；4bb，4bh 起預設設定檔啟用；需要 direction_side_margin_px > 0；永遠不會確認） |
+| band_dwell_last_band_time | true（程式預設 false） | 4bb 事件時間取最後一個落在線帶本身的樣本（與原規則取最後一個跨越中樣本一致），而不是第一個；只改事件時間，不改是否成立、確認時間與證據（4bj，預設設定檔啟用） |
+| same_vehicle_merge_seconds | 10（程式預設 0） | 同一規則、同一車在上一筆雙線事件輸出後此秒數內的疑似事件不再輸出（一次越線常被原規則、4ba、4bb 各判一次，或在線的遠端反覆成立）；確認事件照常輸出，被略過的事件記在當幀診斷 merged_repeat_events（0＝停用；4bj，預設設定檔啟用；10 秒是看過評估資料後選定） |
 
-4am 的三個選項、4an 的起點容忍與 4ao 的壓線在 31 支評估影片上都沒有追回任何漏報（見 refactor_log 4am、4an、4ao），因此預設關閉；
-維持預設值時不寫入事件 parameters 與診斷 settings，輸出與未加入選項前逐位元相同。
+endpoint_inference_seconds 與 band_dwell_seconds 設為 0 時不寫入事件 parameters 與診斷 settings，輸出與 4ba 以前逐位元相同；
+4bj 的兩個選項等於程式預設（false／0）時同樣不寫入。
+4am 遮擋延伸／線段記憶、4an 起點容忍、4ao 壓線與 4aw 短缺口確認在 4bh 評估中沒有收益或會降低 precision，已移除；
+4bj 試作的 4bb 重判（原規則刪除跨越中候選時）與跨越中短暫低信心容忍在評估中沒有任何效果，未保留。
 
 雙線幾何選項（4bg，預設關閉）寫在同一份設定檔的 geometry 子物件，屬於後處理而非規則參數：
 
@@ -332,6 +343,9 @@ rearm_seconds 後才可重新建立起始側，辨識下一次反向跨越。
   evaluate_violations.py、tools/rule_eval.py 只重算規則，沿用 JSONL 裡已計算的幾何，會忽略此選項。
 - 不論 --rules 是否包含雙線規則，run_pipeline 都會讀取此設定檔的 geometry，因為雙線幾何每幀都會寫入 JSONL。
 - 評估見 refactor_log 4be、4bf、4bg：新影片可信的雙黃事件增加，但只有粗略標註；長片幾乎沒有過寬元件，無法代表彎道的誤報率。
+- 4bh 在 BDE 之上評估（正式＋新影片合併）：雙線 TP 16→21、FP 1→8，召回明顯提高但 precision 下降，
+  因此保留為選項、不納入預設。
+- 4bj：RT 再加上 band_dwell_last_band_time＋same_vehicle_merge_seconds 後為 TP 21、FP 5（不含 RT 為 17/0），precision 仍下降，維持選項。
 
 建議先查看診斷的 blocked_lines、skipped_vehicles、reset_reason 與 states，再調整對應門檻。
 若一直無法取得 paired 或追蹤 ID 持續改變，僅降低規則門檻不能補回缺失幾何。
@@ -446,12 +460,13 @@ method 記錄來源方法；信心不足、資料過期或缺少來源會中止�
 overlap_ratio、stationary_seconds、stationary_radius_px、max_observation_gap_sec、max_frame_gap_sec、
 rearm_seconds、side_margin_ratio、duplicate_box_iou。
 選用 min_vehicle_confidence（預設不設定＝沿用 min_confidence 0.5）只放寬車輛偵測信心，區域、燈號與接地幾何仍用 min_confidence；
-4aq 評估 0.35／0.4 只讓新影片的斑馬線命中多 1 支、有標註的 31 支不變，未採用為預設。
-斑馬線另有兩個選用設定（預設不設定＝行為不變）：stationary_window_seconds 讓靜止判定只比較最近這段時間內的接地中心位置（不與第一次位置比較，移動鏡頭的推移誤差不會累積到重新計時；事件證據加記 stationary_drift_from_start_px）；tolerate_overlap_dips=true 讓壓線比例短暫低於門檻時比照短暫漏偵測，保留狀態到 max_observation_gap_sec。
-4ar 評估 0.5 秒視窗＋壓線容忍讓新影片斑馬線命中 14→17/28，但疑似事件 42→65、包含明顯誤報，有標註的 31 支多 1 個正確、2 個誤報，未採用為預設。
+4aq 評估 0.35／0.4 只讓新影片的斑馬線命中多 1 支、有標註的 31 支不變，未採用為預設；4bh 另發現 0.35 與斑馬線確認合用時，
+ms03 的已知遠處誤報會升為 confirmed，因此仍不採用。
+斑馬線另有兩個選用設定（預設不設定＝行為不變）：stationary_window_seconds 讓靜止判定只比較最近這段時間內的接地中心位置（不與第一次位置比較，移動鏡頭的推移誤差不會累積到重新計時；事件證據加記 stationary_drift_from_start_px）。
+4ar 評估 0.5 秒視窗＋壓線容忍（tolerate_overlap_dips，4bh 已移除）讓新影片斑馬線命中 14→17/28，但疑似事件 42→65、包含明顯誤報，有標註的 31 支多 1 個正確、2 個誤報，未採用為預設。
 選用 stationary_scale_tolerance（例如 0.35）讓靜止判定另比較車框下緣寬度與「參考時的下緣隨道路推移投影後」的寬度，相差超過此比例視為移動（擋下朝鏡頭或遠離鏡頭行駛、畫面位移很小的車；事件證據加記 stationary_width_ratio_from_start）。
 4as 評估：單獨使用時新影片斑馬線命中維持 14/28、疑似事件 42→38，有標註的 31 支不變；與 0.5 秒視窗合用命中 16/28、事件 45。未採用為預設。
-4au 起 configs/area_rules.json 預設啟用 stationary_window_seconds=0.5 與 stationary_scale_tolerance=0.35（新影片粗略 GT 下斑馬線 TP 14→16、FP 不變）；tolerate_overlap_dips 仍不啟用。要恢復舊判定，刪除設定檔中這兩個鍵，或以 --area-rule-config 指定不含這兩個鍵的設定檔。
+4au 起 configs/area_rules.json 預設啟用 stationary_window_seconds=0.5 與 stationary_scale_tolerance=0.35（新影片粗略 GT 下斑馬線 TP 14→16、FP 不變）。要恢復舊判定，刪除設定檔中這兩個鍵，或以 --area-rule-config 指定不含這兩個鍵的設定檔。
 預設觀測間隔上限 0.3 秒、連續影片幀時間間隔上限 0.2 秒。快取車框不增加證據次數；
 未能可靠銜接的 ID 變化、缺區域、失去條件、來源不連續或運動失敗會清除或重新累積，影片結束不補發未完成事件。
 同一次連續成立只輸出一個事件；同一台車在 rearm_seconds（預設 5 秒）內持續侵入，
@@ -644,13 +659,14 @@ batch_eval 現在以 done.json version 2 管理完成狀態。續跑必須匹配
 encode 步驟以 ffmpeg 轉成 H.264。總覽為輸出資料夾的 index.html。
 實驗期間不要修改 Python 程式、設定、權重或影片，否則該支影片不會發布完成。
 
-同追蹤的事件後車牌補充（4w，實驗功能，預設關閉）
+同追蹤的事件後車牌補充（4w；4bm 起預設 4 秒）
 
-三個入口皆接受 --plate-backfill-seconds，預設 0；例如以既有觀測重算，不重跑模型：
+三個入口皆接受 --plate-backfill-seconds，預設 4（事件發生後 4 秒內同一追蹤讀到的車牌補進事件，事件因此延後 4 秒輸出）；
+0 停用。正式＋新影片：車牌完全正確 21/60 → 25/60，事件本身不變（refactor_log 4bm）。例如以既有觀測重算，不重跑模型：
 .venv\Scripts\python.exe tools\rule_eval.py --source outputs\eval\baseline_18 --label plate_4w_off --plate-backfill-seconds 0
 .venv\Scripts\python.exe tools\rule_eval.py --source outputs\eval\baseline_18 --label plate_4w_on --plate-backfill-seconds 1
 .venv\Scripts\python.exe evaluate_violations.py outputs\eval\baseline_18\ctm02\ctm02_detections.jsonl --output outputs\ctm02_backfill.jsonl --rules all --no-violation-clips --plate-backfill-seconds 1
-完整辨識可在 run_pipeline.py 原有命令後加入 --plate-backfill-seconds 1；0 停用，不延遲事件、不建立暫存庫。
+完整辨識預設已啟用；要恢復舊行為，在 run_pipeline.py 原有命令後加入 --plate-backfill-seconds 0（不延遲事件、不建立暫存庫）。
 run_pipeline 的 timings 與 rule_eval 的 rule_options.json 記錄視窗值；每筆事件的 plate.window_seconds 亦記錄。
 
 事件新增頂層 plate：text（原字串或 null）、source（event_frame／same_track_after_event／none）、object_id、

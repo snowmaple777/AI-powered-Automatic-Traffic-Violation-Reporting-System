@@ -12,6 +12,18 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(metrics(truth,predictions,True,['r'])['confirmed'], {'r':{'tp':1,'fp':0,'fn':0}})
         self.assertEqual(len(truth['videos']['v']['events']),2)
 
+    def test_primary_only_ignores_cross_category_truth(self):
+        """4bn：新影片標註含跨類別事件時，primary_only 不可把它們算成漏報。"""
+        truth = {'version':1,'videos':{'v':{'reviewed':True,'category':'r', 'events':[
+            {'rule_id':'r','start_sec':1,'end_sec':2}, {'rule_id':'other','start_sec':3,'end_sec':4}]}}}
+        predictions = {'v':[{'rule_id':'r','status':'suspected','timestamp_sec':1.5},
+                            {'rule_id':'other','status':'suspected','timestamp_sec':3.5}]}
+        result = metrics(truth,predictions,True,['all'])
+        self.assertEqual(result['all'], {'r':{'tp':1,'fp':0,'fn':0}})
+        self.assertEqual(len(truth['videos']['v']['events']),2)
+        everything = metrics(truth,predictions,False,['all'])['all']
+        self.assertEqual(everything['other'], {'tp':1,'fp':0,'fn':0})
+
     def test_merge_does_not_mutate_baseline(self):
         baseline = {'r':{'settings':{'x':False,'y':2}}}
         self.assertEqual(merge(baseline,{'r':{'settings':{'x':True}}}), {'r':{'settings':{'x':True,'y':2}}})

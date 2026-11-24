@@ -41,24 +41,6 @@ RULE_DEFAULTS = dict(
     # 確認需要直接觀測的標線：線本身至少 min_line_observations 次直接觀測，越線前後各至少一個樣本
     # 落在直接觀測的幾何上，且沒有樣本落在未對齊（鏡頭運動失效時沿用）的推移幾何上。不成立時最多為疑似。
     require_direct_marking_evidence=True, detailed_diagnostics=False,
-    # 4am 遮擋延伸與線段記憶（預設關閉；關閉時不寫入規則設定與事件參數，輸出與先前逐位元相同）。
-    # 使用時事件只能是疑似：延伸標記 line_observed_at_footprint=False，記憶標記 partial_support。
-    curve_extrapolation=False,  # 被遮端點以二次曲線（x 對 y）沿彎道延伸；擬合不可靠時退回原本的直線外插
-    extend_near_endpoint=False,  # 雙線近端（影像下方）端點落在同一台車的車框內時，也延伸到車底
-    line_memory_seconds=0.0,  # 已有候選的雙線短暫消失時，以運動補償後的最後幾何延續的秒數（0＝停用）
-    # 4an 起點容忍（預設關閉；同樣不寫入預設設定）。建立起點（seeding／armed）期間，車底短暫落在線帶
-    # 邊緣（side 0，只限 seeding）或車輛信心短暫介於下限與 min_vehicle_confidence 之間時，不刪除候選；
-    # 中斷不計入穩定次數。用過容許的事件 stable_origin=False，只能是疑似。
-    max_origin_interruption_sec=0.0,  # 單次連續中斷的最長秒數（0＝停用）
-    origin_interruption_min_confidence=.25,  # 中斷期間可容許的車輛信心下限
-    # 4ao 壓線（C1，預設關閉；同樣不寫入預設設定）。已在原側穩定（armed）的車，車底至少一點進入線帶本身
-    # （不含兩側邊距）後退回原側，或仍在線帶附近時候選結束（離開畫面、線消失、逾時、片尾等），且線帶內
-    # 首末觀測相距達門檻、次數達 stable_observations 時，輸出「壓線」疑似事件（complete_band_crossing=False，
-    # 永遠不會確認）。結束後保留 straddle_merge_seconds；期間同一車完成跨越時併入該跨越事件，不重複輸出；
-    # 同一車（不分雙線追蹤編號）的多次壓線合併為一筆。
-    straddle_min_seconds=0.0,  # 線帶內最短停留秒數（0＝停用）
-    straddle_merge_seconds=2.0,
-    confirm_short_position_gap=False,  # 短位置缺口的確認替代路徑，預設關閉
     # 4az 方向分類取樣邊距（預設啟用，等於 4ay 以前的側別邊距）。側別邊距很小時（4ay），靠近線帶的橫移樣本
     # 會進入方向判斷，使變換車道／迴轉退回 complete_crossing。啟用時方向分類只用車底三點離線帶超過
     # 「固定值＋線帶寬度比例＋配準誤差」的樣本，至少 direction_min_samples 個；只影響 behavior／direction，
@@ -84,23 +66,23 @@ RULE_DEFAULTS = dict(
     band_dwell_seconds=0.0,  # 起點側最後一個方向樣本到終點側第一個方向樣本的最長秒數（0＝停用）
     band_dwell_min_observations=3,  # 起點與終點之間落在線帶本身的最少觀測次數
     band_dwell_min_line_ratio=.15,  # 採用量測的雙線最短可見長度（畫面高度比例）
-    band_dwell_min_box_height_ratio=.07)  # 確認時車框高度下限（畫面高度比例；0＝不檢查）
+    band_dwell_min_box_height_ratio=.07,  # 確認時車框高度下限（畫面高度比例；0＝不檢查）
+    # 4bj 召回細節（預設關閉；等於預設值時不寫入規則設定與事件參數，輸出與先前逐位元相同）。
+    # same_vehicle_merge_seconds：同一規則、同一車在上一筆雙線事件（以輸出時間計）之後此秒數內的疑似事件不再輸出
+    #   （一次越線超車常被原規則、4ba、4bb 各判一次，或在線的遠端尖點反覆成立）；確認事件一律照常輸出。
+    same_vehicle_merge_seconds=0.0,
+    # band_dwell_last_band_time：4bb 事件時間取最後一個線帶樣本（原規則的事件時間也是最後一個跨越中樣本），
+    #   而不是第一個線帶樣本；只改事件時間與 transition 快照，不改是否成立。
+    band_dwell_last_band_time=False)
 
-# 4ba 選項：同 OCCLUSION_OPTION_KEYS，等於預設值時不放進規則設定。
+# 4ba 選項：等於預設值時不放進規則的設定字典（事件 evidence.parameters 不變）。
 ENDPOINT_OPTION_KEYS = ("endpoint_inference_seconds", "endpoint_min_box_height_ratio")
 
-# 4bb 選項：同 OCCLUSION_OPTION_KEYS，等於預設值時不放進規則設定。
+# 4bb 選項：同 ENDPOINT_OPTION_KEYS。
+# 4bj 選項：同 ENDPOINT_OPTION_KEYS。
+RECALL_OPTION_KEYS = ("same_vehicle_merge_seconds", "band_dwell_last_band_time")
 BAND_DWELL_OPTION_KEYS = ("band_dwell_seconds", "band_dwell_min_observations", "band_dwell_min_line_ratio",
                           "band_dwell_min_box_height_ratio")
-
-# 4ao 選項：同 OCCLUSION_OPTION_KEYS，等於預設值時不放進規則設定。
-STRADDLE_OPTION_KEYS = ("straddle_min_seconds", "straddle_merge_seconds")
-
-# 4an 選項：同 OCCLUSION_OPTION_KEYS，等於預設值時不放進規則設定。
-ORIGIN_OPTION_KEYS = ("max_origin_interruption_sec", "origin_interruption_min_confidence")
-
-# 4am 選項：等於預設值時不放進規則的設定字典（事件 evidence.parameters 不變）。
-OCCLUSION_OPTION_KEYS = ("curve_extrapolation", "extend_near_endpoint", "line_memory_seconds")
 
 
 # 4bg 雙線幾何選項（後處理，不是規則參數；寫在雙線設定檔的 "geometry" 子物件，預設關閉）。
@@ -138,14 +120,14 @@ def validate_rule_settings(overrides=None):
     settings = {**RULE_DEFAULTS, **overrides}
     for key, value in settings.items():
         if key in ("emit_suspected", "allow_semantic_band", "allow_motion_gaps", "require_direct_marking_evidence", "detailed_diagnostics",
-                   "curve_extrapolation", "extend_near_endpoint", "confirm_short_position_gap"):
+                   "band_dwell_last_band_time"):
             if type(value) is not bool:
                 raise ValueError(f"{key} must be boolean")
-        elif type(value) not in (int, float) or not math.isfinite(value) or (value < 0 if key in ("footprint_inset_ratio", "max_extrapolation_ratio", "max_line_handoff_px", "line_memory_seconds", "max_origin_interruption_sec", "straddle_min_seconds", "straddle_merge_seconds",
+        elif type(value) not in (int, float) or not math.isfinite(value) or (value < 0 if key in ("footprint_inset_ratio", "max_extrapolation_ratio", "max_line_handoff_px",
                                                                                                          "direction_side_margin_px", "direction_margin_width_ratio",
                                                                                                          "endpoint_inference_seconds", "endpoint_min_box_height_ratio",
                                                                                                          "band_dwell_seconds", "band_dwell_min_line_ratio",
-                                                                                                         "band_dwell_min_box_height_ratio") else value <= 0):
+                                                                                                         "band_dwell_min_box_height_ratio", "same_vehicle_merge_seconds") else value <= 0):
             raise ValueError(f"{key} must be finite and positive")
     for key in ("endpoint_min_box_height_ratio", "band_dwell_min_line_ratio", "band_dwell_min_box_height_ratio"):
         if settings[key] >= 1:
@@ -159,8 +141,7 @@ def validate_rule_settings(overrides=None):
     for key in ("min_line_observations", "stable_observations", "direction_min_samples"):
         if type(settings[key]) is not int or settings[key] < 2:
             raise ValueError(f"{key} must be an integer >= 2")
-    for key in ("min_vehicle_confidence", "heading_consistency", "min_longitudinal_alignment",
-                "origin_interruption_min_confidence"):
+    for key in ("min_vehicle_confidence", "heading_consistency", "min_longitudinal_alignment"):
         if settings[key] > 1:
             raise ValueError(f"{key} must be <= 1")
     if not 0 < settings["max_lane_change_angle_deg"] < settings["min_uturn_angle_deg"] <= 180:
@@ -526,39 +507,10 @@ def resolve_rule_lines(lines, memory, matrix, frame, settings, vehicles=()):
     return output
 
 
-def _curve_extension(paths, y_target, below):
-    """以端點附近的中心線擬合 x = a*y^2 + b*y + c，延伸到 y_target；不可靠時回傳 None。
-
-    只用端點側最多 12 個取樣點（至少 4 點、跨 12 列以上）；殘差均方根超過 1.5 px、或延伸段的
-    斜率 dx/dy 與端點處相差超過 1（彎得比可見部分急很多）時不採用。兩側邊界沿用端點處相對
-    中心線的水平偏移，延伸段每 4 列加一個點，避免以一條弦代替曲線。
-    """
-    center = paths["centerline"]
-    tail = center[-12:] if below else center[:12]
-    if len(tail) < 4 or np.ptp(tail[:, 1]) < 12:
-        return None
-    coeffs = np.polyfit(tail[:, 1], tail[:, 0], 2)
-    if np.sqrt(np.mean((np.polyval(coeffs, tail[:, 1]) - tail[:, 0]) ** 2)) > 1.5:
-        return None
-    end_y = center[-1, 1] if below else center[0, 1]
-    slope = np.polyder(coeffs)
-    if abs(np.polyval(slope, y_target) - np.polyval(slope, end_y)) > 1:
-        return None
-    count = max(1, int(np.ceil(abs(y_target - end_y) / 4)))
-    ys = np.linspace(end_y, y_target, count + 1)[1:]
-    xs = np.polyval(coeffs, ys)
-    extension = {}
-    for key, path in paths.items():
-        offset = np.interp(end_y, path[:, 1], path[:, 0]) - np.polyval(coeffs, end_y)
-        points = np.column_stack((xs + offset, ys))
-        extension[key] = (np.vstack([path, points]) if below else np.vstack([points[::-1], path])).tolist()
-    return extension
-
-
-def _extend_line(line, y_target, max_extension, curve=False):
+def _extend_line(line, y_target, max_extension):
     """沿可見端點的方向，把中心線與兩側邊界外插到 y_target（只用於被車身遮住的端點）。
 
-    預設為直線外插；curve 為 True 時先嘗試二次曲線（見 _curve_extension），不可靠時退回直線。
+    以端點附近的直線外插。
     超出 max_extension 像素、或端點附近不足以估計方向時回傳 None。
     """
     paths = {key: np.asarray(line[key], dtype=float) for key in ("centerline", "left_boundary", "right_boundary")}
@@ -569,11 +521,6 @@ def _extend_line(line, y_target, max_extension, curve=False):
     if beyond > max_extension:
         return None
     extended = dict(line)
-    if curve:
-        curved = _curve_extension(paths, y_target, y_target > bottom)
-        if curved is not None:
-            extended.update(curved, curve_extrapolated=True)
-            return extended
     for key, path in paths.items():
         tail = path[-5:] if y_target > bottom else path[:5]
         if len(tail) < 2 or np.ptp(tail[:, 1]) < 1:
@@ -652,20 +599,11 @@ def vehicle_line_position(vehicle, line, settings, motion_error=0, *, diagnostic
             top_x, top_y = center[0]
             width = x2 - x1  # 透視下車身側面也會遮住鄰近的雙線，水平方向放寬一個車寬
             occluded_by_vehicle = x1 - width <= top_x <= x2 + width and y1 <= top_y <= y2 + margin
-            curve = settings.get("curve_extrapolation", False)
             if occluded_by_vehicle and y2 < top_y + margin:
                 target = y2 - margin
-                extended = _extend_line(line, target, ratio * (y2 - y1) + margin, curve)
+                extended = _extend_line(line, target, ratio * (y2 - y1) + margin)
                 if extended is not None and extended is not line:
                     line, extrapolated = extended, True
-            elif settings.get("extend_near_endpoint", False):
-                # 近端：車身遮住雙線往鏡頭方向的延續（斜向雙線從車後方穿過時常見），端點必須落在
-                # 同一台車的車框列範圍內，且水平方向同樣放寬一個車寬；延伸到車底下方一個邊距。
-                bottom_x, bottom_y = center[-1]
-                if x1 - width <= bottom_x <= x2 + width and y1 <= bottom_y < y2 + margin:
-                    extended = _extend_line(line, y2 + margin, ratio * (y2 - y1) + margin, curve)
-                    if extended is not None and extended is not line:
-                        line, extrapolated = extended, True
     inset = (x2 - x1) * settings["footprint_inset_ratio"]
     points = [[x1 + inset, y2], [(x1 + x2) / 2, y2], [x2 - inset, y2]]
     sides, measurements, direction_sides = [], [], []

@@ -36,13 +36,15 @@ NONNEGATIVE = {"occlusion_gap_ratio", "stationary_radius_ratio", "crosswalk_gree
 BOOLEAN = {"crosswalk_two_wheelers", "crosswalk_suppress_on_green", "crosswalk_exclude_lateral"}
 # 4aq 選用設定（預設不存在＝沿用 min_confidence，設定內容與事件不變）：只套用在車輛偵測信心，
 # 區域、燈號與接地幾何仍用 min_confidence。區域規則事件一律是疑似。
-OPTIONAL = {"min_vehicle_confidence", "stationary_window_seconds", "tolerate_overlap_dips", "stationary_scale_tolerance"}
-OPTIONAL |= {"confirm_waiting_area", "confirm_crosswalk", "confirm_waiting_occupancy", "confirmation_min_footprint_px"}
-OPTIONAL |= {"crosswalk_boundary_guard", "crosswalk_min_footprint_px"}
+OPTIONAL = {"min_vehicle_confidence", "stationary_window_seconds", "stationary_scale_tolerance"}
+OPTIONAL |= {"confirm_crosswalk", "confirm_waiting_occupancy", "confirmation_min_footprint_px", "crosswalk_min_footprint_px"}
+# 4bl 選用設定（停等區，預設不存在＝行為不變）：
+#   waiting_side_occupancy_ratio：貼著畫面左右邊緣（側邊界內或車框被裁切、但底邊未裁切）的汽車無法判定車頭方向，
+#     改以接地梯形在區域內的比例 ≥ 此值、持續 0.5 秒作為候選；只產生疑似，不進入佔用確認。
+OPTIONAL |= {"waiting_side_occupancy_ratio"}
 # 4ar 選用設定（斑馬線，預設不存在＝行為不變）：
 #   stationary_window_seconds：靜止判定改為「最近這段時間內」的接地中心位移不超過半徑，
 #     而不是與第一次的位置比較；拍攝者走動時的推移誤差不會一路累積到重置。
-#   tolerate_overlap_dips：壓線比例短暫低於門檻時比照短暫漏偵測，保留狀態到 max_observation_gap_sec（不累積證據）。
 # 4as 選用設定（斑馬線，預設不存在＝行為不變）：
 #   stationary_scale_tolerance：靜止判定另比較車框下緣寬度與「參考時的下緣隨道路推移投影後」的寬度，
 #     相差超過此比例（例如 0.35＝寬度比超出 1/1.35～1.35）視為移動。朝鏡頭或遠離鏡頭行駛的車在畫面上
@@ -55,7 +57,7 @@ def settings_for(overrides=None):
     if overrides is not None and (not isinstance(overrides, dict) or set(overrides) - DEFAULTS.keys() - OPTIONAL):
         raise ValueError("Unknown area-rule settings")
     settings = {**DEFAULTS, **(overrides or {})}
-    for key in ("confirm_waiting_area", "confirm_crosswalk", "confirm_waiting_occupancy", "crosswalk_boundary_guard"):
+    for key in ("confirm_crosswalk", "confirm_waiting_occupancy"):
         if key in settings and type(settings[key]) is not bool:
             raise ValueError(f"{key} must be boolean")
         if settings.get(key) is False:
@@ -65,6 +67,10 @@ def settings_for(overrides=None):
             value = settings[key]
             if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f'{key} must be finite and positive')
+    if "waiting_side_occupancy_ratio" in settings:
+        value = settings["waiting_side_occupancy_ratio"]
+        if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 1:
+            raise ValueError("waiting_side_occupancy_ratio must be in (0, 1]")
     if "min_vehicle_confidence" in settings:
         value = settings["min_vehicle_confidence"]
         if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 1:
@@ -73,8 +79,6 @@ def settings_for(overrides=None):
         value = settings["stationary_window_seconds"]
         if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
             raise ValueError("stationary_window_seconds must be finite and positive")
-    if "tolerate_overlap_dips" in settings and type(settings["tolerate_overlap_dips"]) is not bool:
-        raise ValueError("tolerate_overlap_dips must be boolean")
     if "stationary_scale_tolerance" in settings:
         value = settings["stationary_scale_tolerance"]
         if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
@@ -327,6 +331,14 @@ def _associate_area_lanes(regions, obs, state, cfg, frame):
     return lanes
 
 
+def lower_body_footprint(box, cfg):
+    """車框下緣的接地梯形近似（footprint_height_ratio／footprint_width_ratio）。"""
+    x1, y1, x2, y2 = box
+    inset = (x2-x1)*(1-cfg["footprint_width_ratio"])/2
+    top = y2-(y2-y1)*cfg["footprint_height_ratio"]
+    return [[x1+inset, top], [x2-inset, top], [x2-inset/2, y2], [x1+inset/2, y2]]
+
+
 def _prepare_area_vehicles(obs, state, cfg, frame, matrix, valid_motion, lanes):
     """Filter duplicates/ego detections and estimate explicitly labelled geometry."""
     size = (frame["width"], frame["height"])
@@ -373,9 +385,7 @@ def _prepare_area_vehicles(obs, state, cfg, frame, matrix, valid_motion, lanes):
         if x1 <= 1 or y1 <= 1 or x2 >= size[0]-1 or y2 >= size[1]-1:
             vehicle["geometry_unavailable_reason"] = "clipped_vehicle"
             continue
-        inset = (x2-x1)*(1-cfg["footprint_width_ratio"])/2
-        top = y2-(y2-y1)*cfg["footprint_height_ratio"]
-        footprint = [[x1+inset, top], [x2-inset, top], [x2-inset/2, y2], [x1+inset/2, y2]]
+        footprint = lower_body_footprint(vehicle["bbox_xyxy"], cfg)
         geometry = dict(source_frame=index, confidence=cfg["estimated_quality"],
             method="lower_body_trapezoid_estimate", quality_kind="heuristic_not_probability",
             footprint=footprint, estimated=True)
@@ -492,28 +502,6 @@ def occluded_band_overlap(region_polygon, footprint, box, gap_ratio):
     return float(intersection / cv2.contourArea(footprint))
 
 
-def crosswalk_boundary_evidence(area, footprint, box, gap_ratio, threshold):
-    """量測原區域與遮擋延伸在四向位置誤差下的最小重疊，不修改觀測。
-
-    沿用 4aw 的車寬 3%／至少 2px 誤差，不代表機率或條紋真值。
-    遮擋延伸只保留疑似資格；不可藉由此函式增加直接觀測證據。
-    """
-    error = max(2., (box[2] - box[0]) * .03)
-    direct, estimated = [], []
-    size = cv2.contourArea(footprint)
-    for shift in ((0, 0), (error, 0), (-error, 0), (0, error), (0, -error)):
-        moved = (footprint + shift).astype(np.float32)
-        overlap = float(cv2.intersectConvexConvex(moved, area)[0] / size)
-        direct.append(overlap)
-        estimated.append(max(overlap, occluded_band_overlap(area, moved, box, gap_ratio))
-                         if overlap + 1e-6 < threshold else overlap)
-    direct_min, estimated_min = min(direct), min(estimated)
-    support = ('interior' if direct_min + 1e-6 >= threshold else
-               'occlusion_estimated' if estimated_min + 1e-6 >= threshold else 'boundary_uncertain')
-    return dict(error_px=error, direct_min_overlap=direct_min,
-                estimated_min_overlap=estimated_min, support=support)
-
-
 def front_overlap(edge, region):
     """Clip the finite front segment to a convex region, including crossing ends."""
     edge = np.asarray(edge, dtype=float)
@@ -561,9 +549,7 @@ class AreaOccupancyRule:
         self.settings = settings_for(settings)
         self.states, self.previous_frame, self.diagnostics = {}, None, {}
         self.confirm_enabled = self.settings.get(
-            "confirm_crosswalk" if self.kind == "crosswalk" else "confirm_waiting_area", False)
-        if self.kind == "motorcycle_waiting_area":
-            self.confirm_enabled = self.confirm_enabled or self.settings.get('confirm_waiting_occupancy', False)
+            "confirm_crosswalk" if self.kind == "crosswalk" else "confirm_waiting_occupancy", False)
         self.pending_confirmations = []
         # 已報告的車輛 → (最後一次仍在區域內的時間, 當時車框)。區域編號換號或量測短暫低於門檻時，
         # 同一台車在 rearm_seconds 內持續侵入只報告一次；追蹤換號時，新編號的車框與 rearm_seconds 內
@@ -580,7 +566,7 @@ class AreaOccupancyRule:
         self.last_green_time = None
 
     def _confirmation_sample(self, state, frame, region, vehicle, area, geometry, matrix,
-                             vehicles, lane_matched=False, strong_signal=False, front_edge=None):
+                             vehicles, lane_matched=False, strong_signal=False):
         """獨立確認證據；推移幀不投票，反證清除證據。既有候選門檻不變。"""
         from violation_engine import RedLightStopLineCrossingRule
         now, index = frame["timestamp_sec"], frame["index"]
@@ -590,6 +576,8 @@ class AreaOccupancyRule:
         pending = state.get("confirmation_event")
         if pending is not None and (pending['status'] == 'confirmed' or now - pending['timestamp_sec'] > 3.):
             return pending['status'] == 'confirmed'
+        if pending is not None and pending['conditions'].get('front_direction_available') is False:
+            return False  # 4bl 貼邊佔用候選只產生疑似。
         direct = not region.get("predicted") and region.get("marking_source", "direct") == "direct"
         visible = (min(box[:2]) > 1 and box[2] < frame["width"] - 1 and box[3] < frame["height"] - 1
                    and not RedLightStopLineCrossingRule._contact_occluded(box, vehicle["object_id"], vehicles))
@@ -599,23 +587,15 @@ class AreaOccupancyRule:
         offsets = ((0, 0), (error, 0), (-error, 0), (0, error), (0, -error))
         direction_ok = True
         if self.kind == "motorcycle_waiting_area":
-            d = self.history.displacement(vehicle["object_id"], now, 3.) if self.history else None
-            direction_ok = lane_matched and geometry.get("front_edge") is not None
-            if not direction_ok:
-                direction_ok = bool(d and d["seconds"] >= .3 and d["dy"] < -max(4., width * .25)
-                                    and abs(d["dx"]) < abs(d["dy"]) * .5)
-            robust = front_edge is not None and all(front_overlap(
-                np.asarray(front_edge) + shift, area) >= max(self.settings["min_intrusion_length_px"], width * .2)
-                for shift in offsets)
-            if self.settings.get('confirm_waiting_occupancy'):
-                # 替代語意：大部分接地範圍持續位於區域深處，不依賴「哪邊是車頭」。
-                footprint = polygon(geometry.get('footprint'))
-                robust = all(cv2.intersectConvexConvex((footprint + shift).astype(np.float32), area)[0]
-                             / cv2.contourArea(footprint) >= .8 for shift in offsets)
-                d = self.history.displacement(vehicle['object_id'], now, 1.)
-                direction_ok = bool(d and d['seconds'] >= .8 and math.hypot(d['dx'], d['dy']) <= max(3., width * .1)
-                                    and abs(math.log(width / d['width'])) <= math.log1p(.15)
-                                    and not self.history.lateral(vehicle['object_id'], now, 3.))
+            # 佔用確認（4aw confirm_waiting_occupancy）：大部分接地範圍持續位於區域深處、車輛靜止且非橫移，
+            # 不依賴「哪邊是車頭」。
+            footprint = polygon(geometry.get('footprint'))
+            robust = all(cv2.intersectConvexConvex((footprint + shift).astype(np.float32), area)[0]
+                         / cv2.contourArea(footprint) >= .8 for shift in offsets)
+            d = self.history.displacement(vehicle['object_id'], now, 1.)
+            direction_ok = bool(d and d['seconds'] >= .8 and math.hypot(d['dx'], d['dy']) <= max(3., width * .1)
+                                and abs(math.log(width / d['width'])) <= math.log1p(.15)
+                                and not self.history.lateral(vehicle['object_id'], now, 3.))
             signal_ok = strong_signal and (lane_matched or (
                 self.signal.evidence.get('last_observed_frame') == index and self._confirm_signal_unopposed))
             signal_id = region.get('lane_id') if lane_matched else self.signal.evidence.get('signal_id')
@@ -659,14 +639,14 @@ class AreaOccupancyRule:
             if ready and now - event["timestamp_sec"] <= 3.:
                 event.update(status="confirmed", status_label="確認違規", confirmation_scope="configured_rule_conditions",
                              confirmation_basis=["robust_waiting_area_occupancy" if self.kind == 'motorcycle_waiting_area'
-                                                 and self.settings.get('confirm_waiting_occupancy') else "robust_area_temporal_evidence"],
+                                                 else "robust_area_temporal_evidence"],
                              confirmation_frame=index, confirmation_timestamp_sec=now)
                 event["description"] = self.label + "；直接區域觀測、幾何誤差帶與時間證據符合確認條件，待人工覆核。"
                 event["evidence"]["confirmation_review"].update(
                     direct_frames=list(proof["frames"]), since_sec=proof["since"],
                     after=clone(dict(frame=frame, vehicle=vehicle, region=region)),
                     direction_basis="stationary_full_occupancy" if self.kind == 'motorcycle_waiting_area'
-                    and self.settings.get('confirm_waiting_occupancy') else "matched_lane" if lane_matched else "compensated_track")
+                    else "matched_lane" if lane_matched else "compensated_track")
         return ready
 
     def _red_signal(self, region, vehicle, index, cfg, frame_signal):
@@ -790,6 +770,7 @@ class AreaOccupancyRule:
                     state = self.states.get(key)
                     if state and now - state["last_time"] > cfg["max_observation_gap_sec"]:
                         state = None
+                    side_occupancy = False
                     if self.kind == "motorcycle_waiting_area":
                         lane_matched, strong_signal = self._red_signal(region, vehicle, index, cfg, frame_signal)
                     if vehicle.get("source_frame") != index:
@@ -797,6 +778,15 @@ class AreaOccupancyRule:
                             retained.add(key)
                         continue  # Cached detections cannot add evidence or trigger events.
                     geometry = vehicle.get("road_geometry", {})
+                    side_ratio = cfg.get("waiting_side_occupancy_ratio") if self.kind == "motorcycle_waiting_area" else None
+                    if (side_ratio is not None and geometry.get("source_frame") != index
+                            and vehicle.get("geometry_unavailable_reason") == "clipped_vehicle"
+                            and vehicle["bbox_xyxy"][3] < frame["height"] - 1):
+                        # 4bl：底邊可見的裁切車框（貼左右或上緣）仍可估接地範圍，但只走佔用候選。
+                        geometry = dict(source_frame=index, confidence=GEOMETRY_DEFAULTS["estimated_quality"],
+                                        method="clipped_lower_body_estimate", quality_kind="heuristic_not_probability",
+                                        footprint=lower_body_footprint(vehicle["bbox_xyxy"], GEOMETRY_DEFAULTS),
+                                        estimated=True)
                     if geometry.get("source_frame") != index or not geometry.get("method"):
                         raise ValueError("vehicle_geometry_unavailable")
                     confidence = geometry.get("confidence", 0)
@@ -810,20 +800,34 @@ class AreaOccupancyRule:
                             # 貼著畫面左右邊緣的車多半是從側面看到的並行車，遠端邊不是車頭，不使用此假設。
                             footprint = geometry.get("footprint")
                             box, margin = vehicle["bbox_xyxy"], frame["width"] * cfg["side_margin_ratio"]
-                            if lane_matched or not footprint or box[0] <= margin or box[2] >= frame["width"] - margin:
-                                raise ValueError("front_direction_unavailable")
-                            front_edge, front_assumed = min(
-                                ((footprint[n], footprint[(n+1) % len(footprint)]) for n in range(len(footprint))),
-                                key=lambda edge: edge[0][1] + edge[1][1]), True
-                        measured = front_overlap(front_edge, area)
-                        self.diagnostics["measurements"].append(dict(object_id=identity, region_id=region_id,
-                            measurement=measured, threshold=cfg["min_intrusion_length_px"], name="front_overlap_px"))
-                        if measured < cfg["min_intrusion_length_px"]:
-                            continue
-                        point, duration, edge = None, cfg["intrusion_seconds"], None
+                            if (lane_matched or not footprint or box[0] <= margin or box[2] >= frame["width"] - margin
+                                    or geometry["method"] == "clipped_lower_body_estimate"):
+                                if side_ratio is None or lane_matched or not footprint:
+                                    raise ValueError("front_direction_unavailable")
+                                # 4bl：不判定車頭，改看接地範圍有多少在區域內（只產生疑似）。
+                                side_occupancy, front_assumed = True, True
+                            else:
+                                front_edge, front_assumed = min(
+                                    ((footprint[n], footprint[(n+1) % len(footprint)]) for n in range(len(footprint))),
+                                    key=lambda edge: edge[0][1] + edge[1][1]), True
+                        if side_occupancy:
+                            footprint = polygon(footprint)
+                            measured = float(cv2.intersectConvexConvex(footprint, area)[0] / cv2.contourArea(footprint))
+                            self.diagnostics["measurements"].append(dict(object_id=identity, region_id=region_id,
+                                measurement=measured, threshold=side_ratio, name="side_footprint_overlap_ratio"))
+                            if measured + 1e-6 < side_ratio:
+                                continue
+                            duration = max(cfg["intrusion_seconds"], .5)
+                        else:
+                            measured = front_overlap(front_edge, area)
+                            self.diagnostics["measurements"].append(dict(object_id=identity, region_id=region_id,
+                                measurement=measured, threshold=cfg["min_intrusion_length_px"], name="front_overlap_px"))
+                            if measured < cfg["min_intrusion_length_px"]:
+                                continue
+                            duration = cfg["intrusion_seconds"]
+                        point, edge = None, None
                     else:
                         footprint = polygon(geometry.get("footprint"))
-                        boundary = None
                         if 'crosswalk_min_footprint_px' in cfg:
                             footprint_px = float(min(np.ptp(footprint, axis=0)))
                             self.diagnostics['measurements'].append(dict(object_id=identity, region_id=region_id,
@@ -839,22 +843,10 @@ class AreaOccupancyRule:
                             extended = occluded_band_overlap(area, footprint, vehicle["bbox_xyxy"], cfg["occlusion_gap_ratio"])
                             if extended + 1e-6 >= cfg["overlap_ratio"]:
                                 measured, occluded = extended, True
-                        if cfg.get('crosswalk_boundary_guard'):
-                            boundary = crosswalk_boundary_evidence(area, footprint, vehicle['bbox_xyxy'],
-                                cfg['occlusion_gap_ratio'], cfg['overlap_ratio'])
-                            self.diagnostics['measurements'].append(dict(object_id=identity, region_id=region_id,
-                                name='crosswalk_boundary_support', **boundary))
-                            if boundary['support'] == 'boundary_uncertain':
-                                raise ValueError('crosswalk_boundary_uncertain')
-                            measured = (boundary['direct_min_overlap'] if boundary['support'] == 'interior'
-                                        else boundary['estimated_min_overlap'])
-                            occluded = boundary['support'] == 'occlusion_estimated'
                         self.diagnostics["measurements"].append(dict(object_id=identity, region_id=region_id,
                             measurement=measured, threshold=cfg["overlap_ratio"], name="footprint_overlap_ratio",
                             occlusion_extended=occluded))
                         if measured + 1e-6 < cfg["overlap_ratio"]:
-                            if cfg.get("tolerate_overlap_dips") and state:
-                                retained.add(key)  # 不累積證據、不更新時間，最多保留 max_observation_gap_sec
                             continue
                         point, duration = footprint.mean(axis=0).tolist(), cfg["stationary_seconds"]
                         box = vehicle["bbox_xyxy"]
@@ -875,11 +867,13 @@ class AreaOccupancyRule:
                                 state = None
                         elif state and any(moved(p, e) for t, p, e in state["track"] if now - t <= window + 1e-6):
                             state = None
+                    if state and state.get("side_occupancy", False) != side_occupancy:
+                        state = None  # 4bl：佔用與車頭兩條路徑的觀測不互相累積；車頭路徑的判定與未啟用時相同。
                     snapshot = clone(dict(frame=frame, vehicle=vehicle, region=region, measurement=measured))
-                    if self.kind == 'crosswalk' and boundary is not None:
-                        snapshot['boundary_review'] = clone(boundary)
                     if state is None:
                         state = dict(since=now, count=0, anchor=point, before=snapshot, reported=False)
+                        if side_occupancy:
+                            state["side_occupancy"] = True
                         if point is not None and cfg.get("stationary_window_seconds") is not None:
                             state["track"] = []
                         if point is not None and edge is not None:
@@ -898,8 +892,7 @@ class AreaOccupancyRule:
                         self._confirmation_sample(state, frame, region, vehicle, area, geometry,
                             matrix if self.kind == "crosswalk" else confirm_matrix, vehicles,
                             lane_matched if self.kind == "motorcycle_waiting_area" else False,
-                            strong_signal if self.kind == "motorcycle_waiting_area" else False,
-                            front_edge if self.kind == "motorcycle_waiting_area" else None)
+                            strong_signal if self.kind == "motorcycle_waiting_area" else False)
                     duplicate = self._duplicate_of(identity, vehicle.get("bbox_xyxy"), now)
                     if state["reported"] or duplicate:
                         self.reported[identity] = (now, list(vehicle["bbox_xyxy"]))
@@ -928,10 +921,9 @@ class AreaOccupancyRule:
                                  conditions={"fresh_geometry": True, "temporal_support": True},
                                  evidence=dict(vehicle=vehicle, region=region, before=state["before"], after=snapshot,
                                                measurement=measured, duration_sec=now-state["since"], parameters=cfg,
-                                               measurement_name="front_overlap_px" if point is None else "footprint_overlap_ratio"))
+                                               measurement_name="side_footprint_overlap_ratio" if side_occupancy else
+                                               "front_overlap_px" if point is None else "footprint_overlap_ratio"))
                     event["conditions"]["estimated_vehicle_geometry"] = bool(geometry.get("estimated"))
-                    if self.kind == 'crosswalk' and boundary is not None:
-                        event['evidence']['boundary_review'] = clone(boundary)
                     if "track" in state:
                         event["evidence"]["stationary_drift_from_start_px"] = state["max_drift_px"]
                     if "edge" in state:
@@ -945,12 +937,16 @@ class AreaOccupancyRule:
                     if self.kind == "motorcycle_waiting_area":
                         event["conditions"].update(lane_matched=lane_matched, strong_signal_evidence=strong_signal,
                                                    front_edge_from_lane=not front_assumed)
+                        if cfg.get("waiting_side_occupancy_ratio") is not None:
+                            event["conditions"]["front_direction_available"] = not side_occupancy
                         event["evidence"]["signal"] = (region.get("signal") if lane_matched
                                                        else self.diagnostics.get("signal"))
                         if not lane_matched:
                             event["description"] = self.label + "；未配對車道，依畫面燈號與車頭方向假設符合門檻，待人工覆核。"
                     if geometry.get("estimated"):
                         event["description"] = self.label + "；依車輛接地近似符合設定門檻，待人工覆核。"
+                    if side_occupancy:
+                        event["description"] = self.label + "；車輛貼近畫面邊緣、無法判定車頭，依接地範圍佔用區域比例符合門檻，待人工覆核。"
                     if self.confirm_enabled:
                         event["confirmation_basis"] = []
                         state["confirmation_event"] = event

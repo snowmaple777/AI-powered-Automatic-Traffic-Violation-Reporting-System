@@ -18,7 +18,9 @@
 | 4ag | [motion_layers_4ag.md](motion_layers_4ag.md) | 分層動作備註 | 已整合（4aj，feature/conservative-marking-schedule） |
 | 4ah | [double_yellow_miss_review_4ah.md](double_yellow_miss_review_4ah.md) | 雙黃線漏報逐片覆核與修正順序 | 已整合（4aj，feature/conservative-marking-schedule） |
 | 4ai | [double_line_diagnostics_4ai.md](double_line_diagnostics_4ai.md)、[原始 prompt](double_line_diagnostics_prompt.md) | 雙線持久診斷拆分（預設關）；33 片事件逐位元不變 | 已整合（4aj，feature/conservative-marking-schedule） |
-| 4aw | [confirmation_rules_4aw.md](confirmation_rules_4aw.md) | 七組確認規則對照、逐件誤報檢查與選用設定 | 已整合（Opus 重驗，feature/conservative-marking-schedule）；主預設不變 |
-| 4ax | [crosswalk_boundary_4ax.md](crosswalk_boundary_4ax.md) | 斑馬線四組對照、召回退步與長片誤報檢查 | 已驗證，未提交；主預設不變 |
+| 4aw | [confirmation_rules_4aw.md](confirmation_rules_4aw.md) | 七組確認規則對照、逐件誤報檢查與選用設定 | 已整合；R2＋R3、斑馬線確認、停等區佔用確認於 4bh 納入預設，其餘實驗於 4bh 移除 |
+| 4ax | [crosswalk_boundary_4ax.md](crosswalk_boundary_4ax.md) | 斑馬線四組對照、召回退步與長片誤報檢查 | 已提交（32db27a）；8px 候選門檻於 4bh 納入預設，邊界檢查於 4bh 移除 |
+| 4bh | 見 refactor_log 4bh | 專案整理：正式＋新影片合併評估，採用最佳組合為預設、移除落選實驗選項 | feature/conservative-marking-schedule |
+| 4bi | [recall_improvement_4bi.md](recall_improvement_4bi.md) | 4bh 預設下 125 筆漏報逐筆歸因與各規則召回方案、風險、預期收益 | 只分析、未改程式 |
 
 展示成果：`產生展示成果.cmd`／`tools/make_showcase.py`，最新輸出 `outputs/showcase_20261110`（不進 git）。

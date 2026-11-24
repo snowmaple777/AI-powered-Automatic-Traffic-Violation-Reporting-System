@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
 from violation_engine import RuleContext, ViolationEngine, create_rules, red_light_rule_options  # noqa: E402
 from double_lines import double_line_rule_options, write_final_double_line_diagnostics  # noqa: E402
 from area_rules import area_rule_options  # noqa: E402
-from plate_backfill import PlateBackfill, add_plate_arguments, DEFAULT_WINDOW_SECONDS
+from plate_backfill import PlateBackfill, add_plate_arguments, CLI_WINDOW_SECONDS
 from motion_notes import MotionNotes, add_motion_arguments, read_motion_mask, write_motion_summary
 
 
@@ -46,7 +46,7 @@ def git_state():
     return {"commit": git("rev-parse", "HEAD"), "dirty": None if status is None else bool(status)}
 
 
-def run_rules(jsonl, out_dir, name, rules=("all",), options=None, plate_backfill_seconds=DEFAULT_WINDOW_SECONDS,
+def run_rules(jsonl, out_dir, name, rules=("all",), options=None, plate_backfill_seconds=CLI_WINDOW_SECONDS,
               motion_notes=False, motion_mask_dir=None):
     options = rule_options() if options is None else options
     out_dir.mkdir(parents=True, exist_ok=True)

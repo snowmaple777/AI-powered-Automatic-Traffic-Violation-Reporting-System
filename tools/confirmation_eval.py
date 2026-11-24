@@ -32,7 +32,11 @@ def metrics(truth, predictions, primary_only=False, rules=None):
     if rules and 'all' not in rules:
         for spec in truth['videos'].values():
             spec['events'] = [e for e in spec.get('events', []) if e['rule_id'] in rules]
-    selected = {v: [e for e in es if not primary_only or
+    if primary_only:
+        # 4bn：標註也只留主類別。跨類別標註只是部分列出，事件端又已濾掉，不能留下來算成漏報。
+        for spec in truth['videos'].values():
+            spec['events'] = [e for e in spec.get('events', []) if e['rule_id'] == spec.get('category')]
+    selected ={v: [e for e in es if not primary_only or
                    e['rule_id'] == truth['videos'][v].get('category')]
                 for v, es in predictions.items() if v in truth['videos']}
     return {status: evaluate(truth, {v: [e for e in es if status == 'all' or e['status'] == 'confirmed']

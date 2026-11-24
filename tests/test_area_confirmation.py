@@ -54,34 +54,11 @@ class ConfirmationTests(unittest.TestCase):
         self.assertTrue(events)
         self.assertTrue(all(e['status'] == 'suspected' for e in events))
 
-    def test_waiting_requires_direction_and_strong_red(self):
-        self.assertEqual(evaluate(interior('motorcycle_waiting_area'), {'confirm_waiting_area': True})[0]['status'], 'confirmed')
-        rows = interior('motorcycle_waiting_area')
-        for r in rows:
-            v = r['observations']['vehicles'][0]
-            v.pop('lane_id')
-            v['road_geometry'].pop('front_edge')
-            r['observations']['traffic_lights'] = [dict(class_name='red', confidence=.9, bbox_xyxy=[10,10,20,30])]
-        self.assertEqual(evaluate(rows, {'confirm_waiting_area': True})[0]['status'], 'suspected')
-
     def test_invalid_switch(self):
         with self.assertRaises(ValueError):
             evaluate(interior(), {'confirm_crosswalk': 1})
-
-    def test_waiting_forward_track_can_confirm_but_lateral_cannot(self):
-        for lateral in (False, True):
-            rows = interior('motorcycle_waiting_area', count=20)
-            for i, r in enumerate(rows):
-                v = r['observations']['vehicles'][0]
-                v.pop('lane_id')
-                v['road_geometry'].pop('front_edge')
-                dx, dy = (i, 0) if lateral else (0, -i)
-                v['bbox_xyxy'] = [45+dx, 20+dy, 65+dx, 70+dy]
-                v['road_geometry']['footprint'] = [[45+dx,50+dy],[65+dx,50+dy],[65+dx,70+dy],[45+dx,70+dy]]
-                r['observations']['traffic_lights'] = [dict(class_name='red', confidence=.9, bbox_xyxy=[10,10,20,30])]
-            events = evaluate(rows, {'confirm_waiting_area': True})
-            self.assertTrue(events)
-            self.assertEqual(events[0]['status'], 'suspected' if lateral else 'confirmed')
+        with self.assertRaises(ValueError):  # 4bh 移除的車頭方向確認
+            evaluate(interior('motorcycle_waiting_area'), {'confirm_waiting_area': True})
 
     def test_unconfirmed_event_is_released_at_deadline_once(self):
         rows = interior(count=55)
@@ -127,6 +104,83 @@ class ConfirmationTests(unittest.TestCase):
         for value in (0, -1, True, float('nan')):
             with self.assertRaises(ValueError):
                 evaluate(rows, dict(options,confirmation_min_footprint_px=value))
+
+
+def side_rows(count=20, box=(2, 20, 40, 70), clipped=False, region=((0, 40), (100, 40), (100, 90), (0, 90))):
+    """沒有車道、貼左緣的汽車停在停等區內（紅燈）。clipped=True 時模擬裁切車框（沒有接地幾何）。"""
+    rows = records('motorcycle_waiting_area', count=count)
+    x1, y1, x2, y2 = box
+    for row in rows:
+        row['observations']['traffic_regions'][0]['polygon'] = [list(p) for p in region]
+        row['observations']['traffic_lights'] = [dict(class_name='red', confidence=.9, bbox_xyxy=[10, 10, 20, 30])]
+        v = row['observations']['vehicles'][0]
+        v.pop('lane_id')
+        v['bbox_xyxy'] = [x1, y1, x2, y2]
+        if clipped:
+            v.pop('road_geometry')
+            v['geometry_unavailable_reason'] = 'clipped_vehicle'
+        else:
+            v['road_geometry'].pop('front_edge')
+            v['road_geometry']['footprint'] = [[x1, y2 - 15], [x2, y2 - 15], [x2, y2], [x1, y2]]
+    return rows
+
+
+class SideOccupancyTests(unittest.TestCase):
+    """4bl waiting_side_occupancy_ratio：貼邊車輛以接地佔用比例產生疑似。"""
+    ON = {'waiting_side_occupancy_ratio': .65}
+
+    def test_default_keeps_front_direction_block(self):
+        self.assertEqual(evaluate(side_rows()), [])
+        self.assertEqual(evaluate(side_rows(clipped=True)), [])
+
+    def test_edge_vehicle_inside_region_is_suspected_only(self):
+        for confirm in (False, True):
+            events = evaluate(side_rows(), dict(self.ON, confirm_waiting_occupancy=confirm))
+            self.assertEqual(len(events), 1)
+            event = events[0]
+            self.assertEqual(event['status'], 'suspected')
+            self.assertIs(event['conditions']['front_direction_available'], False)
+            self.assertIs(event['conditions']['front_edge_from_lane'], False)
+            self.assertEqual(event['evidence']['measurement_name'], 'side_footprint_overlap_ratio')
+            self.assertAlmostEqual(event['evidence']['measurement'], 1.)
+            self.assertAlmostEqual(event['evidence']['duration_sec'], .5)  # 佔用路徑持續 0.5 秒
+
+    def test_clipped_box_needs_visible_bottom(self):
+        events = evaluate(side_rows(box=(0, 0, 40, 70), clipped=True), self.ON)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]['evidence']['vehicle']['bbox_xyxy'], [0, 0, 40, 70])
+        self.assertEqual(evaluate(side_rows(box=(0, 200, 40, 300), clipped=True), self.ON), [])
+
+    def test_partial_overlap_and_short_stay_are_not_reported(self):
+        region = ((25, 40), (100, 40), (100, 90), (25, 90))  # 接地範圍約 40% 在區域內
+        self.assertEqual(evaluate(side_rows(region=region), self.ON), [])
+        self.assertEqual(len(evaluate(side_rows(region=region), {'waiting_side_occupancy_ratio': .3})), 1)
+        self.assertEqual(evaluate(side_rows(count=5), self.ON), [])
+
+    def test_vehicle_away_from_edges_keeps_front_path(self):
+        rows = side_rows(box=(45, 20, 65, 70))
+        old, new = evaluate(rows), evaluate(rows, self.ON)
+        self.assertEqual(len(old), 1)
+        self.assertEqual(old[0]['timestamp_sec'], new[0]['timestamp_sec'])
+        self.assertEqual(old[0]['evidence']['measurement_name'], new[0]['evidence']['measurement_name'])
+        self.assertIs(new[0]['conditions']['front_direction_available'], True)
+        self.assertNotIn('front_direction_available', old[0]['conditions'])
+
+    def test_paths_do_not_share_observations(self):
+        # 前 4 幀貼邊（不足 0.5 秒，不報），之後離開邊緣：車頭路徑事件時間與未啟用時相同。
+        rows = side_rows(box=(45, 20, 65, 70))
+        edge = side_rows(count=4)
+        for i in range(4):
+            rows[i]['observations']['vehicles'][0] = edge[i]['observations']['vehicles'][0]
+        old, new = evaluate(rows), evaluate(rows, self.ON)
+        self.assertEqual([e['timestamp_sec'] for e in old], [e['timestamp_sec'] for e in new])
+        self.assertEqual(len(new), 1)
+        self.assertIs(new[0]['conditions']['front_direction_available'], True)
+
+    def test_invalid_ratio(self):
+        for value in (0, -.1, 1.5, True, float('nan'), '0.5'):
+            with self.assertRaises(ValueError):
+                evaluate(side_rows(), {'waiting_side_occupancy_ratio': value})
 
 
 if __name__ == '__main__':

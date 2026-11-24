@@ -16,7 +16,7 @@ from double_lines import double_line_geometry_options, double_line_rule_options,
 from area_rules import AREA_RULES, area_rule_options, area_geometry_options
 from frame_processing import FrameProcessor
 from pipeline_outputs import DetectionCsv, annotate_frame
-from plate_backfill import PlateBackfill, add_plate_arguments, DEFAULT_WINDOW_SECONDS
+from plate_backfill import PlateBackfill, add_plate_arguments, CLI_WINDOW_SECONDS
 from motion_notes import MotionNotes, add_motion_arguments, write_motion_summary
 from local_lanes import draw_local_motion
 
@@ -100,7 +100,7 @@ def apply_overrides(config, args):
 def run(args, resources, pipeline=None):
     """pipeline：可傳入已載入的 ModelPipeline 供多支影片共用（批次評估）；會先 reset 追蹤狀態。"""
     validate_clip_options(args.clip_before, args.clip_after)
-    plate_backfill = resources.enter_context(PlateBackfill(getattr(args, "plate_backfill_seconds", DEFAULT_WINDOW_SECONDS)))
+    plate_backfill = resources.enter_context(PlateBackfill(getattr(args, "plate_backfill_seconds", CLI_WINDOW_SECONDS)))
     if not args.input.is_file():
         raise SystemExit(f"找不到影片：{args.input}")
     if args.max_frames < 0:

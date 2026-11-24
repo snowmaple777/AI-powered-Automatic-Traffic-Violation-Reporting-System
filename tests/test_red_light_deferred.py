@@ -1,4 +1,4 @@
-"""4av 闖紅燈延後確認：R2 停止線交接、R3 斑馬線完整通過、R4 鏡頭運動失效後的乾淨越線（預設關閉）。"""
+"""4av 闖紅燈延後確認：R2 停止線交接、R3 斑馬線完整通過（4bh 起預設設定檔啟用；鏡頭運動失效仍阻擋確認）。"""
 import json
 import tempfile
 import unittest
@@ -132,7 +132,7 @@ class CrosswalkCompletionTests(unittest.TestCase):
         self.assertEqual([e["status"] for e in events], ["suspected"])
 
 
-class MotionGapRecoveryTests(unittest.TestCase):
+class MotionGapTests(unittest.TestCase):
     def frames(self, gap_frames, reobserved=True):
         frames, last_direct = [], 0
         for i in range(15):
@@ -146,27 +146,15 @@ class MotionGapRecoveryTests(unittest.TestCase):
             frames.append(item)
         return frames
 
-    def test_gap_before_the_crossing_is_tolerated_when_enabled(self):
-        _, events = run(self.frames({5, 6}))
+    def test_motion_gap_still_blocks_confirmation_with_shipped_options(self):
+        options = red_light_rule_options(ROOT / "configs/red_light_rules.json")
+        _, events = run(self.frames({5, 6}), **options)
         self.assertEqual([e["status"] for e in events], ["suspected"])
-        live, _ = run(self.frames({5, 6}), confirm_after_motion_gap=True)
-        self.assertEqual([e["status"] for e in live], ["confirmed"])
-        self.assertEqual(live[0]["confirmation_basis"], ["clean_crossing_after_motion_gap"])
-        self.assertFalse(live[0]["conditions"]["camera_motion_compensated"])
-        self.assertTrue(live[0]["conditions"]["clean_crossing_after_motion_gap"])
-
-    def test_gap_at_the_last_before_observation_stays_suspected(self):
-        _, events = run(self.frames({9, 10, 11}), confirm_after_motion_gap=True)
-        self.assertEqual([e["status"] for e in events], ["suspected"])
-        self.assertFalse(events[0]["conditions"]["clean_crossing_after_motion_gap"])
-
-    def test_line_must_be_directly_observed_after_the_gap(self):
-        _, events = run(self.frames({5, 6}, reobserved=False), confirm_after_motion_gap=True)
-        self.assertEqual([e["status"] for e in events], ["suspected"])
+        self.assertFalse(events[0]["conditions"]["camera_motion_compensated"])
 
 
 class SingleBasisTests(unittest.TestCase):
-    def test_handoff_and_motion_gap_together_stay_suspected(self):
+    def test_handoff_does_not_override_a_motion_gap(self):
         frames = []
         for i in range(15):
             if i < 10:
@@ -177,20 +165,77 @@ class SingleBasisTests(unittest.TestCase):
             item = frame(i, 760 if i < 10 else 640, [line])
             item["postprocessing"]["road_marking_compensation"] = {"reset_reason": None, "motion_gap": i in (5, 6)}
             frames.append(item)
-        _, events = run(frames, confirm_line_handoff=True, confirm_after_motion_gap=True)
+        _, events = run(frames, confirm_line_handoff=True)
         self.assertEqual([e["status"] for e in events], ["suspected"])
         conditions = events[0]["conditions"]
-        self.assertTrue(conditions["stop_line_handoff_direct"] and conditions["clean_crossing_after_motion_gap"])
+        self.assertTrue(conditions["stop_line_handoff_direct"])
+        self.assertFalse(conditions["camera_motion_compensated"])
+
+
+class StopLineExtensionTests(unittest.TestCase):
+    """4bk：車框外的停止線有限延伸（只支持疑似）。"""
+    SIDE = {"area": 2000, "bbox_xywh": [1200, 700, 400, 10], "line_xyxy": [1200, 705, 1600, 705], "centroid": [1400, 705]}
+
+    def frames(self, line):
+        return [frame(i, 760, [line]) for i in range(10)] + [frame(i, 640, [line]) for i in range(10, 15)]
+
+    def test_line_beside_the_vehicle_is_ignored_by_default(self):
+        self.assertEqual(run(self.frames(self.SIDE))[1], [])
+
+    def test_nearby_line_is_extended_and_only_suspected(self):
+        live, events = run(self.frames(self.SIDE), stop_line_extension_widths=1.0, confirm_line_handoff=True)
+        self.assertEqual(live, [])
+        self.assertEqual([e["status"] for e in events], ["suspected"])
+        event = events[0]
+        self.assertFalse(event["conditions"]["stop_line_under_vehicle"])
+        self.assertEqual(event["evidence"]["reference_point_method"], "extended_stop_line")
+        self.assertEqual(event["evidence"]["stop_line_extension_px"], 100)
+        self.assertEqual(event["confirmation_basis"], [])
+
+    def test_extension_is_limited_by_vehicle_width(self):
+        self.assertEqual(run(self.frames(self.SIDE), stop_line_extension_widths=.4)[1], [])
+
+    def test_overlapping_line_is_unchanged(self):
+        live, _ = run(self.frames(LINE_A), stop_line_extension_widths=1.0)
+        self.assertEqual([e["status"] for e in live], ["confirmed"])
+        self.assertTrue(live[0]["conditions"]["stop_line_under_vehicle"])
+        self.assertNotIn("stop_line_extension_px", live[0]["evidence"])
+        live, _ = run(self.frames(LINE_A))
+        self.assertNotIn("stop_line_under_vehicle", live[0]["conditions"])
+
+    def test_real_overlap_after_extended_approach_still_confirms(self):
+        def segment(left):
+            return {"area": 2000, "bbox_xywh": [left, 700, 1550 - left, 10], "line_xyxy": [left, 705, 1550, 705],
+                    "centroid": [(left + 1550) / 2, 705], "compensation": {"id": "comp-s", "rule_eligible": True}}
+        frames = [frame(i, 760, [segment(1150)]) for i in range(5)] + [frame(i, 760, [segment(850)]) for i in range(5, 10)]
+        frames += [frame(i, 640, [segment(850)]) for i in range(10, 15)]
+        live, _ = run(frames, stop_line_extension_widths=1.0)
+        self.assertEqual([e["status"] for e in live], ["confirmed"])
+        self.assertTrue(live[0]["conditions"]["stop_line_under_vehicle"])
+
+    def test_still_vehicle_under_a_moving_line_is_not_reported(self):
+        # 車不動、延伸線從車底前方移到後方（鏡頭前進的假越線）：沒有前進就不輸出。
+        def side(y):
+            return dict(self.SIDE, bbox_xywh=[1200, y - 5, 400, 10], line_xyxy=[1200, y, 1600, y], centroid=[1400, y])
+        frames = [frame(i, 760, [side(700 + 8 * i)]) for i in range(15)]
+        self.assertEqual(run(frames, stop_line_extension_widths=1.0)[1], [])
+
+    def test_invalid_values_are_rejected(self):
+        for value in (-1, float("nan"), True, "1"):
+            with self.assertRaises(ValueError):
+                RedLightStopLineCrossingRule(RuleContext("t", 25, 1920, 1080), stop_line_extension_widths=value)
 
 
 class ConfigTests(unittest.TestCase):
-    def test_shipped_config_keeps_previous_behavior(self):
+    def test_shipped_config_enables_r2_and_r3(self):
         options = red_light_rule_options(ROOT / "configs/red_light_rules.json")
-        self.assertFalse(any(options[key] for key in ("confirm_line_handoff", "confirm_crosswalk_proxy",
-                                                       "confirm_after_motion_gap")))
+        self.assertEqual(options, {"confirm_line_handoff": True, "confirm_crosswalk_proxy": True,
+                                   "deferred_confirmation_seconds": 3.0})
         frames = [frame(i, 760, [LINE_A]) for i in range(10)] + [frame(i, 640, [LINE_A]) for i in range(10, 15)]
         live, _ = run(frames, **options)
         self.assertEqual([e["status"] for e in live], ["confirmed"])
+        self.assertEqual(live[0]["confirmation_basis"], ["standard"])
+        live, _ = run(frames)  # 建構子預設仍關閉：不輸出延後確認欄位
         self.assertNotIn("confirmation_basis", live[0])
         self.assertNotIn("first_after_line_frame", live[0]["evidence"])
 
@@ -198,7 +243,8 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "red.json"
             for data in ({"version": 1, "confirm_line_handoff": 1}, {"version": 1, "deferred_confirmation_seconds": 0},
-                         {"version": 1, "unknown_option": True}, {"version": 2}):
+                         {"version": 1, "unknown_option": True}, {"version": 1, "confirm_after_motion_gap": False},
+                         {"version": 2}):
                 path.write_text(json.dumps(data), encoding="utf-8")
                 with self.assertRaises(ValueError):
                     red_light_rule_options(path)

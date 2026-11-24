@@ -334,6 +334,17 @@ class C3MarginDefaultTests(unittest.TestCase):
             self.assertEqual(RULE_DEFAULTS[key], value)
             self.assertEqual(config[key], value)
 
+    def test_shipped_config_enables_band_dwell_and_endpoint_inference(self):
+        # 4bh：預設設定檔啟用 BDE（4bb 停留 6 秒＋4ba 推定 1.5 秒）；程式預設仍為關閉。
+        from double_lines import RULE_DEFAULTS, validate_rule_settings
+        config = json.loads((Path(__file__).resolve().parents[1] / "configs/double_line_rules.json").read_text(encoding="utf-8"))
+        self.assertEqual((config["band_dwell_seconds"], config["endpoint_inference_seconds"]), (6.0, 1.5))
+        self.assertEqual((RULE_DEFAULTS["band_dwell_seconds"], RULE_DEFAULTS["endpoint_inference_seconds"]), (0.0, 0.0))
+        for removed in ("curve_extrapolation", "extend_near_endpoint", "line_memory_seconds",
+                        "max_origin_interruption_sec", "straddle_min_seconds", "confirm_short_position_gap"):
+            with self.assertRaises(ValueError):  # 4bh 移除的實驗選項
+                validate_rule_settings({removed: RULE_DEFAULTS.get(removed, 0)})
+
     def test_points_just_outside_band_count_as_side(self):
         # (140, 185)：右側車底點 x=147，離線帶左緣 150 只有 3 px；舊邊距下為 0，新預設下算原側。
         events = run_records(sequence(LANE_CHANGE), legacy_margin=False)
@@ -605,6 +616,54 @@ class BandDwellTests(unittest.TestCase):
                          {"band_dwell_min_observations": 2.5}, {"band_dwell_min_line_ratio": 1.0},
                          {"band_dwell_min_box_height_ratio": float("nan")},
                          {"band_dwell_seconds": 6.0, "direction_side_margin_px": 0.0}):
+            with self.assertRaises(ValueError):
+                validate_rule_settings(settings)
+
+
+class RecallDetailTests(unittest.TestCase):
+    """4bj 召回細節：同車事件合併、4bb 事件時間、跨越中低信心容忍；預設關閉且不進入事件參數。"""
+
+    @staticmethod
+    def round_trip(gap=True):
+        records = sequence([(125, 200)] * 2 + [(155, 200)] * 6 + [(185, 200)] * 8 + [(155, 200)] * 6 + [(125, 200)] * 8)
+        if gap:  # 回程跨越中漏偵測一幀：原規則的回程事件成為疑似
+            records[18]["observations"]["vehicles"] = []
+            records[18]["observations"].pop("rule_vehicles", None)
+        return records
+
+    def test_disabled_by_default_and_not_in_parameters(self):
+        from double_lines import RECALL_OPTION_KEYS, RULE_DEFAULTS
+        self.assertEqual([RULE_DEFAULTS[k] for k in RECALL_OPTION_KEYS], [0.0, False])
+        default = run_records(sequence(LANE_CHANGE), legacy_margin=False)[0]
+        self.assertFalse(set(RECALL_OPTION_KEYS) & set(default["evidence"]["parameters"]))
+        rule = create_rules(["double_yellow_line_crossing"], RuleContext("test", 10, 400, 300))[0]
+        self.assertFalse(set(RECALL_OPTION_KEYS) & set(rule.settings))
+
+    def test_same_vehicle_suspected_events_are_merged(self):
+        on = {"band_dwell_seconds": 1.0}
+        events = run_records(self.round_trip(), settings=on, legacy_margin=False)
+        self.assertEqual([(e["status"], e["frame"]) for e in events], [("suspected", 2), ("suspected", 21)])
+        merged = run_records(self.round_trip(), settings={**on, "same_vehicle_merge_seconds": 10.0}, legacy_margin=False)
+        self.assertEqual([e["frame"] for e in merged], [2])
+        short = run_records(self.round_trip(), settings={**on, "same_vehicle_merge_seconds": 1.0}, legacy_margin=False)
+        self.assertEqual(len(short), 2)
+        # 確認事件不受合併影響
+        confirmed = run_records(self.round_trip(gap=False), settings={**on, "same_vehicle_merge_seconds": 10.0},
+                                legacy_margin=False)
+        self.assertEqual([e["status"] for e in confirmed], ["suspected", "confirmed"])
+
+    def test_band_dwell_event_time_can_use_last_band_sample(self):
+        on = {"band_dwell_seconds": 6.0}
+        first = run_records(dwell_sequence(), settings=on, legacy_margin=False)[0]
+        last = run_records(dwell_sequence(), settings={**on, "band_dwell_last_band_time": True}, legacy_margin=False)[0]
+        self.assertEqual((first["frame"], last["frame"]), (2, 7))
+        self.assertEqual(first["confirmation_frame"], last["confirmation_frame"])
+        self.assertEqual(first["evidence"]["band_dwell"], last["evidence"]["band_dwell"])
+
+    def test_invalid_values_fail(self):
+        for settings in ({"same_vehicle_merge_seconds": -1}, {"same_vehicle_merge_seconds": float("nan")},
+                         {"band_dwell_last_band_time": 1}, {"band_dwell_recheck_on_drop": True},
+                         {"crossing_low_confidence_floor": .25}):
             with self.assertRaises(ValueError):
                 validate_rule_settings(settings)
 

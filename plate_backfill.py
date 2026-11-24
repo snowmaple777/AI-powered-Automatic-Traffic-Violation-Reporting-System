@@ -6,7 +6,10 @@ import re
 import sqlite3
 import json
 
-DEFAULT_WINDOW_SECONDS = 0.0
+DEFAULT_WINDOW_SECONDS = 0.0  # 類別建構子預設：停用。
+# 4bm：三個入口（run_pipeline、evaluate_violations、tools/rule_eval）的預設補充視窗。
+# 正式＋新影片：車牌完全正確 21/60 → 25/60，事件 TP/FP/FN 不變；事件延後 4 秒輸出（refactor_log 4bm）。
+CLI_WINDOW_SECONDS = 4.0
 DEFAULT_TRACK_GAP_SECONDS = 0.3
 DEFAULT_MIN_CONFIDENCE = 0.8
 DEFAULT_MAX_CENTER_SHIFT = 0.5
@@ -32,8 +35,8 @@ def window_seconds(value):
 
 
 def add_plate_arguments(parser):
-    parser.add_argument("--plate-backfill-seconds", type=window_seconds, default=DEFAULT_WINDOW_SECONDS,
-                        help="事件後同追蹤車牌補充視窗；0 停用（預設）")
+    parser.add_argument("--plate-backfill-seconds", type=window_seconds, default=CLI_WINDOW_SECONDS,
+                        help=f"事件後同追蹤車牌補充視窗（預設 {CLI_WINDOW_SECONDS:g} 秒）；0 停用")
 
 
 def _valid_box(box):

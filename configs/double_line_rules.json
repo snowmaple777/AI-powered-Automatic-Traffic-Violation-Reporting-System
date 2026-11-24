@@ -40,7 +40,8 @@
   "max_line_handoff_px": 25.0,
   "require_direct_marking_evidence": true,
   "detailed_diagnostics": false,
-  "curve_extrapolation": false,
-  "extend_near_endpoint": false,
-  "line_memory_seconds": 0.0
+  "endpoint_inference_seconds": 1.5,
+  "band_dwell_seconds": 6.0,
+  "band_dwell_last_band_time": true,
+  "same_vehicle_merge_seconds": 10.0
 }

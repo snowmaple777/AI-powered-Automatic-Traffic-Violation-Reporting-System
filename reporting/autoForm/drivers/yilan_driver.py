@@ -145,15 +145,8 @@ class YilanDriver(BaseDriver):
         self.page.fill(self.config["selectors"]["license_plate_suffix"], suffix)
         
         # 6. 違規事實法條選單 (legislation44)
-        fact_desc = (violation_data.get("violation_subcategory", "") or violation_data.get("violation_description", "")).strip()
-        target_fact_val = "102" # 預設人行道停車
-        for pattern, fact_val in self.FACT_MAP:
-            if pattern in fact_desc or pattern in violation_data.get("violation_category", ""):
-                target_fact_val = fact_val
-                break
-                
-        print(f"  - 選擇違規事實法條 (legislation44): {target_fact_val}")
-        self.page.select_option(self.config["selectors"]["violation_fact_select"], value=target_fact_val)
+        # 違規項目：依共用違規目錄（configs/violation_catalog.json）模糊比對；比對不到就標紅框，請使用者手動選擇
+        self.select_violation(self.config["selectors"]["violation_fact_select"], violation_data, field_label="違規事實法條")
         
         # 7. 補檔註記說明 (content22)
         desc_text = violation_data.get("violation_description", "")

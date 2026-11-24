@@ -109,20 +109,8 @@ class ChiayiDriver(BaseDriver):
                 print(f"  - 無法設定下拉時間: {te}")
                 
         # 5. 違規事項 (TrafficCategoryId 下拉選單，頁面加載時已全部預載)
-        category = violation_data.get("violation_category", "")
-        subcategory = violation_data.get("violation_subcategory", "") or violation_data.get("violation_description", "")
-        
-        print(f"  - 選擇違規項目: '{category}' (小類關鍵字: '{subcategory[:10]}')")
-        kw = subcategory[:10] if subcategory else category
-        success = self._select_option_by_keyword(self.config["selectors"]["violation_category"], kw)
-        if not success:
-            success = self._select_option_by_keyword(self.config["selectors"]["violation_category"], category)
-        if not success:
-            print("[Chiayi 警告] 無法匹配違規事項，將嘗試選擇第一個可選項目。")
-            try:
-                self.page.select_option(self.config["selectors"]["violation_category"], index=1)
-            except Exception:
-                pass
+        # 違規項目：依共用違規目錄（configs/violation_catalog.json）模糊比對；比對不到就標紅框，請使用者手動選擇
+        self.select_violation(self.config["selectors"]["violation_category"], violation_data, field_label="違規項目")
 
         # 6. 違規描述 (Memo)
         self.page.fill(self.config["selectors"]["violation_description"], violation_data.get("violation_description", ""))

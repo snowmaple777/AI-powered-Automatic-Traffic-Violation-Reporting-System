@@ -93,27 +93,14 @@ class HualienDriver(BaseDriver):
         self.page.fill(self.config["selectors"]["location_detail"], full_location)
         
         # 5. 違規法條及事實 (20191113100106 Radio 按鈕)
-        fact_desc = (violation_data.get("violation_subcategory", "") or violation_data.get("violation_description", "")).strip()
-        target_keyword = "人行道(非騎樓)停車" # 預設
-        for pattern, kw in self.FACT_MAP:
-            if pattern in fact_desc or pattern in violation_data.get("violation_category", ""):
-                target_keyword = kw
-                break
-                
-        print(f"  - 搜尋並勾選違規事實 Radio 關鍵字: '{target_keyword}'...")
+        # 依共用違規目錄比對 Radio 選項文字；比對不到就標紅框
         radios = self.page.locator(self.config["selectors"]["violation_fact_radio"]).all()
-        selected = False
-        for radio in radios:
-            val = radio.evaluate("el => el.value")
-            if target_keyword in val:
-                radio.check(force=True)
-                selected = True
-                print(f"    - 成功勾選匹配選項: '{val[:30]}...'")
-                break
-                
-        if not selected and radios:
-            radios[0].check(force=True)
-            print("    - 未能精確比對，選取第一個 Radio 選項。")
+        items = [(str(i), r.evaluate("el => el.value")) for i, r in enumerate(radios)]
+        result = self.match_violation(items, violation_data, field_label="違規法條及事實")
+        if result:
+            radios[int(result.value)].check(force=True)
+        else:
+            self.violation_unmatched(self.config["selectors"]["violation_fact_radio"], violation_data, field_label="違規法條及事實")
             
         # 6. 其他違規事實敘述 (20221205203006)
         desc_text = violation_data.get("violation_description", "")

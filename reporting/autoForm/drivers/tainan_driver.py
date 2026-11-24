@@ -159,23 +159,8 @@ class TainanDriver(BaseDriver):
             self.page.fill(self.config["selectors"]["violation_plate_part2"], license_plate[3:])
             
         # 6. 違規事項 (itemno 下拉選單，Ajax 已載入)
-        category = violation_data.get("violation_category", "")
-        subcategory = violation_data.get("violation_subcategory", "") or violation_data.get("violation_description", "")
-        
-        print(f"  - 選擇違規事項: '{category}' (小類關鍵字: '{subcategory[:10]}')")
-        # 優先嘗試以 subcategory (如 "闖紅燈") 做為關鍵字搜尋選項
-        kw = subcategory[:10] if subcategory else category
-        success = self._select_option_by_keyword(self.config["selectors"]["violation_category"], kw)
-        if not success:
-            # 備用嘗試大類比對
-            success = self._select_option_by_keyword(self.config["selectors"]["violation_category"], category)
-        if not success:
-            # 若皆失敗，嘗試選擇第一個有效選項
-            print("[Tainan 警告] 無法匹配違規事項，將嘗試選擇第一個可選項目。")
-            try:
-                self.page.select_option(self.config["selectors"]["violation_category"], index=1)
-            except Exception:
-                pass
+        # 違規項目：依共用違規目錄（configs/violation_catalog.json）模糊比對；比對不到就標紅框，請使用者手動選擇
+        self.select_violation(self.config["selectors"]["violation_category"], violation_data, field_label="違規事項")
 
     def upload_media(self, media_paths: List[str]) -> None:
         if not media_paths:

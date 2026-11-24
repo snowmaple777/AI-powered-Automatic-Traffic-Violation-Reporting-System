@@ -144,45 +144,8 @@ class NewTaipeiDriver(BaseDriver):
         self.page.fill(self.config["selectors"]["addr_remark"], clean_loc)
 
     def _select_violation_law(self, violation_data: Dict[str, Any]) -> None:
-        subcat = (violation_data.get("violation_subcategory", "") or "") + " " + (violation_data.get("violation_description", "") or "")
-        subcat = subcat.strip()
-        
-        # 關鍵字對應
-        target_val = None
-        if "身障" in subcat or "身心障礙" in subcat:
-            target_val = "VC69" # 於身心障礙專用停車位違規停車
-        elif "併排" in subcat:
-            target_val = "VC70" # 併排停車
-        elif "不依順行" in subcat:
-            target_val = "VC81" # 不依順行方向臨時停車
-        elif "人行道" in subcat and "臨時停車" in subcat:
-            target_val = "VC84" # 人行道、行人穿越道違規臨時停車
-        elif "人行道" in subcat and "停車" in subcat:
-            target_val = "VC85" # 人行道、行人穿越道違規停車
-        elif "闖紅燈" in subcat:
-            target_val = "VC58" # 闖紅燈、紅燈右轉
-        elif "行駛人行道" in subcat or ("行駛" in subcat and "人行道" in subcat):
-            target_val = "VC48" # 駕車行駛人行道
-            
-        if target_val:
-            print(f"  - 匹配成功違規法規項目代碼: {target_val}")
-            self.page.select_option(self.config["selectors"]["violation_law"], value=target_val)
-        else:
-            # 遍歷選項模糊搜尋
-            options = self.page.locator(f"{self.config['selectors']['violation_law']} option").all()
-            selected = False
-            for opt in options:
-                txt = opt.evaluate("el => el.innerText")
-                val = opt.evaluate("el => el.value")
-                if "停車" in txt or "臨時停車" in txt:
-                    self.page.select_option(self.config["selectors"]["violation_law"], value=val)
-                    selected = True
-                    print(f"  - 模糊匹配預設法規項目: '{txt.strip()}'")
-                    break
-            if not selected and len(options) > 1:
-                val = options[1].evaluate("el => el.value")
-                self.page.select_option(self.config["selectors"]["violation_law"], value=val)
-                print("  - 選取預設法規項目。")
+        # 違規項目：依共用違規目錄（configs/violation_catalog.json）模糊比對；比對不到就標紅框，請使用者手動選擇
+        self.select_violation(self.config["selectors"]["violation_law"], violation_data, field_label="違規法規項目")
 
     def upload_media(self, media_paths: List[str]) -> None:
         if not media_paths:

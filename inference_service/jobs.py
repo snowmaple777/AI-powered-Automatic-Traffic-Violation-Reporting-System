@@ -58,6 +58,17 @@ def _write_json(path, data):
     os.replace(tmp, path)
 
 
+def event_plate(ev):
+    """回傳 (車牌, 信心)。規則同 plate_backfill.event_plate_text：有頂層 plate（4w 車牌補充）就用它，
+    text 為 null 也不退回（代表補充後判定沒有或互相矛盾）；舊紀錄沒有 plate 才用事件當下的車輛證據。
+    推論服務可指向別的 pipeline 資料夾，所以不直接 import 專案模組。"""
+    plate = ev.get("plate")
+    if isinstance(plate, dict):
+        return plate.get("text"), plate.get("text_confidence")
+    vehicle = (ev.get("evidence") or {}).get("vehicle") or {}
+    return vehicle.get("plate_text"), vehicle.get("text_confidence")
+
+
 def _read_json(path):
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -423,15 +434,15 @@ class Manager:
             if ev.get("status") not in ("suspected", "confirmed") or ev.get("event_id") in found_ids:
                 continue
             found_ids.add(ev.get("event_id"))
-            vehicle = (ev.get("evidence") or {}).get("vehicle") or {}
+            plate_text, _ = event_plate(ev)
             job["found"].append({
                 "event_id": ev.get("event_id"), "rule_id": ev.get("rule_id"), "status": ev.get("status"),
                 "timestamp_sec": ev.get("timestamp_sec"), "vehicle_class": ev.get("vehicle_class"),
-                "plate_text": vehicle.get("plate_text"), "met": len(ev.get("met_conditions") or []),
+                "plate_text": plate_text, "met": len(ev.get("met_conditions") or []),
                 "total": len(ev.get("conditions") or {}),
             })
             self._log(job, f"發現{'確認' if ev.get('status') == 'confirmed' else '疑似'}違規：{ev.get('rule_id')}"
-                           f"（{vehicle.get('plate_text') or '車牌未辨識'}）@ {ev.get('timestamp_sec', 0):.1f}s")
+                           f"（{plate_text or '車牌未辨識'}）@ {ev.get('timestamp_sec', 0):.1f}s")
         now = time.time()
         if state.get("last_record") and (final or now - state["last_preview"] > 1.0):
             rec = state["last_record"]
@@ -474,6 +485,7 @@ class Manager:
         for n, ev in enumerate(sorted(events.values(), key=lambda e: (e.get("timestamp_sec") or 0)), 1):
             eid = f"E{n:03d}"
             vehicle = (ev.get("evidence") or {}).get("vehicle") or {}
+            plate_text, plate_confidence = event_plate(ev)
             conds = ev.get("conditions") or {}
             item = {
                 "id": eid, "event_id": ev.get("event_id"), "rule_id": ev.get("rule_id"),
@@ -482,7 +494,7 @@ class Manager:
                 "frame": ev.get("frame"), "timestamp_sec": ev.get("timestamp_sec"),
                 "object_id": ev.get("object_id"), "vehicle_class": ev.get("vehicle_class"),
                 "vehicle_confidence": vehicle.get("confidence"), "distance_m": vehicle.get("distance_m"),
-                "plate_text": vehicle.get("plate_text"), "plate_confidence": vehicle.get("text_confidence"),
+                "plate_text": plate_text, "plate_confidence": plate_confidence,
                 "signal_state": (ev.get("evidence") or {}).get("signal_state"),
                 "conditions": [{"key": k, "ok": bool(v)} for k, v in conds.items()],
                 "met": sum(1 for v in conds.values() if v), "total": len(conds),

@@ -24,6 +24,7 @@ import time
 import traceback
 import uuid
 from collections import deque
+from urllib.parse import urlparse
 from datetime import datetime
 from pathlib import Path
 
@@ -38,6 +39,8 @@ STAGES = [
     ("packaging", "轉檔並整理結果"),
 ]
 FINAL_STATES = ("done", "error", "cancelled", "interrupted")
+STREAM_SCHEMES = ("rtsp", "rtsps", "rtmp", "rtmps", "http", "https", "udp", "tcp", "srt")
+STREAM_STEM = "stream"  # 串流工作的輸出檔名（run_pipeline --stream-name）
 PROGRESS_RE = re.compile(r"已處理\s*(\d+)\s*幀，累計\s*([\d.]+)\s*FPS.*?最近\s*10\s*幀\s*([\d.]+)\s*FPS")
 KEEP_JOBS = 20
 
@@ -144,7 +147,7 @@ class Manager:
         _write_json(Path(job["dir"]) / "job.json", snap)
 
     def public(self, job):
-        keys = ("id", "state", "stage", "stages", "created", "started", "finished", "options", "input_name",
+        keys = ("id", "state", "stage", "stages", "created", "started", "finished", "options", "input_name", "source", "stream",
                 "video", "frames_total", "frames_done", "fps", "fps_recent", "eta_sec", "stats", "found",
                 "clips_done", "error", "preview_version", "has_result")
         out = {k: job.get(k) for k in keys}
@@ -250,22 +253,62 @@ class Manager:
             fps = (meta or {}).get("fps") or 30.0
             cap = int(math.ceil(opts["max_seconds"] * fps))
             frames_total = min(frames_total, cap) if frames_total else cap
-        job = {
+        job = self._new_job(jid, jdir, opts, name, str(path), meta, frames_total)
+        return self._enqueue(job, f"收到影片 {name}（{os.path.getsize(path) / 1e6:.1f} MB）")
+
+    def create_stream(self, url, options):
+        """串流工作：run_pipeline 以串流模式邊收邊分析；max_seconds 是收錄上限（不填就收到串流結束或按停止）。"""
+        url = (url or "").strip()
+        parsed = urlparse(url)
+        if parsed.scheme.lower() not in STREAM_SCHEMES or not parsed.netloc:
+            raise ValueError("串流網址格式不正確（例如 rtsp://… 或 http://…）")
+        jid = datetime.now().strftime("%Y%m%d%H%M%S") + "_" + uuid.uuid4().hex[:6]
+        jdir = self.jobs_dir / jid
+        jdir.mkdir(parents=True)
+        opts = {
+            "rules": options.get("rules") or "all",
+            "max_seconds": float(options["max_seconds"]) if options.get("max_seconds") else None,
+            "clip_before": float(options.get("clip_before") or 5),
+            "clip_after": float(options.get("clip_after") or 5),
+            "device": options.get("device") or "auto",
+        }
+        name = (parsed.hostname or "stream") + (parsed.path if parsed.path not in ("", "/") else "")
+        job = self._new_job(jid, jdir, opts, name, url, None, None, source="stream",
+                            stream={"state": "connecting"})
+        return self._enqueue(job, f"串流 {name}")
+
+    def _new_job(self, jid, jdir, opts, name, input_path, meta, frames_total, **extra):
+        return dict({
             "id": jid, "dir": str(jdir), "state": "queued", "stage": "queued",
             "stages": [{"key": k, "label": l} for k, l in STAGES],
-            "created": _now(), "started": None, "finished": None, "options": opts,
-            "input_name": name, "input_path": str(path), "video": meta,
+            "created": _now(), "started": None, "finished": None, "options": opts, "source": "file",
+            "input_name": name, "input_path": input_path, "video": meta,
             "frames_total": frames_total, "frames_done": 0, "fps": None, "fps_recent": None, "eta_sec": None,
             "stats": {"objects": 0, "plates": 0, "lights": {}}, "found": [], "clips_done": 0,
             "error": None, "preview_version": 0, "has_result": False,
             "_log": deque(maxlen=500), "_log_total": 0, "_cancel": False,
-        }
+        }, **extra)
+
+    def _enqueue(self, job, message):
         with self.lock:
-            self.jobs[jid] = job
-        self._log(job, f"收到影片 {name}（{os.path.getsize(path) / 1e6:.1f} MB）")
+            self.jobs[job["id"]] = job
+        self._log(job, message)
         self._save(job)
-        self.queue.put(jid)
+        self.queue.put(job["id"])
         self._cleanup_old()
+        return job
+
+    def stop(self, job_id):
+        """串流工作：停止收錄，已收錄的部分照常分析完並整理結果（取消則是直接中止）。"""
+        job = self.get(job_id)
+        if not job or job.get("source") != "stream" or job.get("state") in FINAL_STATES:
+            return job
+        if job.get("state") == "queued":
+            return self.cancel(job_id)
+        (Path(job["dir"]) / "stop").write_text("stop", encoding="utf-8")
+        if not job.get("_stop"):
+            job["_stop"] = True
+            self._log(job, "已停止收錄，分析剩下的畫面…")
         return job
 
     def _cleanup_old(self):
@@ -334,12 +377,16 @@ class Manager:
         out_dir = jdir / "outputs"
         out_dir.mkdir(exist_ok=True)
         opts = job["options"]
-        input_path = Path(job["input_path"])
-        cmd = [self.python, "-u", str(self.root / "run_pipeline.py"), str(input_path),
+        streaming = job.get("source") == "stream"
+        cmd = [self.python, "-u", str(self.root / "run_pipeline.py"), str(job["input_path"]),
                "--output-dir", str(out_dir), "--rules", opts["rules"],
                "--clip-before", str(opts["clip_before"]), "--clip-after", str(opts["clip_after"]),
                "--device", opts["device"]]
-        if opts.get("max_seconds"):
+        if streaming:
+            cmd += ["--stream-name", STREAM_STEM, "--stream-stop-file", str(jdir / "stop")]
+            if opts.get("max_seconds"):
+                cmd += ["--stream-max-seconds", str(opts["max_seconds"])]
+        elif opts.get("max_seconds"):
             cmd += ["--max-frames", str(job["frames_total"] or int(opts["max_seconds"] * 30))]
         cmd += self.extra_args
         job.update(state="running", stage="loading", started=_now())
@@ -370,7 +417,7 @@ class Manager:
             with self.lock:
                 self.current = (job["id"], proc)
 
-        stem = input_path.stem
+        stem = STREAM_STEM if streaming else Path(job["input_path"]).stem
         det_tail = JsonlTail(out_dir / f"{stem}_detections.jsonl")
         vio_tail = JsonlTail(out_dir / f"{stem}_violations.jsonl")
         seen_objects, seen_plates, found_ids = set(), set(), set()
@@ -445,7 +492,33 @@ class Manager:
                        f"疑似 {sum(e['status'] == 'suspected' for e in result['events'])}）")
         self._finish(job, "done")
 
+    def _stream_dir(self, job):
+        return Path(job["dir"]) / "outputs" / f"{STREAM_STEM}_stream"
+
+    def _poll_stream(self, job):
+        """串流工作：讀 run_pipeline 收錄端的統計（每錄完一段更新），換算已收錄／已分析秒數與落後秒數。"""
+        info = _read_json(self._stream_dir(job) / "stream.json")
+        if not info or not info.get("fps"):
+            return
+        fps = info["fps"]
+        recorded, analyzed = info.get("frames") or 0, job.get("frames_done") or 0
+        state = ("error" if info.get("error") else "stopped" if info.get("reason") in ("stopped", "max_seconds")
+                 else "ended" if info.get("finished") else "recording")
+        job["stream"] = {"state": state, "fps": fps, "recorded_sec": round(recorded / fps, 1),
+                         "analyzed_sec": round(analyzed / fps, 1), "behind_sec": round(max(0, recorded - analyzed) / fps, 1),
+                         "ingest_lag_sec": info.get("ingest_lag_seconds"), "timestamps": info.get("timestamps"),
+                         "error": info.get("error")}
+        job["video"] = {"fps": fps, "width": info.get("width"), "height": info.get("height"),
+                        "frames": recorded, "duration": round(recorded / fps, 3)}
+
+    def _read_any_frame(self, job, index):
+        if job.get("source") == "stream":
+            return media.read_segment_frame(self._stream_dir(job), index)
+        return media.read_frame(job["input_path"], index)
+
     def _poll_outputs(self, job, det_tail, vio_tail, seen_objects, seen_plates, found_ids, state, final=False):
+        if job.get("source") == "stream":
+            self._poll_stream(job)
         records = det_tail.read()
         lights = job["stats"].setdefault("lights", {})
         for rec in records:
@@ -484,7 +557,7 @@ class Manager:
         if state.get("last_record") and (final or now - state["last_preview"] > 1.0):
             rec = state["last_record"]
             idx = (rec.get("frame") or {}).get("index", 0)
-            frame = media.read_frame(job["input_path"], idx)
+            frame = self._read_any_frame(job, idx)
             if media.draw_preview(frame, rec, Path(job["dir"]) / "preview.jpg"):
                 job["preview_version"] = job.get("preview_version", 0) + 1
             state["last_preview"] = now
@@ -548,6 +621,10 @@ class Manager:
                 if media.snapshot(meta["_local"], result_dir / f"{eid}.jpg", seconds=meta.get("event_offset_sec")):
                     item["snapshot"] = f"{eid}.jpg"
                 job["clips_done"] = n
+            elif ev.get("frame") is not None and job.get("source") == "stream":
+                frame = media.read_segment_frame(self._stream_dir(job), int(ev["frame"]))
+                if frame is not None and media.write_jpg(result_dir / f"{eid}.jpg", frame, 88):
+                    item["snapshot"] = f"{eid}.jpg"
             elif ev.get("frame") is not None:
                 if media.snapshot(job["input_path"], result_dir / f"{eid}.jpg", frame_index=ev["frame"]):
                     item["snapshot"] = f"{eid}.jpg"

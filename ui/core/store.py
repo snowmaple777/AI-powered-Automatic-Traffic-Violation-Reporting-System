@@ -190,19 +190,26 @@ def save_upload(filename: str, stream, length: int) -> dict:
 def _public_job(job):
     keys = ("id", "status", "created", "finished", "video_name", "video_url", "video_meta", "stages",
             "current_stage", "logs", "violations", "error", "analyzer", "gps", "recorded_at", "preview_version",
-            "stats", "found", "started_ts", "options", "fps", "eta_sec", "remote")
+            "stats", "found", "started_ts", "options", "fps", "eta_sec", "remote", "source", "stream", "stop")
     return {k: job.get(k) for k in keys}
 
 
 def create_job(payload: dict) -> dict:
-    video_id = safe_name(payload["video_id"])
-    video_path = os.path.join(UPLOAD_DIR, video_id)
-    if not os.path.exists(video_path) or not owns_upload(video_id):
-        raise FileNotFoundError("找不到上傳的影片，請重新上傳")
-    analyzer = payload.get("analyzer", "simulated")
-    if analyzer not in ANALYZERS:
-        raise ValueError(f"不支援的分析模式：{analyzer}")
-    analyzer_cls = ANALYZERS[analyzer]
+    stream_url = (payload.get("stream_url") or "").strip()
+    if stream_url:  # 即時串流：不上傳，推論服務直接連串流（只支援真實模型）
+        if not urllib.parse.urlparse(stream_url).scheme or not urllib.parse.urlparse(stream_url).netloc:
+            raise ValueError("串流網址格式不正確")
+        video_id, video_path, analyzer = None, None, "remote"
+        analyzer_cls = type("StreamStages", (), {"STAGES": RemoteAnalyzer.STREAM_STAGES})
+    else:
+        video_id = safe_name(payload["video_id"])
+        video_path = os.path.join(UPLOAD_DIR, video_id)
+        if not os.path.exists(video_path) or not owns_upload(video_id):
+            raise FileNotFoundError("找不到上傳的影片，請重新上傳")
+        analyzer = payload.get("analyzer", "simulated")
+        if analyzer not in ANALYZERS:
+            raise ValueError(f"不支援的分析模式：{analyzer}")
+        analyzer_cls = ANALYZERS[analyzer]
     opts = payload.get("options") or {}
     jid = datetime.now().strftime("%Y%m%d%H%M%S") + "_" + uuid.uuid4().hex[:4]
     jdir = os.path.join(JOB_DIR, jid)
@@ -213,8 +220,9 @@ def create_job(payload: dict) -> dict:
         track = [{"lat": float(gps["lat"]), "lon": float(gps["lon"]), "t": 0.0, "time": None}]
     job = {
         "id": jid, "owner": require_user(), "dir": jdir, "status": "queued", "created": _now(), "finished": None,
-        "video_path": video_path, "video_name": video_id.split("_", 1)[-1],
-        "video_url": f"/files/uploads/{video_id}", "video_meta": None,
+        "video_path": video_path, "video_name": stream_name(stream_url) if stream_url else video_id.split("_", 1)[-1],
+        "video_url": None if stream_url else f"/files/uploads/{video_id}", "video_meta": None,
+        "source": "stream" if stream_url else "file", "stream_url": stream_url or None, "stream": None, "stop": False,
         "analyzer": analyzer,
         "speed": float(payload.get("speed", 1.0)),
         "options": {"max_seconds": float(opts["max_seconds"]) if opts.get("max_seconds") else None,
@@ -346,6 +354,22 @@ def _cancel_remote(remote):
                        CONFIG.get("inference_api_key", ""))._req("POST", f"/jobs/{remote['job_id']}/cancel", timeout=5)
     except Exception:  # noqa: BLE001
         pass
+
+
+def stream_name(url):
+    u = urllib.parse.urlparse(url)
+    return (u.hostname or "串流") + (u.path if u.path not in ("", "/") else "")
+
+
+def stop_job(jid):
+    """串流：停止收錄，已收錄的部分照常分析完。"""
+    with _lock:
+        job = _jobs.get(safe_name(jid))
+    if not job or not owns(job):
+        raise FileNotFoundError("找不到分析紀錄，或分析已結束")
+    if job.get("source") == "stream" and job.get("status") in ("queued", "running"):
+        job["stop"] = True
+    return _public_job(job)
 
 
 def cancel_job(jid):

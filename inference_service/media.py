@@ -4,9 +4,11 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
+from pathlib import Path
 
 try:
     import cv2  # type: ignore
@@ -54,6 +56,20 @@ def video_meta(path):
         }
     finally:
         cap.release()
+
+
+def read_segment_frame(folder, index):
+    """串流工作：從 run_pipeline 錄的分段資料夾（segments.jsonl）取第 index 幀；還沒錄到就回傳 None。"""
+    folder = Path(folder)
+    try:
+        segments = [json.loads(line) for line in (folder / "segments.jsonl").read_text(encoding="utf-8").splitlines()
+                    if line.strip()]
+    except (OSError, ValueError):
+        return None
+    for segment in segments:
+        if segment["first_frame"] <= index < segment["first_frame"] + segment["frames"]:
+            return read_frame(folder / segment["file"], index - segment["first_frame"])
+    return None
 
 
 def read_frame(path, index):

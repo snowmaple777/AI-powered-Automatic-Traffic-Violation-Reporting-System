@@ -39,6 +39,24 @@
 --max-frames 0 代表整段影片。路徑可使用絕對路徑，含空白時保留雙引號。
 同一輸出目錄內，相同影片檔名會覆寫同名結果；不同實驗請指定不同 --output-dir。
 
+串流輸入（4bq）：輸入改成串流網址（rtsp://、http(s)://、udp:// 等）就會以串流模式處理；網址含 & 等符號時整段加雙引號。
+程式另開一個收錄程序，邊收邊把影格以固定幀率錄成分段檔（輸出目錄的 <名稱>_stream\，每段 2 秒），分析依序讀分段，
+違規片段也從分段剪，所以分析比串流慢時影格暫存在硬碟、不會遺失。掉幀時重複前一張、來源較快時丟掉多的，時間軸維持「幀號 ÷ 幀率」。
+
+~~~powershell
+.\啟動辨識.cmd "rtsp://192.168.1.10:554/live" --rules all --stream-max-seconds 600 --output-dir "outputs\live"
+~~~
+
+常用參數：--stream-fps（固定幀率，預設沿用來源）、--stream-max-seconds（收錄幾秒後停止，0＝直到來源結束；直播可按 Ctrl+C 結束，已分析的部分照常輸出事件與片段）、
+--stream-segment-seconds（分段秒數）、--stream-codec FFV1|MJPG|mp4v（預設 FFV1 無損）、--stream-name（輸出檔名）。
+本機影片加 --stream-input 也可走串流模式（可變幀率影片或測試用）。
+來源沒有時間戳時（例如網路攝影機的 MJPEG），網址帶 fps=（如 ...?fps=30）就用這個幀率，否則以開頭 3 秒的到達速度估計（電腦忙時可能不準）。
+網頁也可用串流：選「即時串流」貼上網址；分析頁會顯示已收錄、已分析與落後的時間，按「停止串流」後已收錄的部分照常分析完。
+測試用：模擬串流.cmd "input\影片.mp4"（或 tools\simulate_stream.py）把影片依原幀率播成 HTTP MJPEG 串流，把啟動畫面顯示的網址貼到網頁或命令列即可；加 --loop 循環播放。
+分段預設用 FFV1 無損編碼，分析畫面與直接讀檔逐位元相同；代價是檔案大（720p 約每小時 37 GB、1080p 約 76 GB，用完可自行刪除）、編碼較慢（720p 約 23 ms／幀、1080p 約 180 ms／幀），直播 1080p 30 FPS 會跟不上，*_timings.json 的 stream.max_ingest_lag_seconds 會變大。
+MJPG／mp4v 較小較快但有損：mp4v 實測讓 ctm01 的紅燈偵測少 26%、闖紅燈事件消失，只在硬碟或速度不夠時使用。
+限制：串流中斷不會自動重連，視為串流結束；總幀數未知，completion.status 為 stream，不列入全片指標；不錄聲音。
+
 ## 設定與裝置
 
 configs/default.json 與 configs/full.json 目前內容相同，均啟用六階段：

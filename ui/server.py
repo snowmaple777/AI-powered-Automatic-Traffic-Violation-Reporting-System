@@ -284,6 +284,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(store.create_job(self._body_json()))
         if p.startswith("/api/jobs/") and p.endswith("/cancel"):
             return self._json(store.cancel_job(p.split("/")[3]))
+        if p.startswith("/api/jobs/") and p.endswith("/stop"):
+            return self._json(store.stop_job(p.split("/")[3]))
         if p == "/api/cases":
             return self._json(store.create_case(self._body_json()))
         if p.startswith("/api/cases/") and p.endswith("/autofill"):

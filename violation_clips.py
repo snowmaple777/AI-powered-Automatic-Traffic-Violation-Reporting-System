@@ -9,6 +9,7 @@ import tempfile
 
 import cv2
 
+from stream_source import open_capture
 from violation_visualization import draw_violation_candidates, format_event_summary
 
 
@@ -54,7 +55,7 @@ def export_violation_clips(video_path, observations_path, events, output_dir,
         raise ValueError('沒有可用的逐幀辨識資料')
 
     with ExitStack() as resources:
-        cap = cv2.VideoCapture(str(video_path))
+        cap = open_capture(video_path)  # 串流模式傳入分段資料夾，從分段剪（4bq）
         resources.callback(cap.release)
         if not cap.isOpened():
             raise RuntimeError(f'無法開啟原影片：{video_path}')

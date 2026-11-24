@@ -19,6 +19,7 @@ from pipeline_outputs import DetectionCsv, annotate_frame
 from plate_backfill import PlateBackfill, add_plate_arguments, CLI_WINDOW_SECONDS
 from motion_notes import MotionNotes, add_motion_arguments, write_motion_summary
 from local_lanes import draw_local_motion
+from stream_source import SegmentedFrames, StreamProcess, input_source, is_stream_url, stream_name
 
 
 def parse_args(argv=None):
@@ -27,7 +28,8 @@ def parse_args(argv=None):
                         help="停等區與行人穿越道候選規則參數")
     parser.add_argument("--red-light-config", type=Path, default=ROOT / "configs/red_light_rules.json",
                         help="闖紅燈規則設定（延後確認選項，4av）")
-    parser.add_argument("input", type=Path, help="輸入影片")
+    parser.add_argument("input", type=input_source,
+                        help="輸入影片，或串流網址（rtsp://、http(s)://、udp:// 等；以串流模式處理）")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "outputs")
     parser.add_argument("--device", default="auto", help="auto、cpu 或 cuda:0")
     parser.add_argument("--model-config", type=Path, default=ROOT / "configs/default.json")
@@ -53,6 +55,18 @@ def parse_args(argv=None):
     parser.add_argument("--double-line-config", type=Path, default=ROOT / "configs/double_line_rules.json",
                         help="雙實線跨越規則參數 JSON；辨識與重算共用。"
                              "其中的 geometry 子物件是雙線幾何選項，不論是否啟用雙線規則都會套用")
+    stream = parser.add_argument_group("串流模式（4bq）：邊收邊以固定幀率錄成分段檔，分析與剪片都讀分段")
+    stream.add_argument("--stream-input", action="store_true",
+                        help="本機影片也用串流模式處理（可變幀率影片、或測試串流流程）；網址輸入自動啟用")
+    stream.add_argument("--stream-fps", type=float, default=None, help="固定幀率；預設沿用來源標稱幀率")
+    stream.add_argument("--stream-segment-seconds", type=float, default=2.0, help="每個分段的秒數，預設 2")
+    stream.add_argument("--stream-codec", choices=["FFV1", "MJPG", "mp4v"], default="FFV1",
+                        help="分段編碼：FFV1（預設，無損，分析結果與直接讀檔相同，檔案大）；MJPG／mp4v 較小但有損，會改變偵測結果")
+    stream.add_argument("--stream-max-seconds", type=float, default=0.0,
+                        help="收錄幾秒後停止（0＝直到來源結束；直播來源可用 Ctrl+C 結束）")
+    stream.add_argument("--stream-name", default=None, help="串流的輸出檔名；預設由網址產生")
+    stream.add_argument("--stream-stop-file", type=Path, default=None,
+                        help="這個檔案出現就停止收錄，已收錄的部分照常分析完（推論服務的「停止串流」）")
     add_clip_arguments(parser)
     add_plate_arguments(parser)
     add_motion_arguments(parser)
@@ -101,7 +115,8 @@ def run(args, resources, pipeline=None):
     """pipeline：可傳入已載入的 ModelPipeline 供多支影片共用（批次評估）；會先 reset 追蹤狀態。"""
     validate_clip_options(args.clip_before, args.clip_after)
     plate_backfill = resources.enter_context(PlateBackfill(getattr(args, "plate_backfill_seconds", CLI_WINDOW_SECONDS)))
-    if not args.input.is_file():
+    streaming = is_stream_url(args.input) or getattr(args, "stream_input", False)
+    if not is_stream_url(args.input) and not Path(args.input).is_file():
         raise SystemExit(f"找不到影片：{args.input}")
     if args.max_frames < 0:
         raise SystemExit("--max-frames 不可為負數")
@@ -117,7 +132,7 @@ def run(args, resources, pipeline=None):
     apply_overrides(config, args)
     device = resolve_device(args.device)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    stem = args.input.stem
+    stem = getattr(args, "stream_name", None) or stream_name(args.input)
     motion_notes = resources.enter_context(MotionNotes(getattr(args, "motion_notes", False),
         args.output_dir / f"{stem}_local_motion.jsonl"))
     video_path = args.output_dir / f"{stem}_annotated.mp4"
@@ -128,16 +143,38 @@ def run(args, resources, pipeline=None):
         pipeline = resources.enter_context(ModelPipeline(config, device))
     else:
         pipeline.reset()
-    cap = cv2.VideoCapture(str(args.input))
-    resources.callback(cap.release)
-    if not cap.isOpened():
-        raise SystemExit(f"無法開啟影片：{args.input}")
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    width, height = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    if not math.isfinite(fps) or fps <= 0 or width <= 0 or height <= 0:
-        raise ValueError("影片 FPS 或尺寸無效，無法建立可靠時間軸")
-    reported_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-    expected_frames = round(reported_frames) if math.isfinite(reported_frames) and reported_frames > 0 else None
+    recorder = None
+    clip_source = args.input
+    if streaming:
+        # 串流：獨立程序收錄成固定幀率分段，分析依序讀分段；總幀數未知，時間軸仍是幀號 ÷ fps。
+        recorder = StreamProcess(str(args.input), args.output_dir / f"{stem}_stream", fps=args.stream_fps,
+                                  segment_seconds=args.stream_segment_seconds, codec=args.stream_codec,
+                                  max_seconds=args.stream_max_seconds,
+                                  stop_files=[getattr(args, "stream_stop_file", None)])
+        recorder.start()
+        resources.callback(recorder.stop)
+        try:
+            recorder.wait_ready()
+        except RuntimeError as e:
+            raise SystemExit(str(e)) from None
+        cap = SegmentedFrames(recorder)
+        resources.callback(cap.release)
+        fps, width, height = recorder.fps, recorder.width, recorder.height
+        expected_frames = None
+        clip_source = recorder.folder
+        print(f"串流收錄：{recorder.folder}（{width}x{height}，固定 {fps:g} FPS，來源 {recorder.source_fps:g} FPS）",
+              flush=True)
+    else:
+        cap = cv2.VideoCapture(str(args.input))
+        resources.callback(cap.release)
+        if not cap.isOpened():
+            raise SystemExit(f"無法開啟影片：{args.input}")
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        width, height = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if not math.isfinite(fps) or fps <= 0 or width <= 0 or height <= 0:
+            raise ValueError("影片 FPS 或尺寸無效，無法建立可靠時間軸")
+        reported_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        expected_frames = round(reported_frames) if math.isfinite(reported_frames) and reported_frames > 0 else None
     processor = FrameProcessor(fps, width, height, list(pipeline.models), compensator, area_config,
                                EgoMotionTracker(motion_config),
                                double_line_geometry_options(args.double_line_config))
@@ -165,7 +202,7 @@ def run(args, resources, pipeline=None):
         resources.callback(writer.release)
         if not writer.isOpened():
             raise SystemExit(f"無法建立輸出影片：{video_path}")
-    context = RuleContext(args.input.stem, fps, width, height)
+    context = RuleContext(stem, fps, width, height)
     violation_engine = ViolationEngine(create_rules(rule_names, context, rule_options))
     violations_path = args.output_dir / f"{stem}_violations.jsonl"
     violations_file = resources.enter_context(violations_path.open("w", encoding="utf-8")) if rule_names else None
@@ -189,6 +226,9 @@ def run(args, resources, pipeline=None):
                 if not ok:
                     if frame_index == 0:
                         raise RuntimeError("影片未成功解碼任何影格")
+                    if recorder is not None:
+                        termination = "stream_end"
+                        break
                     if expected_frames is not None and frame_index != expected_frames:
                         # 只容許「少於」中繼資料；多讀到的幀仍視為中繼資料錯誤。
                         if not (getattr(args, "allow_short_decode", False) and frame_index < expected_frames):
@@ -250,6 +290,12 @@ def run(args, resources, pipeline=None):
                     print(f"已處理 {frame_index} 幀，累計 {rate:.2f} FPS（含首次暖機），"
                           f"最近 10 幀 {recent_rate:.2f} FPS", flush=True)
                     window_started = now
+    except KeyboardInterrupt:
+        # 串流（直播）以 Ctrl+C 結束：停在目前影格，照常收尾、寫計時與剪片；影片檔仍照原本中止。
+        if recorder is None:
+            raise
+        termination = "interrupted"
+        print(f"已中止串流分析（第 {frame_index} 幀），整理已分析的部分…", flush=True)
     finally:
         if violations_file:
             for event in motion_notes.submit(plate_backfill.finalize(violation_engine.finalize()), final=True):
@@ -262,9 +308,13 @@ def run(args, resources, pipeline=None):
     timings = {"frames": frame_index, "wall_seconds": round(time.perf_counter() - started, 3),
                "ms_per_frame": timer.summary(frame_index),
                "plate_backfill_seconds": plate_backfill.seconds,
-               "completion": {"status": "complete" if termination in ("eof", "short_eof") else "partial",
+               "completion": {"status": "complete" if termination in ("eof", "short_eof")
+                              else "stream" if termination == "stream_end" else "partial",
                               "termination": termination, "expected_frames": expected_frames,
                               "max_frames": args.max_frames, "masks_written": masks_written}}
+    if recorder is not None:
+        recorder.stop()  # --max-frames 提前結束分析時也停止收錄，統計才是最終值
+        timings["stream"] = recorder.stats()
     if motion_notes.enabled:
         timings["motion_notes"] = {"enabled": True, "look_after_seconds": 3.0}
     marking_model = pipeline.models.get("road_markings")
@@ -275,7 +325,7 @@ def run(args, resources, pipeline=None):
     (args.output_dir / f"{stem}_timings.json").write_text(json.dumps(timings, indent=2), encoding="utf-8")
     if rule_names and args.violation_clips:
         print("正在剪輯違規片段…", flush=True)
-        clips = export_violation_clips(args.input, jsonl_path, all_events,
+        clips = export_violation_clips(clip_source, jsonl_path, all_events,
                                       args.output_dir / f"{stem}_violation_clips",
                                       args.clip_before, args.clip_after)
         print(f"已輸出 {len(clips)} 個違規片段")

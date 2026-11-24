@@ -147,6 +147,8 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET":
                 return self._json(MANAGER.list())
             if method == "POST":
+                if q.get("stream_url"):  # 串流工作：不必上傳，run_pipeline 直接連串流
+                    return self._json(MANAGER.public(MANAGER.create_stream(q["stream_url"], q)), 201)
                 length = int(self.headers.get("Content-Length") or 0)
                 if length <= 0:
                     return self._error("沒有收到影片")
@@ -166,6 +168,8 @@ class Handler(BaseHTTPRequestHandler):
             sub = parts[2] if len(parts) > 2 else ""
             if sub == "cancel" and method == "POST":
                 return self._json(MANAGER.public(MANAGER.cancel(job["id"])))
+            if sub == "stop" and method == "POST":  # 串流：停止收錄，已收錄的照常分析完
+                return self._json(MANAGER.public(MANAGER.stop(job["id"])))
             if sub == "preview.jpg" and method == "GET":
                 return self._file(jdir / "preview.jpg")
             if sub == "result" and method == "GET":

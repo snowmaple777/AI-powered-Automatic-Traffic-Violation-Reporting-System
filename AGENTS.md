@@ -69,6 +69,7 @@
 | 位置 | 內容 |
 | --- | --- |
 | `run_pipeline.py` | 影片辨識主流程：模型推論 → `FrameProcessor` → 規則 → 輸出 |
+| `stream_source.py` | 串流輸入（4bq、4br）：串流網址或 `--stream-input` 時以獨立程序收錄成固定幀率分段（預設 FFV1 無損、2 秒一段），分析與剪片都讀分段；模擬串流見 `tools/simulate_stream.py` |
 | `frame_processing.py` | 逐幀後處理（模型輸出 → 觀測紀錄），順序固定，見 5.2 |
 | `pipeline_outputs.py` | CSV 與標註畫面 |
 | `observation_schema.py` | **觀測紀錄的資料契約**（欄位、寫入者、版本） |
@@ -223,7 +224,7 @@
 再以 manifest 加變體比較。指標摘要：`batch_eval.summarize(label)` 或 `eval/metrics.py`。影片層級＝該片是否輸出目標規則事件；事件層級只計 `reviewed: true` 的影片。
 
 ### 7.3 回報格式
-每次交付或整合，在 `docs/refactor_log.md` 新增一節（目前編號到 4bp；4aa 保留給 Astra 的標線尺度實驗），包含：修改內容、原因、驗證方式、
+每次交付或整合，在 `docs/refactor_log.md` 新增一節（目前編號到 4br；4aa 保留給 Astra 的標線尺度實驗），包含：修改內容、原因、驗證方式、
 前後數字（影片層級、事件層級 TP／FP／FN、速度）、逐片變動的事件、已知副作用、是否採用。
 
 ---

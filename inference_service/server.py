@@ -208,10 +208,13 @@ def main():
     ap.add_argument("--data-dir", default=str(here / "data"))
     ap.add_argument("--autoform-python", default=None, help="執行 autoForm 的 Python（預設同 --python）")
     ap.add_argument("--api-key", default=os.environ.get("INFERENCE_API_KEY", ""))
+    ap.add_argument("--no-preload", action="store_true",
+                    help="不預先載入模型（每次分析各開一個程序載入，閒置時不佔 GPU 記憶體）")
     args, extra = ap.parse_known_args()
     root = Path(args.pipeline_root).resolve()
     API_KEY = args.api_key
-    MANAGER = Manager(args.data_dir, root, args.python or default_python(root), extra_args=extra)
+    MANAGER = Manager(args.data_dir, root, args.python or default_python(root), extra_args=extra,
+                      preload=not args.no_preload)
     REPORTS = ReportManager(args.data_dir, root, args.autoform_python or MANAGER.python)
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.daemon_threads = True
@@ -226,6 +229,8 @@ def main():
           + ("" if not missing else "，缺少：" + "、".join(missing)))
     print(f"  ffmpeg：{'有' if h['ffmpeg'] else '沒有（片段不轉 H.264，UI 會改播原影片片段）'}")
     print("  GPU：偵測中…（可在 UI 或 /health 查看）")
+    print("  模型預先載入：" + ("背景載入中（約 30～60 秒；完成後分析不必再等載入，會一直佔用 GPU 記憶體）"
+                            if MANAGER.preload else "已停用（--no-preload）"))
     af = REPORTS.health()
     print(f"  自動填表：{'可以使用' if af['available'] else '暫時不能用（' + af.get('hint', '') + '）'}")
     print("  關閉：在這個視窗按 Ctrl+C")

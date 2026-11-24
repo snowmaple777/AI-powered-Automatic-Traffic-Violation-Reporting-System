@@ -641,6 +641,15 @@ async function checkHealth() {
   try { state.health = await api("/api/inference/health"); } catch (e) { state.health = { online: false, error: e.message }; }
   renderHealth(); refreshAnalyzeBtn();
 }
+/* 推論服務的模型預先載入狀態（舊版服務沒有這個欄位就不顯示） */
+function preloadText(p) {
+  if (!p || !p.enabled) return "";
+  if (p.state === "ready" || p.state === "busy") return `${ic("check", "xs")} 模型已預先載入`;
+  if (p.state === "starting") return `${ic("clock", "xs")} 模型預先載入中…`;
+  if (p.state === "failed") return `${ic("alert", "xs")} 模型預先載入失敗，分析時會另外載入`;
+  return "";
+}
+
 function renderHealth() {
   const h = state.health, chip = $("#svc-status"), box = $("#svc-detail");
   if (!h) { chip.className = "svc-status"; chip.textContent = "檢查中…"; box.innerHTML = ""; return; }
@@ -655,6 +664,7 @@ function renderHealth() {
     const parts = [
       gpu.cuda ? `${ic("cpu", "xs")} GPU：${esc(gpu.name || "CUDA")}` : gpu.error || gpu.cuda === false ? `${ic("alert", "xs")} 沒有偵測到 GPU，會用 CPU 跑（很慢）` : `${ic("cpu", "xs")} GPU 偵測中…`,
       `${ic("layers", "xs")} 模型 ${h.models_ready}/${h.models_total}`,
+      preloadText(h.preload),
       h.queue_length ? `${ic("clock", "xs")} 排隊中 ${h.queue_length} 個` : "",
       h.ffmpeg ? "" : `${ic("info", "xs")} 沒有 ffmpeg，片段改播原影片`,
     ].filter(Boolean);

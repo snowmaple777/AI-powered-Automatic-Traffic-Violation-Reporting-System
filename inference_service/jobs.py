@@ -28,6 +28,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import media
+from .preload import PreloadedPipeline
 
 STAGES = [
     ("queued", "排隊中"),
@@ -104,7 +105,7 @@ class JsonlTail:
 
 
 class Manager:
-    def __init__(self, data_dir, pipeline_root, python_exe, extra_args=None):
+    def __init__(self, data_dir, pipeline_root, python_exe, extra_args=None, preload=True):
         self.data_dir = Path(data_dir)
         self.jobs_dir = self.data_dir / "jobs"
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
@@ -117,6 +118,10 @@ class Manager:
         self.queue = queue.Queue()
         self.current = None  # (job_id, Popen)
         self.gpu = None
+        # 常駐推論程序：服務啟動就載入模型（--no-preload 停用，回到每次開新程序）
+        self.preload = PreloadedPipeline(self.python, self.root, self.extra_args, kill=_kill_tree) if preload else None
+        if self.preload:
+            self.preload.start()
         self._load_existing()
         threading.Thread(target=self._worker, daemon=True).start()
         threading.Thread(target=self._probe_gpu, daemon=True).start()
@@ -198,6 +203,7 @@ class Manager:
             "python": self.python, "python_exists": Path(self.python).exists() or shutil.which(self.python) is not None,
             "models": models, "ffmpeg": bool(self.ffmpeg), "opencv": media.cv2 is not None,
             "gpu": self.gpu, "busy": busy, "queue_length": self.queue.qsize(),
+            "preload": self.preload.status() if self.preload else {"enabled": False, "state": "disabled"},
         }
 
     def _probe_gpu(self):
@@ -336,20 +342,33 @@ class Manager:
         if opts.get("max_seconds"):
             cmd += ["--max-frames", str(job["frames_total"] or int(opts["max_seconds"] * 30))]
         cmd += self.extra_args
-        env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
-        kwargs = {}
-        if os.name == "nt":
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-        else:
-            kwargs["start_new_session"] = True
         job.update(state="running", stage="loading", started=_now())
-        self._log(job, "載入模型中（第一次通常要 10～30 秒）…")
-        self._save(job)
         started = time.time()
-        proc = subprocess.Popen(cmd, cwd=str(self.root), env=env, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, **kwargs)
-        with self.lock:
-            self.current = (job["id"], proc)
+        warm = self.preload.acquire(opts["device"]) if self.preload else None
+        if warm is not None:
+            self._log(job, "使用已預先載入的模型")
+            self._save(job)
+            proc = warm
+            with self.lock:
+                self.current = (job["id"], proc)
+            try:
+                self.preload.submit(proc, cmd[3:])
+            except OSError as e:
+                self.preload.release(proc, ok=False)
+                raise RuntimeError(f"常駐推論程序沒有回應：{e}") from None
+        else:
+            env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+            kwargs = {}
+            if os.name == "nt":
+                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                kwargs["start_new_session"] = True
+            self._log(job, "載入模型中（第一次通常要 10～30 秒）…")
+            self._save(job)
+            proc = subprocess.Popen(cmd, cwd=str(self.root), env=env, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, **kwargs)
+            with self.lock:
+                self.current = (job["id"], proc)
 
         stem = input_path.stem
         det_tail = JsonlTail(out_dir / f"{stem}_detections.jsonl")
@@ -357,17 +376,24 @@ class Manager:
         seen_objects, seen_plates, found_ids = set(), set(), set()
         state = {"last_record": None, "last_preview": 0.0}
 
+        finished = threading.Event()
+
         def monitor():
-            while proc.poll() is None:
+            while proc.poll() is None and not finished.is_set():
                 self._poll_outputs(job, det_tail, vio_tail, seen_objects, seen_plates, found_ids, state)
                 time.sleep(0.8)
 
         mon = threading.Thread(target=monitor, daemon=True)
         mon.start()
+        end = None
         for raw in iter(proc.stdout.readline, b""):
             line = raw.decode("utf-8", "replace").rstrip("\r\n")
             if not line.strip():
                 continue
+            if warm is not None:
+                end = PreloadedPipeline.parse_end(line)
+                if end is not None:
+                    break
             m = PROGRESS_RE.search(line)
             if m:
                 done = int(m.group(1))
@@ -381,7 +407,14 @@ class Manager:
             elif line.startswith("違規片段"):
                 job["clips_done"] = job.get("clips_done", 0) + 1
             self._log(job, line)
-        proc.wait()
+        finished.set()
+        if warm is not None:
+            # 常駐程序不結束；沒收到結束標記代表它被取消或當掉了
+            returncode = end.get("code", 1) if end is not None else 1
+            self.preload.release(proc, ok=end is not None and returncode == 0 and not job.get("_cancel"))
+        else:
+            proc.wait()
+            returncode = proc.returncode
         mon.join(timeout=3)
         self._poll_outputs(job, det_tail, vio_tail, seen_objects, seen_plates, found_ids, state, final=True)
         elapsed = time.time() - started
@@ -389,12 +422,16 @@ class Manager:
         if job.get("_cancel"):
             self._log(job, "已取消")
             return self._finish(job, "cancelled", "已取消")
-        if proc.returncode != 0:
+        if returncode != 0:
             msgs = [x["msg"] for x in list(job["_log"])]
             err = next((m for m in reversed(msgs)
                         if re.search(r"(Error|Exception|錯誤|無法|找不到|不符|SystemExit)", m)), None)
             detail = err or (msgs[-1] if msgs else "")
-            return self._finish(job, "error", f"模型執行失敗（結束代碼 {proc.returncode}）：{detail[-400:]}")
+            if warm is not None and end is not None and end.get("error"):
+                detail = end["error"]
+            elif warm is not None and end is None:
+                detail = "常駐推論程序意外結束（已在背景重新載入）"
+            return self._finish(job, "error", f"模型執行失敗（結束代碼 {returncode}）：{detail[-400:]}")
 
         job["stage"] = "packaging"
         self._log(job, f"模型分析完成，用時 {elapsed:.0f} 秒；整理結果中…")

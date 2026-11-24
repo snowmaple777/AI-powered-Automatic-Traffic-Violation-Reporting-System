@@ -368,7 +368,7 @@ def inference_health():
     models = h.get("models") or []
     ready = [m for m in models if m.get("exists") or not m.get("enabled", True)]
     return {"online": True, "url": CONFIG["inference_url"], "gpu": h.get("gpu"), "busy": h.get("busy"),
-            "queue_length": h.get("queue_length"), "ffmpeg": h.get("ffmpeg"),
+            "queue_length": h.get("queue_length"), "ffmpeg": h.get("ffmpeg"), "preload": h.get("preload"),
             "models_ready": len(ready), "models_total": len(models),
             "models_missing": [m["path"] for m in models if m not in ready]}
 

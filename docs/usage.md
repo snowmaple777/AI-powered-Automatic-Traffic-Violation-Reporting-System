@@ -233,7 +233,7 @@ straddle_min_seconds／straddle_merge_seconds、confirm_short_position_gap（雙
 - *_annotated.mp4：標記影片，僅加上 --save-video 時產生。
 - *_violations.jsonl：違規事件，僅啟用規則時產生。
 - *_rule_diagnostics.jsonl：逐幀規則診斷，僅啟用規則時產生。
-- *_violation_clips/run_*/：每次剪輯的獨立資料夾，內含 suspected／confirmed MP4、對應事件 JSON、中文 TXT 摘要及 index.json 索引；無事件時不建立片段。
+- *_violation_clips/run_*/：每次剪輯的獨立資料夾，內含 suspected／confirmed MP4、對應事件 JSON、中文 TXT 摘要及 index.json 索引；無事件時不建立片段。檔名是「序號_狀態_規則」，例如 001_suspected_double_yellow_line_crossing.mp4（加 --clip-raw 時是 001_suspected.mp4），車輛編號、事件時間等完整資訊在同名 .json／.txt。
 
 中文字型預設使用 Windows 微軟正黑體；其他環境可用 TRAFFIC_AI_FONT 指定繁體中文字型檔。
 既有影片不會自動更新標記；可使用 violation_clips.py 從已有辨識與事件 JSONL 重產生新版片段。

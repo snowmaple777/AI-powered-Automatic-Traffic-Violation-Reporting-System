@@ -125,11 +125,12 @@ def export_violation_clips(video_path, observations_path, events, output_dir,
         run_dir = Path(tempfile.mkdtemp(prefix='run_', dir=output_dir))
         for index, job in enumerate(jobs, 1):
             event = job['event']
-            name = re.sub(r'[^A-Za-z0-9_-]', '_', str(event.get('event_id', 'event')))
-            # 原始片段（長片切段）用短檔名：event_id 含來源檔名與物件編號，長片放在深的資料夾時會超過 Windows 路徑上限；
-            # 事件資訊在同名 .json
+            # 短檔名：event_id 含來源檔名與物件編號（例如 cdy01_double_yellow_line_crossing_vehicle-000017_double-line-1_0_159），
+            # 輸出放在較深的資料夾時會超過 Windows 260 字元路徑上限（4bu 原始片段、4bw 標註片段）。
+            # 完整事件資訊（event_id、車輛、時間）在同名 .json／.txt 與 index.json。
+            rule = re.sub(r'[^A-Za-z0-9_-]', '_', str(event.get('rule_id') or 'event'))
             job['path'] = run_dir / (f'{index:03d}_{event["status"]}.mp4' if raw else
-                                     f'{index:03d}_{event["status"]}_{name}.mp4')
+                                     f'{index:03d}_{event["status"]}_{rule}.mp4')
         observations = _observations(observations_path)
         resources.callback(observations.close)
         current = next(observations, None)

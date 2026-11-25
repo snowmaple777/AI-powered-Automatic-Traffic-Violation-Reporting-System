@@ -43,6 +43,10 @@ class ViolationClipTests(unittest.TestCase):
         clips = export_violation_clips(self.video, self.data,
             [self.event('suspected', 1), self.event('confirmed', 18)], self.root / 'clips', 1, 1)
         self.assertEqual([(c['start_frame'], c['end_frame']) for c in clips], [(0, 11), (8, 19)])
+        # 短檔名：序號＋狀態＋規則，不含 event_id（4bw）；完整事件在同名 .json
+        self.assertEqual([Path(c['clip_path']).name for c in clips],
+                         ['001_suspected_red_light_stop_line_crossing.mp4',
+                          '002_confirmed_red_light_stop_line_crossing.mp4'])
         for clip in clips:
             cap = cv2.VideoCapture(clip['clip_path'])
             decoded = []

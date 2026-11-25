@@ -27,6 +27,7 @@ TRIAGE_FPS = 10              # 降頻篩選幀率（4bs：每秒 10 幀，確認
 CLIP_BEFORE, CLIP_AFTER = 8.0, 6.0  # 4bo：疑似事件前 8 後 6 秒的片段可重現整片的事件
 ACTIVE = ("queued", "uploading", "cutting", "saving")
 POLL_SECONDS = 1.5
+REPLACE_RETRIES = 30  # 切段紀錄被別的程式開著時，最多等約 3 秒
 
 _lock = threading.RLock()
 _queue: "queue.Queue[tuple[str, str]]" = queue.Queue()
@@ -68,7 +69,16 @@ def _write(email, rec):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(rec, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    # 別的程式（防毒、索引、使用者開著看）短暫開著紀錄檔時，Windows 會拒絕取代（WinError 5）：稍等重試，
+    # 不要因為一次進度寫不進去就讓整支長片切段失敗。
+    for attempt in range(REPLACE_RETRIES):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == REPLACE_RETRIES - 1:
+                raise
+            time.sleep(0.1)
 
 
 def _update(email, name, **fields):
@@ -251,28 +261,31 @@ def _cut(email, name):
     remote = client._upload(path, query, on_up)  # noqa: SLF001
     rid = remote["id"]
     _update(email, name, state="cutting", upload=1.0, progress=0.0, remote={"url": client.base, "job_id": rid})
-    while True:
-        if (email, name) in _cancel:
-            try:
-                client._req("POST", f"/jobs/{rid}/cancel")  # noqa: SLF001
-            except Exception:  # noqa: BLE001
-                pass
-            raise _Cancelled()
-        job = client._req("GET", f"/jobs/{rid}", timeout=10)  # noqa: SLF001
-        state, stage = job.get("state"), job.get("stage")
-        if state == "done":
-            break
-        if state in ("error", "cancelled", "interrupted"):
-            raise RuntimeError(job.get("error") or f"推論服務工作 {state}")
-        done, total = job.get("frames_done") or 0, job.get("frames_total") or 0
-        triage = job.get("triage") or {}
-        saving = stage in ("clipping", "packaging", "done")
-        _update(email, name, state="saving" if saving else "cutting",
-                progress=1.0 if saving else (min(0.99, done / total) if total else 0.0),
-                eta_sec=None if saving else job.get("eta_sec"), deep=triage.get("deep"),
-                windows=triage.get("windows") or 0, found=len(job.get("found") or []),
-                queued=state == "queued")
-        time.sleep(POLL_SECONDS)
+    try:
+        while True:
+            _check(email, name)
+            job = client._req("GET", f"/jobs/{rid}", timeout=10)  # noqa: SLF001
+            state, stage = job.get("state"), job.get("stage")
+            if state == "done":
+                break
+            if state in ("error", "cancelled", "interrupted"):
+                raise RuntimeError(job.get("error") or f"推論服務工作 {state}")
+            done, total = job.get("frames_done") or 0, job.get("frames_total") or 0
+            triage = job.get("triage") or {}
+            saving = stage in ("clipping", "packaging", "done")
+            _update(email, name, state="saving" if saving else "cutting",
+                    progress=1.0 if saving else (min(0.99, done / total) if total else 0.0),
+                    eta_sec=None if saving else job.get("eta_sec"), deep=triage.get("deep"),
+                    windows=triage.get("windows") or 0, found=len(job.get("found") or []),
+                    queued=state == "queued")
+            time.sleep(POLL_SECONDS)
+    except Exception:
+        # 取消，或這邊出錯（寫不進紀錄、連線中斷）：一併取消推論服務的工作，不讓它在背景繼續佔用 GPU
+        try:
+            client._req("POST", f"/jobs/{rid}/cancel")  # noqa: SLF001
+        except Exception:  # noqa: BLE001
+            pass
+        raise
 
     _update(email, name, state="saving", progress=1.0, eta_sec=None, deep=None)
     result = client._req("GET", f"/jobs/{rid}/result", timeout=30)  # noqa: SLF001

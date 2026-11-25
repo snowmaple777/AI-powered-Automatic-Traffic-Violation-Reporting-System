@@ -160,6 +160,42 @@ class LongCutTests(unittest.TestCase):
         self.assertTrue(service.cancelled)
         self.assertTrue((self.inbox / 'trip.mp4').exists())
 
+    def test_record_replace_retries_while_another_program_holds_the_file(self):
+        # Windows：紀錄檔被別的程式開著時 os.replace 會短暫被拒，不能因此讓切段失敗
+        real, calls = longcut.os.replace, []
+
+        def flaky(src, dst):
+            calls.append(dst)
+            if len(calls) <= 2:
+                raise PermissionError(5, '存取被拒')
+            return real(src, dst)
+
+        with patch.object(longcut.os, 'replace', flaky), patch.object(longcut.time, 'sleep'):
+            longcut._write(EMAIL, {'name': 'trip.mp4', 'owner': EMAIL, 'state': 'queued'})
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(self.item()['state'], 'queued')
+        with patch.object(longcut.os, 'replace', side_effect=PermissionError(5, '存取被拒')), \
+             patch.object(longcut.time, 'sleep'), self.assertRaises(PermissionError):
+            longcut._write(EMAIL, {'name': 'trip.mp4', 'owner': EMAIL, 'state': 'cutting'})
+
+    def test_local_failure_while_cutting_cancels_the_remote_job(self):
+        service = FakeService()
+        self.fake(service)
+        service.forever = True
+        orig = longcut._update
+
+        def broken(email, name, **fields):
+            if 'eta_sec' in fields and fields.get('state') == 'cutting':
+                raise OSError('磁碟寫入失敗')
+            return orig(email, name, **fields)
+
+        with patch.object(longcut, '_update', broken):
+            longcut.enqueue('trip.mp4')
+            self.assertTrue(wait(lambda: self.item()['state'] == 'error'))
+        self.assertIn('磁碟寫入失敗', self.item()['error'])
+        self.assertTrue(service.cancelled)  # 推論服務的工作不會留在背景繼續跑
+        self.assertTrue((self.inbox / 'trip.mp4').exists())
+
     def test_resume_marks_interrupted_and_requeues_queued(self):
         longcut._write(EMAIL, {'name': 'trip.mp4', 'owner': EMAIL, 'state': 'cutting'})
         with patch.object(longcut, '_ensure_worker'):

@@ -226,7 +226,9 @@ def create_job(payload: dict) -> dict:
         "analyzer": analyzer,
         "speed": float(payload.get("speed", 1.0)),
         "options": {"max_seconds": float(opts["max_seconds"]) if opts.get("max_seconds") else None,
-                    "rules": opts.get("rules") or "all"},
+                    "rules": opts.get("rules") or "all",
+                    # 降頻篩選幀率（4bs）：只用在串流，0＝每幀分析
+                    "triage": float(opts["triage"]) if stream_url and opts.get("triage") else 0},
         "cancel": False, "fps": None, "eta_sec": None, "remote": None,
         "recorded_at": payload.get("recorded_at"),
         "gps": {"mode": gps.get("mode", "point"), "points": len(track),
@@ -600,7 +602,7 @@ def zip_case(cid) -> str:
 # 草稿（每一次檢舉流程的進度，自動儲存）
 # ---------------------------------------------------------------------------
 DRAFT_KEYS = ("step", "max_step", "video", "gps", "gps_tab", "preset_index", "recorded_at", "speed",
-              "job_id", "ignored", "filter", "selected", "forms", "cases", "mode", "max_seconds")
+              "job_id", "ignored", "filter", "selected", "forms", "cases", "mode", "max_seconds", "triage")
 
 
 def _draft_path(did):

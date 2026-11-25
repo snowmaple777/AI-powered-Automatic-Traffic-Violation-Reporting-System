@@ -340,6 +340,12 @@
               <option value="600" data-stream hidden>10 分鐘</option>
             </select>
           </label>
+          <label id="triage-field" class="hidden">分析密度
+            <select id="triage">
+              <option value="0">每一幀都分析</option>
+              <option value="10">降頻篩選，事件前後才逐幀</option>
+            </select>
+          </label>
           <label data-for="simulated" class="hidden">模擬分析速度
             <select id="speed"><option value="1">1x（展示用）</option><option value="2" selected>2x</option><option value="5">5x（快速測試）</option></select>
           </label>

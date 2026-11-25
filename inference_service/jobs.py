@@ -40,6 +40,7 @@ STAGES = [
 ]
 FINAL_STATES = ("done", "error", "cancelled", "interrupted")
 STREAM_SCHEMES = ("rtsp", "rtsps", "rtmp", "rtmps", "http", "https", "udp", "tcp", "srt")
+DEEP_RE = re.compile(r"深度分析第\s*(\d+)\s*段：([\d.]+)–([\d.]+)\s*秒")
 STREAM_STEM = "stream"  # 串流工作的輸出檔名（run_pipeline --stream-name）
 PROGRESS_RE = re.compile(r"已處理\s*(\d+)\s*幀，累計\s*([\d.]+)\s*FPS.*?最近\s*10\s*幀\s*([\d.]+)\s*FPS")
 KEEP_JOBS = 20
@@ -271,7 +272,10 @@ class Manager:
             "clip_before": float(options.get("clip_before") or 5),
             "clip_after": float(options.get("clip_after") or 5),
             "device": options.get("device") or "auto",
+            "triage": float(options.get("triage") or 0),
         }
+        if opts["triage"] and not 2 <= opts["triage"] <= 30:
+            raise ValueError("降頻篩選的幀率要在 2～30 FPS 之間（0＝每幀分析）")
         name = (parsed.hostname or "stream") + (parsed.path if parsed.path not in ("", "/") else "")
         job = self._new_job(jid, jdir, opts, name, url, None, None, source="stream",
                             stream={"state": "connecting"})
@@ -386,6 +390,9 @@ class Manager:
             cmd += ["--stream-name", STREAM_STEM, "--stream-stop-file", str(jdir / "stop")]
             if opts.get("max_seconds"):
                 cmd += ["--stream-max-seconds", str(opts["max_seconds"])]
+            if opts.get("triage"):
+                cmd += ["--stream-triage-fps", f"{opts['triage']:g}"]
+                job["triage"] = {"fps": opts["triage"], "windows": 0, "deep": None}
         elif opts.get("max_seconds"):
             cmd += ["--max-frames", str(job["frames_total"] or int(opts["max_seconds"] * 30))]
         cmd += self.extra_args
@@ -422,6 +429,8 @@ class Manager:
         vio_tail = JsonlTail(out_dir / f"{stem}_violations.jsonl")
         seen_objects, seen_plates, found_ids = set(), set(), set()
         state = {"last_record": None, "last_preview": 0.0}
+        if job.get("triage"):  # 降頻篩選（4bs）：篩選中的即時畫面來自篩選的逐幀紀錄
+            state["triage_tail"] = JsonlTail(out_dir / f"{stem}_triage_detections.jsonl")
 
         finished = threading.Event()
 
@@ -447,14 +456,22 @@ class Manager:
                 job["frames_done"] = max(job.get("frames_done") or 0, done)
                 job["fps"], job["fps_recent"] = float(m.group(2)), float(m.group(3))
                 job["stage"] = "analyzing"
+                if job.get("triage"):
+                    job["triage"]["deep"] = None  # 回到篩選
                 if job.get("frames_total") and job["fps_recent"]:
                     job["eta_sec"] = round(max(0, job["frames_total"] - done) / max(job["fps_recent"], 0.01), 1)
+            elif job.get("triage") and line.startswith("深度分析第"):
+                m = DEEP_RE.search(line)
+                if m:
+                    job["triage"].update(windows=int(m.group(1)), deep=[float(m.group(2)), float(m.group(3))])
             elif "正在剪輯違規片段" in line:
                 job["stage"], job["eta_sec"] = "clipping", None
             elif line.startswith("違規片段"):
                 job["clips_done"] = job.get("clips_done", 0) + 1
             self._log(job, line)
         finished.set()
+        if job.get("triage"):
+            job["triage"]["deep"] = None
         if warm is not None:
             # 常駐程序不結束；沒收到結束標記代表它被取消或當掉了
             returncode = end.get("code", 1) if end is not None else 1
@@ -507,7 +524,7 @@ class Manager:
         job["stream"] = {"state": state, "fps": fps, "recorded_sec": round(recorded / fps, 1),
                          "analyzed_sec": round(analyzed / fps, 1), "behind_sec": round(max(0, recorded - analyzed) / fps, 1),
                          "ingest_lag_sec": info.get("ingest_lag_seconds"), "timestamps": info.get("timestamps"),
-                         "error": info.get("error")}
+                         "error": info.get("error"), "triage": job.get("triage")}
         job["video"] = {"fps": fps, "width": info.get("width"), "height": info.get("height"),
                         "frames": recorded, "duration": round(recorded / fps, 3)}
 
@@ -540,6 +557,12 @@ class Manager:
         if records:
             state["last_record"] = records[-1]
             job["stats"]["objects"], job["stats"]["plates"] = len(seen_objects), len(seen_plates)
+        triage_records = state["triage_tail"].read() if state.get("triage_tail") else []
+        if triage_records and not records:
+            # 篩選的幀號是取樣序號；畫面用原幀號 stream_frame 讀
+            rec = triage_records[-1]
+            state["last_record"] = dict(rec, frame=dict(rec.get("frame") or {}, index=(rec.get("frame") or {}).get(
+                "stream_frame", 0)))
         for ev in vio_tail.read():
             if ev.get("status") not in ("suspected", "confirmed") or ev.get("event_id") in found_ids:
                 continue

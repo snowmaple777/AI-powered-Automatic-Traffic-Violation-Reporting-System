@@ -1,4 +1,4 @@
-"""推論服務串流工作（4br）：參數、收錄狀態、停止收錄後照常整理結果。用假的 run_pipeline，不載入模型。"""
+"""推論服務串流工作（4br、4bs）：參數、收錄狀態、降頻篩選狀態、停止收錄後照常整理結果。用假的 run_pipeline，不載入模型。"""
 import io
 import json
 import sys
@@ -30,6 +30,9 @@ FAKE_PIPELINE = textwrap.dedent('''
             det.write(json.dumps({"frame": {"index": i}, "observations": {}}) + "\\n")
         det.flush()
         print(f"已處理 {frames} 幀，累計 10.00 FPS（含首次暖機），最近 10 幀 10.00 FPS", flush=True)
+        if "--stream-triage-fps" in argv and frames == 30:
+            print("深度分析第 1 段：1.0–2.5 秒（第 10–24 幀）", flush=True)
+            time.sleep(0.6)
         time.sleep(0.2)
     info.update(reason="stopped", finished=True)
     (seg / "stream.json").write_text(json.dumps(info), encoding="utf-8")
@@ -87,6 +90,19 @@ class StreamJobTests(unittest.TestCase):
         result = json.loads((Path(job['dir']) / 'result.json').read_text(encoding='utf-8'))
         self.assertEqual(len(result['events']), 1)
         self.assertTrue(any('已停止收錄' in x['msg'] for x in job['_log']))
+
+    def test_triage_option_and_deep_window_status(self):
+        with self.assertRaises(ValueError):
+            self.manager.create_stream('rtsp://cam.local/live', {'triage': '1'})
+        job = self.manager.create_stream('rtsp://cam.local/live', {'triage': '10'})
+        self.assertTrue(wait(lambda: (job.get('triage') or {}).get('deep') == [1.0, 2.5]))
+        self.assertEqual(job['triage']['windows'], 1)
+        self.assertTrue(wait(lambda: (job.get('triage') or {}).get('deep', 0) is None))  # 下一行進度＝回到篩選
+        self.assertTrue(wait(lambda: ((job.get('stream') or {}).get('triage') or {}).get('fps') == 10))
+        self.manager.stop(job['id'])
+        self.assertTrue(wait(lambda: job['state'] in jobs.FINAL_STATES))
+        argv = json.loads((Path(job['dir']) / 'outputs' / 'argv.json').read_text(encoding='utf-8'))
+        self.assertEqual(argv[argv.index('--stream-triage-fps') + 1], '10')
 
     def test_stop_on_queued_stream_cancels(self):
         with patch.object(self.manager.queue, 'put'):  # 不讓工作開始

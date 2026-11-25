@@ -52,11 +52,11 @@
 | 方法 | 路徑 | 說明 |
 |---|---|---|
 | GET | `/health` | 服務狀態、模型檔是否齊全、GPU、ffmpeg、是否忙碌、模型預先載入狀態（`preload`） |
-| POST | `/jobs?stream_url=&rules=all&max_seconds=` | 串流工作（不必上傳）：run_pipeline 以串流模式邊收邊分析，`max_seconds` 是收錄上限 |
+| POST | `/jobs?stream_url=&rules=all&max_seconds=&triage=` | 串流工作（不必上傳）：run_pipeline 以串流模式邊收邊分析，`max_seconds` 是收錄上限；`triage`＝降頻篩選幀率（2～30，預設 0＝每幀分析） |
 | POST | `/jobs/<id>/stop` | 串流：停止收錄，已收錄的部分照常分析完並整理結果 |
 | GET | `/jobs` | 工作列表 |
 | POST | `/jobs?filename=&rules=all&max_seconds=&clip_before=5&clip_after=5&device=auto` | body 直接放影片內容，回傳工作 |
-| GET | `/jobs/<id>` | 進度：`state`、`stage`、`frames_done/frames_total`、`fps`、`eta_sec`、`stats`、`found`（已發現違規）、`log`；串流另有 `stream`（`state`、`recorded_sec`、`analyzed_sec`、`behind_sec`） |
+| GET | `/jobs/<id>` | 進度：`state`、`stage`、`frames_done/frames_total`、`fps`、`eta_sec`、`stats`、`found`（已發現違規）、`log`；串流另有 `stream`（`state`、`recorded_sec`、`analyzed_sec`、`behind_sec`；降頻篩選時 `triage`：`fps`、`windows` 已逐幀分析的段數、`deep` 正在逐幀分析的時段秒數或 null） |
 | GET | `/jobs/<id>/preview.jpg` | 即時畫面（畫上模型偵測框） |
 | GET | `/jobs/<id>/result` | 最終結果：違規事件（規則、確認／疑似、車牌、判定條件、片段與截圖檔名） |
 | GET | `/jobs/<id>/files/<檔名>` | 片段 mp4、截圖 jpg |

@@ -225,6 +225,8 @@ class RemoteAnalyzer(BaseAnalyzer):
             query["max_seconds"] = opts["max_seconds"]
         if streaming:
             query["stream_url"] = job["stream_url"]
+            if opts.get("triage"):
+                query["triage"] = f"{float(opts['triage']):g}"
             remote = self._req("POST", "/jobs?" + urllib.parse.urlencode(query), timeout=15)
         else:
             last = [0.0]

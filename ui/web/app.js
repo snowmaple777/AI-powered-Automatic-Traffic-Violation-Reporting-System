@@ -37,7 +37,7 @@ function collectDraft() {
     step: state.step, max_step: state.maxStep, video: state.video, gps: state.gps,
     gps_tab: currentGpsTab(), preset_index: +$("#preset-select").value || 0,
     recorded_at: $("#recorded-at").value, speed: $("#speed").value,
-    mode: state.mode, max_seconds: $("#max-seconds").value,
+    mode: state.mode, max_seconds: $("#max-seconds").value, triage: $("#triage").value,
     job_id: state.job ? state.job.id : null, ignored: [...state.ignored], filter: state.filter,
     selected: state.selected ? state.selected.id : null, forms: state.forms, cases: state.cases,
   };
@@ -127,6 +127,7 @@ function fmtDur(sec) {
   const m = Math.floor(sec / 60), s = sec % 60;
   return m < 60 ? `${m} 分 ${s} 秒` : `${Math.floor(m / 60)} 小時 ${m % 60} 分`;
 }
+function mmss(s) { s = Math.max(0, Math.floor(s)); return `${pad(Math.floor(s / 60))}:${pad(s % 60)}`; }
 function fmtSec(s) { const m = Math.floor(s / 60); return `${pad(m)}:${(s - m * 60).toFixed(1).padStart(4, "0")}`; }
 
 /* 數字滾動動畫 */
@@ -239,6 +240,7 @@ function syncLengthOptions() {
     else if (o.value) o.text = live ? `${o.value} 秒` : (o.value === "10" ? "只分析前 10 秒（快速測試）" : `只分析前 ${o.value} 秒`);
   });
   if (!live && sel.selectedOptions[0] && sel.selectedOptions[0].hidden) sel.value = "";
+  $("#triage-field").classList.toggle("hidden", !live);
 }
 
 /* 用 XHR 上傳（才拿得到進度），回傳伺服器的 JSON */
@@ -672,7 +674,7 @@ $("#btn-sim-gps").addEventListener("click", async () => {
   finally { btn.disabled = false; }
 });
 ["#recorded-at", "#speed"].forEach((s) => $(s).addEventListener("change", saveDraft));
-["#max-seconds"].forEach((s) => $(s).addEventListener("change", saveDraft));
+["#max-seconds", "#triage"].forEach((s) => $(s).addEventListener("change", saveDraft));
 
 /* ---- 分析方式：真實模型（推論服務）／模擬展示 ---- */
 function setMode(mode, save = true) {
@@ -752,7 +754,8 @@ async function startAnalysis() {
     video_id: live ? null : state.video.video_id, stream_url: live ? state.video.stream_url : null,
     recorded_at: $("#recorded-at").value || null,
     speed: +$("#speed").value, analyzer: state.mode || "remote",
-    options: { max_seconds: $("#max-seconds").value ? +$("#max-seconds").value : null, rules: "all" },
+    options: { max_seconds: $("#max-seconds").value ? +$("#max-seconds").value : null, rules: "all",
+               triage: live ? +$("#triage").value : 0 },
     gps: g.track && !live ? { mode: "track", track: g.track } : { mode: g.mode, lat: g.lat, lon: g.lon },
   };
   try {
@@ -787,12 +790,15 @@ function renderStream(job) {
   stopBtn.classList.toggle("hidden", !live || !running || job.stop || ["stopped", "ended", "error"].includes(s.state));
   if (job.stop && running) { stopBtn.classList.remove("hidden"); stopBtn.disabled = true; stopBtn.innerHTML = `${ic("stop")}停止中…`; }
   if (!live || !s.fps) return;
-  const behind = s.behind_sec || 0;
+  const behind = s.behind_sec || 0, tri = s.triage, deep = running && tri && tri.deep;
   chips.innerHTML = `<span>${ic("broadcast", "xs")}收錄 ${fmtDur(s.recorded_sec || 0)}</span>`
     + `<span>${ic("scan", "xs")}分析 ${fmtDur(s.analyzed_sec || 0)}</span>`
-    + `<span class="${behind > 30 ? "warn" : ""}">${ic("clock", "xs")}落後 ${fmtDur(behind)}</span>`;
+    + `<span class="${behind > 30 ? "warn" : ""}">${ic("clock", "xs")}落後 ${fmtDur(behind)}</span>`
+    + (tri ? `<span title="降頻篩選：平時約每秒 ${tri.fps} 幀，事件前後逐幀分析">${ic("sparkles", "xs")}`
+             + (deep ? `逐幀分析 ${mmss(deep[0])}–${mmss(deep[1])}` : running ? `篩選中` : `降頻篩選`) + (tri.windows ? `・${tri.windows} 段` : "") + `</span>` : "");
   if (running && job.current_stage === "analyzing") {
-    $("#ring-stage").textContent = s.state === "recording" && !job.stop ? "收錄中・邊收邊分析" : "分析剩下的畫面";
+    $("#ring-stage").textContent = deep ? "逐幀分析事件前後"
+      : s.state === "recording" && !job.stop ? (tri ? "收錄中・降頻篩選" : "收錄中・邊收邊分析") : "分析剩下的畫面";
     $("#ring-eta").innerHTML = `${ic("clock", "xs")} 已經過 ${fmtDur((Date.now() - state.jobStartedAt) / 1000)}${job.fps ? `・${job.fps.toFixed(1)} FPS` : ""}`;
   }
 }
@@ -1874,6 +1880,7 @@ async function restoreDraft(d) {
   if (d.recorded_at) $("#recorded-at").value = d.recorded_at; else $("#recorded-at").value = toLocalInput(new Date());
   if (d.speed) $("#speed").value = d.speed;
   if (d.max_seconds != null) $("#max-seconds").value = d.max_seconds;
+  if (d.triage != null && $(`#triage option[value="${d.triage}"]`)) $("#triage").value = d.triage;
   if (d.mode) setMode(d.mode, false);
   if (d.preset_index != null) $("#preset-select").value = d.preset_index;
   if (d.gps && d.gps.lat != null) {

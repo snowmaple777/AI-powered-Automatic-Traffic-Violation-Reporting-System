@@ -19,7 +19,9 @@ from pipeline_outputs import DetectionCsv, annotate_frame
 from plate_backfill import PlateBackfill, add_plate_arguments, CLI_WINDOW_SECONDS
 from motion_notes import MotionNotes, add_motion_arguments, write_motion_summary
 from local_lanes import draw_local_motion
-from stream_source import SegmentedFrames, StreamProcess, input_source, is_stream_url, stream_name
+from stream_source import SegmentedCapture, SegmentedFrames, StreamProcess, input_source, is_stream_url, stream_name
+from stream_triage import HOLD_SECONDS, DeepWindows
+from core.timing import StageTimer
 
 
 def parse_args(argv=None):
@@ -67,6 +69,11 @@ def parse_args(argv=None):
     stream.add_argument("--stream-name", default=None, help="串流的輸出檔名；預設由網址產生")
     stream.add_argument("--stream-stop-file", type=Path, default=None,
                         help="這個檔案出現就停止收錄，已收錄的部分照常分析完（推論服務的「停止串流」）")
+    stream.add_argument("--stream-triage-fps", type=float, default=0.0,
+                        help="降頻篩選（4bs）：以約這個幀率分析找候選事件，事件前後時段再以原幀率深度分析；"
+                             "0＝停用（每幀分析，預設）。建議 10～15（低於 6 時規則幾乎不出事件）。需要 --rules")
+    stream.add_argument("--stream-triage-before", type=float, default=8.0, help="深度分析從觸發前幾秒開始，預設 8")
+    stream.add_argument("--stream-triage-after", type=float, default=6.0, help="深度分析到觸發後幾秒，預設 6")
     add_clip_arguments(parser)
     add_plate_arguments(parser)
     add_motion_arguments(parser)
@@ -120,6 +127,16 @@ def run(args, resources, pipeline=None):
         raise SystemExit(f"找不到影片：{args.input}")
     if args.max_frames < 0:
         raise SystemExit("--max-frames 不可為負數")
+    triage_target = getattr(args, "stream_triage_fps", 0.0) or 0.0
+    if not math.isfinite(triage_target) or triage_target < 0:
+        raise SystemExit("--stream-triage-fps 不可為負數")
+    if triage_target:
+        if not streaming:
+            raise SystemExit("--stream-triage-fps 只能用在串流模式（網址輸入或 --stream-input）")
+        if not args.rules.strip():
+            raise SystemExit("--stream-triage-fps 需要 --rules（以規則的候選事件決定深度分析的時段）")
+        if args.save_video or args.save_masks is not None or getattr(args, "motion_notes", False):
+            raise SystemExit("--stream-triage-fps 不支援 --save-video、--save-masks、--motion-notes")
     config = load_config(args.model_config)
     rule_names = [name.strip() for name in args.rules.split(",") if name.strip()]
     rule_options, area_config = build_rule_options(args, rule_names)
@@ -175,6 +192,12 @@ def run(args, resources, pipeline=None):
             raise ValueError("影片 FPS 或尺寸無效，無法建立可靠時間軸")
         reported_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
         expected_frames = round(reported_frames) if math.isfinite(reported_frames) and reported_frames > 0 else None
+    if triage_target:
+        stride = round(fps / triage_target)  # 每 stride 幀取 1 幀；整數間隔讓篩選的時間軸固定
+        if stride >= 2:
+            return _run_triage(args, resources, pipeline, recorder, cap, stem, rule_names, rule_options, area_config,
+                               motion_config, compensator is not None, plate_backfill.seconds, stride)
+        print(f"串流只有 {fps:g} FPS，不到篩選幀率 {triage_target:g} 的兩倍，不降頻、每幀分析", flush=True)
     processor = FrameProcessor(fps, width, height, list(pipeline.models), compensator, area_config,
                                EgoMotionTracker(motion_config),
                                double_line_geometry_options(args.double_line_config))
@@ -336,6 +359,198 @@ def run(args, resources, pipeline=None):
     if rule_names:
         print(f"違規候選事件：{violations_path}")
         print(f"逐幀規則診斷：{diagnostics_path}")
+    return timings
+
+
+class _FrameAnalyzer:
+    """一組逐幀分析狀態（後處理、規則、鏡頭運動並行），模型共用。降頻篩選與每段深度分析各建一組（4bs）。
+    與 run() 主迴圈的逐幀步驟相同：車輛偵測後在背景估計鏡頭運動，標線模型可查詢本幀運動。"""
+
+    def __init__(self, pipeline, fps, width, height, stem, rule_names, rule_options, area_config, motion_config,
+                 double_line_config, use_compensator, timer):
+        self.pipeline = pipeline
+        self.processor = FrameProcessor(fps, width, height, list(pipeline.models),
+                                        RoadMarkingCompensator(motion_config) if use_compensator else None,
+                                        area_config, EgoMotionTracker(motion_config),
+                                        double_line_geometry_options(double_line_config))
+        self.processor.timer = self.timer = timer
+        self.engine = ViolationEngine(create_rules(rule_names, RuleContext(stem, fps, width, height), rule_options))
+        self.pending = {}
+
+    def _after_stage(self, stage, partial):
+        if stage == "vehicles":
+            p = self.pending
+            p["future"] = self.processor.start_motion(p["frame"], p["index"], p["time"], partial["vehicles"].records)
+
+    def _probe(self):
+        future = self.pending.get("future")
+        if future is None:
+            return None
+        (motion, _), _ = future.result()
+        return motion
+
+    def step(self, frame, index, timestamp):
+        self.pending.update(frame=frame, index=index, time=timestamp, future=None)
+        self.pipeline.stage_callback = self._after_stage
+        with self.timer.measure("models"):
+            results = self.pipeline.infer(frame, FrameContext(index, timestamp, motion_probe=self._probe))
+        result = self.processor.process(frame, index, timestamp, results, motion_future=self.pending["future"])
+        started = time.perf_counter()
+        events = self.engine.evaluate(result.record)
+        self.timer.seconds["rules"] = self.timer.seconds.get("rules", 0.0) + time.perf_counter() - started
+        return result, events
+
+    def close(self):
+        self.processor.close()
+
+
+def _run_triage(args, resources, pipeline, recorder, cap, stem, rule_names, rule_options, area_config,
+                motion_config, use_compensator, backfill_seconds, stride):
+    """串流降頻篩選（4bs，見 stream_triage.py）。輸出格式與一般串流相同，但逐幀紀錄、事件與剪片只涵蓋深度分析的時段；
+    篩選本身的逐幀紀錄與候選另存 *_triage_detections.jsonl、*_triage_violations.jsonl（幀號是取樣序號，stream_frame 是原幀號）。"""
+    fps, width, height = recorder.fps, recorder.width, recorder.height
+    triage_fps = fps / stride
+    out = args.output_dir
+    jsonl_path, csv_path = out / f"{stem}_detections.jsonl", out / f"{stem}_detections.csv"
+    violations_path, diagnostics_path = out / f"{stem}_violations.jsonl", out / f"{stem}_rule_diagnostics.jsonl"
+    triage_jsonl_path, triage_events_path = out / f"{stem}_triage_detections.jsonl", out / f"{stem}_triage_violations.jsonl"
+    jsonl = resources.enter_context(jsonl_path.open("w", encoding="utf-8"))
+    violations_file = resources.enter_context(violations_path.open("w", encoding="utf-8"))
+    diagnostics_file = resources.enter_context(diagnostics_path.open("w", encoding="utf-8"))
+    triage_jsonl = resources.enter_context(triage_jsonl_path.open("w", encoding="utf-8"))
+    triage_events = resources.enter_context(triage_events_path.open("w", encoding="utf-8"))
+    detection_csv = DetectionCsv(resources.enter_context(csv_path.open("w", newline="", encoding="utf-8-sig")))
+    triage_timer, deep_timer = StageTimer(), StageTimer()
+    common = (width, height, stem, rule_names, rule_options, area_config, motion_config, args.double_line_config,
+              use_compensator)
+    triage = _FrameAnalyzer(pipeline, triage_fps, *common, triage_timer)
+    resources.callback(triage.close)
+    windows = DeepWindows(fps, args.stream_triage_before, args.stream_triage_after, HOLD_SECONDS)
+    all_events, event_ids = [], set()
+    print(f"降頻篩選：每 {stride} 幀分析 1 幀（{triage_fps:g} FPS），候選事件前 {args.stream_triage_before:g} 秒到後 "
+          f"{args.stream_triage_after:g} 秒以原幀率深度分析", flush=True)
+
+    def emit(events, window_no):
+        for event in events:
+            if event["event_id"] in event_ids:  # 各段的規則狀態是新的，流水號可能重複
+                event["event_id"] = f"{event['event_id']}-w{window_no}"
+            event_ids.add(event["event_id"])
+            all_events.append(event)
+            violations_file.write(json.dumps(event, ensure_ascii=False) + "\n")
+        violations_file.flush()
+
+    def deep(start, end):
+        window_no = len(windows.completed) + 1
+        print(f"深度分析第 {window_no} 段：{start / fps:.1f}–{(end + 1) / fps:.1f} 秒（第 {start}–{end} 幀）", flush=True)
+        pipeline.reset()  # 每段從乾淨的追蹤與快取開始，與 4bo 的片段重播相同
+        analyzer = _FrameAnalyzer(pipeline, fps, *common, deep_timer)
+        backfill = PlateBackfill(backfill_seconds)
+        source = SegmentedCapture(recorder.folder)
+        last = start - 1
+        try:
+            if not source.set(cv2.CAP_PROP_POS_FRAMES, start):
+                raise RuntimeError(f"無法定位分段影格：{start}")
+            for index in range(start, end + 1):
+                with deep_timer.measure("decode"):
+                    ok, frame = source.read()
+                if not ok:
+                    raise RuntimeError(f"分段讀取失敗：第 {index} 幀")
+                timestamp = index / fps
+                result, events = analyzer.step(frame, index, timestamp)
+                with deep_timer.measure("write_jsonl"):
+                    jsonl.write(json.dumps(result.record, ensure_ascii=False) + "\n")
+                diagnostics_file.write(json.dumps({"frame": index, "rules": {
+                    rule.rule_id: getattr(rule, "diagnostics", {}) for rule in analyzer.engine.rules}},
+                    ensure_ascii=False) + "\n")
+                with deep_timer.measure("write_csv"):
+                    detection_csv.write(index, timestamp, result)
+                emit(backfill.update(result.record, events), window_no)
+                last = index
+            emit(backfill.finalize(analyzer.engine.finalize()), window_no)
+            write_final_double_line_diagnostics(diagnostics_file, analyzer.engine.rules)
+            jsonl.flush()
+        finally:
+            source.release()
+            analyzer.close()
+            backfill.close()
+            pipeline.reset()  # 篩選的追蹤從新的編號重新開始
+            if last >= start:  # 中途 Ctrl+C 時，已寫出的部分也算分析過，之後的時段不重疊（剪片要求幀號遞增）
+                windows.finish(start, last)
+
+    def trigger(events):
+        for event in events:
+            triage_events.write(json.dumps(dict(event, stream_frame=round(event["timestamp_sec"] * fps)),
+                                           ensure_ascii=False) + "\n")
+            windows.add(event["timestamp_sec"])
+        if events:
+            triage_events.flush()
+
+    started, position, termination = time.perf_counter(), 0, None
+    window_started, triage_frames = started, 0
+    try:
+        while True:
+            if args.max_frames and position >= args.max_frames:
+                termination = "max_frames"
+                break
+            with triage_timer.measure("decode"):
+                ok, frame = cap.read()
+            if not ok:
+                if position == 0:
+                    raise RuntimeError("影片未成功解碼任何影格")
+                termination = "stream_end"
+                break
+            if position % stride == 0:
+                result, events = triage.step(frame, triage_frames, position / fps)
+                record = result.record
+                record["frame"]["stream_frame"] = position
+                triage_jsonl.write(json.dumps(record, ensure_ascii=False) + "\n")
+                trigger(events)
+                triage_frames += 1
+                if triage_frames % 10 == 0:
+                    now = time.perf_counter()
+                    # 推論服務以「已處理 N 幀」計算已分析到串流的哪裡：N 是原幀號，不是取樣數
+                    print(f"已處理 {position + 1} 幀，累計 {(position + 1) / (now - started):.2f} FPS（含首次暖機），"
+                          f"最近 10 幀 {10 * stride / (now - window_started):.2f} FPS", flush=True)
+                    window_started = now
+            position += 1
+            for start, end in windows.due(position):
+                deep(start, end)
+                window_started = time.perf_counter()
+    except KeyboardInterrupt:
+        termination = "interrupted"
+        print(f"已中止串流分析（第 {position} 幀），深度分析已觸發的時段…", flush=True)
+    finally:
+        triage_jsonl.flush()
+    trigger(triage.engine.finalize())
+    for start, end in windows.due(position, final=True):
+        deep(start, end)
+    recorder.stop()
+    deep_frames = windows.frames()
+    timings = {"frames": position, "wall_seconds": round(time.perf_counter() - started, 3),
+               "ms_per_frame": deep_timer.summary(deep_frames),
+               "plate_backfill_seconds": backfill_seconds,
+               "completion": {"status": "stream" if termination == "stream_end" else "partial",
+                              "termination": termination, "expected_frames": None,
+                              "max_frames": args.max_frames, "masks_written": 0},
+               "triage": {"stride": stride, "fps": triage_fps, "frames": triage_frames,
+                          "ms_per_frame": triage_timer.summary(triage_frames),
+                          "triggers": windows.triggers, "skipped_triggers": windows.skipped,
+                          "before_seconds": args.stream_triage_before, "after_seconds": args.stream_triage_after,
+                          "windows_sec": [[round(a / fps, 3), round((b + 1) / fps, 3)] for a, b in windows.completed],
+                          "deep_frames": deep_frames, "deep_share": round(deep_frames / max(1, position), 4)},
+               "stream": recorder.stats()}
+    (out / f"{stem}_timings.json").write_text(json.dumps(timings, indent=2), encoding="utf-8")
+    print(f"降頻篩選完成：{position} 幀中深度分析 {deep_frames} 幀（{len(windows.completed)} 段），事件 {len(all_events)} 筆",
+          flush=True)
+    if args.violation_clips and all_events:
+        print("正在剪輯違規片段…", flush=True)
+        clips = export_violation_clips(recorder.folder, jsonl_path, all_events, out / f"{stem}_violation_clips",
+                                      args.clip_before, args.clip_after)
+        print(f"已輸出 {len(clips)} 個違規片段")
+    print(f"JSONL：{jsonl_path}")
+    print(f"CSV：{csv_path}")
+    print(f"違規候選事件：{violations_path}")
+    print(f"逐幀規則診斷：{diagnostics_path}")
     return timings
 
 

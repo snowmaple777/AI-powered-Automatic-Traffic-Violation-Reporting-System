@@ -327,7 +327,15 @@ class StreamRecorder(threading.Thread):
     def _write_info(self):
         tmp = self.folder / (INFO_NAME + ".tmp")  # 先寫暫存再換名，讀取端不會讀到寫一半的檔案
         tmp.write_text(json.dumps(self.stats(), ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, self.folder / INFO_NAME)
+        # Windows：讀取端（分析程序、推論服務）剛好開著舊檔時換名會被拒絕，稍後重試
+        for attempt in range(50):
+            try:
+                os.replace(tmp, self.folder / INFO_NAME)
+                return
+            except PermissionError:
+                if attempt == 49:
+                    raise
+                time.sleep(.01)
 
     def wait_segment(self, index):
         """等第 index 個分段關檔；收錄結束且沒有這一段時回傳 None。"""
@@ -556,8 +564,9 @@ class SegmentedCapture:
         self.folder = Path(folder)
         info = json.loads((self.folder / INFO_NAME).read_text(encoding="utf-8"))
         self.fps, self.width, self.height = info["fps"], info["width"], info["height"]
-        self.segments = [json.loads(line) for line in (self.folder / INDEX_NAME).read_text(encoding="utf-8").splitlines()
-                         if line.strip()]
+        # 收錄中也可開啟（4bs 深度分析）：只取完整的行，正在寫入的最後一行略過。
+        text = (self.folder / INDEX_NAME).read_text(encoding="utf-8")
+        self.segments = [json.loads(line) for line in text[:text.rfind("\n") + 1].splitlines() if line.strip()]
         self.total = sum(s["frames"] for s in self.segments)
         self.position, self.cap, self.current = 0, None, None
 

@@ -162,8 +162,23 @@ def snapshot(video_path, out_path, seconds=None, frame_index=None, max_width=128
         cap.release()
 
 
+def is_h264(path):
+    """影片已經是 H.264（例如 run_pipeline --clip-raw 用 Windows 內建編碼器寫的片段）。"""
+    if cv2 is None:
+        return False
+    cap = cv2.VideoCapture(str(path))
+    try:
+        code = int(cap.get(cv2.CAP_PROP_FOURCC) or 0)
+    finally:
+        cap.release()
+    return code.to_bytes(4, "little").decode("ascii", "replace").lower() in ("h264", "avc1")
+
+
 def to_h264(src, dst, ffmpeg):
     """片段轉成瀏覽器能播的 H.264；失敗就原檔複製（UI 會改播原影片片段）。回傳是否為 H.264。"""
+    if not ffmpeg and is_h264(src):
+        shutil.copyfile(src, dst)
+        return True
     if ffmpeg:
         r = subprocess.run([ffmpeg, "-y", "-loglevel", "error", "-i", str(src), "-c:v", "libx264",
                             "-preset", "veryfast", "-pix_fmt", "yuv420p", "-movflags", "+faststart",

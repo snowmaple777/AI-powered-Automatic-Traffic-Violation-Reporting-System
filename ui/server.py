@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from core import address, auth, clips, geo, gps_parser, gps_sim, store  # noqa: E402
+from core import address, auth, clips, geo, gps_parser, gps_sim, longcut, store  # noqa: E402
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -209,8 +209,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json([{"name": k, "code": v} for k, v in geo.CITY_CODES.items()])
         if p == "/api/clips":
             return self._json(clips.list_clips())
-        if p == "/api/longs":
-            return self._json(clips.list_longs())
+        if p == "/api/longs":  # 長片自動切段（4bu）：待切分＋切段進度
+            return self._json(longcut.list_longs())
         if p == "/api/jobs":
             return self._json(store.list_jobs())
         if p.startswith("/api/jobs/"):
@@ -260,7 +260,12 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length") or 0)
             if n <= 0:
                 return self._error("沒有收到檔案")
-            return self._json(clips.save_long(q.get("filename", ["long.mp4"])[0], self.rfile, n))
+            saved = clips.save_long(q.get("filename", ["long.mp4"])[0], self.rfile, n)
+            return self._json(dict(saved, record=longcut.enqueue(saved["name"])))  # 上傳完就排進切段
+        if p == "/api/longs/start":
+            return self._json(longcut.enqueue(self._body_json().get("name")))
+        if p == "/api/longs/cancel":
+            return self._json(longcut.cancel(self._body_json().get("name")) or {})
         if p == "/api/gps/simulate":  # 沒有 GPS 檔時產生模擬軌跡（展示用）
             b = self._body_json()
             lat, lon = float(b.get("lat", geo.PRESETS[0]["lat"])), float(b.get("lon", geo.PRESETS[0]["lon"]))
@@ -353,6 +358,7 @@ def main():
             print(f"  手機（同一個 Wi-Fi）：http://{ip}:{args.port}")
     print("  關閉：在這個視窗按 Ctrl+C")
     print("=" * 56)
+    longcut.resume()  # 排隊中的長片接著切
     if not args.no_browser:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     try:

@@ -70,7 +70,7 @@
 | --- | --- |
 | `run_pipeline.py` | 影片辨識主流程：模型推論 → `FrameProcessor` → 規則 → 輸出 |
 | `stream_source.py` | 串流輸入（4bq、4br）：串流網址或 `--stream-input` 時以獨立程序收錄成固定幀率分段（預設 FFV1 無損、2 秒一段），分析與剪片都讀分段；模擬串流見 `tools/simulate_stream.py` |
-| `stream_triage.py` | 串流降頻篩選（4bs，`--stream-triage-fps`，預設關閉）：降頻規則的候選事件 → 前 8 後 6 秒以原幀率重新分析的區間；主迴圈在 `run_pipeline._run_triage` |
+| `stream_triage.py` | 串流降頻篩選（4bs，`--stream-triage-fps`，預設關閉）：降頻規則的候選事件（4bt 起含規則保留中的候選）→ 前 8 後 6 秒（觸發車輛較早出現時從它出現前 1 秒）以原幀率重新分析的區間；篩選略過深度／車牌／OCR；主迴圈在 `run_pipeline._run_triage`；4bu 起檔案輸入也可用（`--triage-fps`，長片切段；網頁端 `ui/core/longcut.py`） |
 | `frame_processing.py` | 逐幀後處理（模型輸出 → 觀測紀錄），順序固定，見 5.2 |
 | `pipeline_outputs.py` | CSV 與標註畫面 |
 | `observation_schema.py` | **觀測紀錄的資料契約**（欄位、寫入者、版本） |
@@ -98,6 +98,7 @@
 - 固定順序：`STAGES = ("vehicles", "traffic_lights", "road_markings", "depth", "plates", "ocr")`（`model_library/registry.py`）。
 - 每個模型繼承 `PerceptionModel`，實作 `infer(frame, context: FrameContext, upstream) -> ModelResult(records, artifacts)`；
   `artifacts` 放大型陣列（遮罩等），**不寫入 JSONL**。可選實作 `reset()`、`close()`。
+  `ModelPipeline.infer(frame, context, skip=())`：`skip` 的階段該幀不呼叫、結果為空的 `ModelResult`（4bt 串流降頻篩選用）。
 - 新後端：在 `BACKENDS` 註冊（或 `register_backend`），設定檔以 `"backend": "<名稱>"`、`"params": {...}` 使用；
   `weights`、`config` 等路徑相對於設定檔所在目錄解析，啟動時檢查檔案存在。
 - **快取／降頻語意**：降頻的模型在未推論的幀回傳上次結果並標記 `source_frame`（車輛是每筆紀錄的 `source_frame`；標線是 `artifacts["source_frame"]`）。
@@ -225,7 +226,7 @@
 再以 manifest 加變體比較。指標摘要：`batch_eval.summarize(label)` 或 `eval/metrics.py`。影片層級＝該片是否輸出目標規則事件；事件層級只計 `reviewed: true` 的影片。
 
 ### 7.3 回報格式
-每次交付或整合，在 `docs/refactor_log.md` 新增一節（目前編號到 4bs；4aa 保留給 Astra 的標線尺度實驗），包含：修改內容、原因、驗證方式、
+每次交付或整合，在 `docs/refactor_log.md` 新增一節（目前編號到 4bu；4aa 保留給 Astra 的標線尺度實驗），包含：修改內容、原因、驗證方式、
 前後數字（影片層級、事件層級 TP／FP／FN、速度）、逐片變動的事件、已知副作用、是否採用。
 
 ---

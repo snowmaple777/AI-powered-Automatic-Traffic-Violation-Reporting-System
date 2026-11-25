@@ -150,7 +150,7 @@ class Manager:
     def public(self, job):
         keys = ("id", "state", "stage", "stages", "created", "started", "finished", "options", "input_name", "source", "stream",
                 "video", "frames_total", "frames_done", "fps", "fps_recent", "eta_sec", "stats", "found",
-                "clips_done", "error", "preview_version", "has_result")
+                "clips_done", "error", "preview_version", "has_result", "triage")
         out = {k: job.get(k) for k in keys}
         log = job.get("_log")
         out["log"] = list(log)[-60:] if log is not None else (job.get("log") or [])[-60:]
@@ -248,7 +248,13 @@ class Manager:
             "clip_before": float(options.get("clip_before") or 5),
             "clip_after": float(options.get("clip_after") or 5),
             "device": options.get("device") or "auto",
+            # 4bu 長片切段：降頻篩選＋原始片段（不畫標註，之後要再分析）
+            "triage": float(options.get("triage") or 0),
+            "clip_raw": str(options.get("clip_raw") or "").lower() in ("1", "true", "yes"),
         }
+        if opts["triage"] and not 2 <= opts["triage"] <= 30:
+            shutil.rmtree(jdir, ignore_errors=True)
+            raise ValueError("降頻篩選的幀率要在 2～30 FPS 之間（0＝每幀分析）")
         frames_total = meta["frames"] if meta and meta.get("frames") else None
         if opts["max_seconds"]:
             fps = (meta or {}).get("fps") or 30.0
@@ -390,11 +396,13 @@ class Manager:
             cmd += ["--stream-name", STREAM_STEM, "--stream-stop-file", str(jdir / "stop")]
             if opts.get("max_seconds"):
                 cmd += ["--stream-max-seconds", str(opts["max_seconds"])]
-            if opts.get("triage"):
-                cmd += ["--stream-triage-fps", f"{opts['triage']:g}"]
-                job["triage"] = {"fps": opts["triage"], "windows": 0, "deep": None}
         elif opts.get("max_seconds"):
             cmd += ["--max-frames", str(job["frames_total"] or int(opts["max_seconds"] * 30))]
+        if opts.get("triage"):  # 串流（4bs）與檔案（4bu 長片切段）都可降頻篩選
+            cmd += ["--stream-triage-fps", f"{opts['triage']:g}"]
+            job["triage"] = {"fps": opts["triage"], "windows": 0, "deep": None}
+        if opts.get("clip_raw"):
+            cmd += ["--clip-raw"]
         cmd += self.extra_args
         job.update(state="running", stage="loading", started=_now())
         started = time.time()

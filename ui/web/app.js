@@ -358,7 +358,7 @@ async function refreshClipCount() {
   } catch (e) { /* 未登入或伺服器沒開 */ }
 }
 
-async function openClipLibrary() {
+async function openClipLibrary(focusGroup) {
   openModal(`<h2>${ic("layers")}已切好的片段</h2>
     <div class="lib-bar">
       <select id="lib-group"><option value="">全部資料夾</option></select>
@@ -382,6 +382,7 @@ async function openClipLibrary() {
       $("#lib-path").innerHTML = `${ic("folder", "xs")}你的片段資料夾：${esc(r.dir)}`;
       $("#lib-group").innerHTML = `<option value="">全部資料夾（${all.length}）</option>` +
         r.groups.map((g) => `<option value="${esc(g)}">${esc(g || "（根目錄）")}（${all.filter((c) => c.group === g).length}）</option>`).join("");
+      if (typeof focusGroup === "string" && r.groups.includes(focusGroup)) { $("#lib-group").value = focusGroup; focusGroup = null; }
       setClipLine(all.length, all);
       render();
     } catch (e) { $("#lib-grid").innerHTML = `<div class="lib-empty">${ic("alert")}${esc(e.message)}</div>`; }
@@ -487,13 +488,52 @@ function openCloudImport() {
   });
 }
 
-/* ---- 長片自動切段（上傳到待切分資料夾，由切段程式處理） ---- */
+/* ---- 長片自動切段（4bu：上傳後由推論服務降頻掃描，疑似違規剪成短片放進片段庫） ---- */
+const LONG_STATES = {
+  waiting: ["clock", "等待切段", "amber"], queued: ["clock", "排隊中", "amber"],
+  uploading: ["upload", "傳送中", "blue"], cutting: ["scissors", "粗略切段", "violet"],
+  saving: ["download", "存成片段", "violet"], done: ["check", "完成", "green"],
+  error: ["alert", "失敗", "red"], cancelled: ["x", "已取消", "muted"],
+};
+function longItemHTML(x) {
+  const [icon, label, tone] = LONG_STATES[x.state] || LONG_STATES.waiting;
+  const pct = (v) => `${Math.floor((v || 0) * 100)}%`;
+  let pill = label, bar = null, sub = [], act = "";
+  if (x.state === "uploading") { pill += ` ${pct(x.upload)}`; bar = x.upload; }
+  if (x.state === "cutting") {
+    pill += ` ${pct(x.progress)}`; bar = x.progress;
+    if (x.queued) sub.push("分析服務排隊中");
+    else if (x.eta_sec) sub.push(`剩約 ${fmtDur(x.eta_sec)}`);
+    if (x.deep) sub.push(`逐幀確認 ${mmss(x.deep[0])}–${mmss(x.deep[1])}`);
+  }
+  if (x.state === "saving") bar = 1;
+  if (["cutting", "saving"].includes(x.state) && x.found) sub.push(`發現 ${x.found} 筆疑似違規`);
+  if (x.state === "done") {
+    pill = x.clips ? `完成・${x.clips} 段` : "沒有疑似違規";
+    if (x.clips) act = `<button class="btn soft small" type="button" data-act="open" data-folder="${esc(x.folder || "")}">${ic("layers")}查看片段</button>`;
+  }
+  if (x.state === "error") {  // 推論服務的錯誤可能很長（含路徑）：顯示前 160 字，完整內容在滑鼠提示
+    const msg = x.error || "切段失敗";
+    sub.push({ wrap: esc(msg.length > 160 ? msg.slice(0, 160) + "…" : msg), title: esc(msg) });
+  }
+  if (["waiting", "error", "cancelled"].includes(x.state))
+    act = `<button class="btn soft small" type="button" data-act="start">${ic(x.state === "waiting" ? "scissors" : "refresh")}${x.state === "waiting" ? "開始切段" : "重試"}</button>`;
+  if (["queued", "uploading", "cutting"].includes(x.state))
+    act = `<button class="btn ghost small" type="button" data-act="cancel">${ic("x")}取消</button>`;
+  const size = x.size ? `${(x.size / 1e6).toFixed(1)} MB` : "";
+  return `<div class="long-item" data-name="${esc(x.name)}">
+    <div class="long-row">${ic("video", "xs")}<b title="${esc(x.name)}">${esc(x.name)}</b><span>${size}</span><span>${esc(x.modified || "")}</span>
+      <em class="tone-${tone}">${ic(icon, "xs")}${pill}</em></div>
+    ${bar === null ? "" : `<div class="progress slim${x.state === "saving" ? " busy" : ""}"><div style="width:${Math.min(100, bar * 100)}%"></div></div>`}
+    ${sub.length || act ? `<div class="long-sub"><span>${sub.map((s) => s.wrap ? `<i class="wrap" title="${s.title}">${s.wrap}</i>` : `<i>${s}</i>`).join("")}</span>${act}</div>` : ""}
+  </div>`;
+}
 function openLongUpload() {
   openModal(`<h2>${ic("scissors")}長片自動切段</h2>
     <div class="long-flow">
       <div><span class="ic-bubble sm amber">${ic("upload")}</span><b>上傳長片</b><small>整趟行車的原始檔</small></div>
       <i>${ic("right")}</i>
-      <div><span class="ic-bubble sm violet">${ic("scissors")}</span><b>自動切段</b><small>切成一段段短片</small></div>
+      <div><span class="ic-bubble sm violet">${ic("scissors")}</span><b>自動切段</b><small>AI 快速掃過，剪下疑似違規</small></div>
       <i>${ic("right")}</i>
       <div><span class="ic-bubble sm blue">${ic("layers")}</span><b>挑片段分析</b><small>在「已切好的片段」選擇</small></div>
     </div>
@@ -501,27 +541,45 @@ function openLongUpload() {
       <input type="file" id="long-input" accept="video/*" hidden>
       <div class="dz-art">${ic("upload")}</div>
       <div class="dz-text">拖曳長片到這裡，或 <u>選擇檔案</u></div>
-      <div class="dz-hint">MP4・MOV・AVI・可達數 GB</div>
+      <div class="dz-hint">MP4・MOV・AVI・可達數 GB・上傳後自動切段</div>
     </label>
     <div id="long-progress" class="progress hidden"><div></div><span></span></div>
-    <h3 class="mini-title" style="margin-top:20px">切段中的長片</h3>
+    <h3 class="mini-title" style="margin-top:20px">長片</h3>
     <div class="long-list" id="long-list"><div class="muted small">讀取中…</div></div>
-    <div class="long-next">${ic("info", "xs")}<span>切好的片段會放進「已切好的片段」，從那裡挑出有違規的那一段來分析。</span>
+    <div class="long-next">${ic("info", "xs")}<span>每段是疑似違規的前 8 秒到後 6 秒，放在以長片命名的資料夾。</span>
       <button class="btn soft small" type="button" id="long-to-lib">${ic("layers")}去挑片段</button></div>`);
-  $("#long-to-lib").onclick = openClipLibrary;
-  const ldz = $("#long-dz"), input = $("#long-input");
+  $("#long-to-lib").onclick = () => openClipLibrary();
+  const ldz = $("#long-dz"), input = $("#long-input"), list = $("#long-list");
+  let timer = null, doneCount = null;
   const loadList = async () => {
+    clearTimeout(timer);
+    if (!document.body.contains(list)) return;  // 視窗已關閉
     try {
       const r = await api("/api/longs");
-      $("#long-list").innerHTML = r.items.length
-        ? r.items.map((x) => `<div class="long-item">${ic("video", "xs")}<b>${esc(x.name)}</b><span>${(x.size / 1e6).toFixed(1)} MB</span><span>${esc(x.modified)}</span><em>${ic("clock", "xs")}等待切段</em></div>`).join("")
-        : `<div class="muted small">目前沒有待切分的長片</div>`;
-    } catch (e) { $("#long-list").innerHTML = `<div class="muted small">${esc(e.message)}</div>`; }
+      if (!document.body.contains(list)) return;
+      list.innerHTML = r.items.length ? r.items.map(longItemHTML).join("") : `<div class="muted small">還沒有上傳長片</div>`;
+      const done = r.items.filter((x) => x.state === "done").length;
+      if (doneCount !== null && done > doneCount) refreshClipCount();  // 切好新的片段：首頁「已切好的片段」跟著更新
+      doneCount = done;
+      if (r.active) timer = setTimeout(loadList, 2000);
+    } catch (e) { list.innerHTML = `<div class="muted small">${esc(e.message)}</div>`; }
   };
+  list.addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-act]");
+    if (!btn) return;
+    const name = btn.closest(".long-item").dataset.name;
+    if (btn.dataset.act === "open") { openClipLibrary(btn.dataset.folder); return; }
+    btn.disabled = true;
+    try {
+      await postJSON(`/api/longs/${btn.dataset.act}`, { name });
+      if (btn.dataset.act === "cancel") toast("已取消切段", "x");
+    } catch (err) { toast(err.message, "alert"); }
+    loadList();
+  });
   const send = async (file) => {
     try {
       const r = await xhrUpload("/api/longs", file, $("#long-progress"));
-      toast(`${r.name} 上傳完成，正在等待切段`, "scissors");
+      toast(`${r.name} 上傳完成，開始切段`, "scissors");
       loadList();
     } catch (e) { toast(e.message, "alert"); }
   };

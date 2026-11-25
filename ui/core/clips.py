@@ -3,7 +3,7 @@
 每個帳號各自一份，彼此看不到：
 - 片段庫：<clips_dir>/<帳號資料夾>/ ，影片切段程式把某個帳號的長片切好後放這裡，
   可以有子資料夾（一個子資料夾＝一支長片切出來的所有片段）。
-- 長片收件匣：<片段庫>/_待切分/ ，從介面上傳的長片先放這裡，等切段程式處理；
+- 長片收件匣：<片段庫>/_待切分/ ，從介面上傳的長片先放這裡，由 longcut.py 交給推論服務自動切段（4bu）；
   底線開頭的資料夾不會出現在片段清單。
 - <帳號資料夾> 是 Email 換掉特殊字元，例如 di@gmail.com → di_at_gmail.com。
 路徑可在 ui/config.json 用 "clips_dir"（預設 ui/clips）改，相對路徑以專案根目錄為準。
@@ -218,7 +218,7 @@ def import_url(url: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 長片收件匣（給切段程式處理）
+# 長片收件匣（longcut.py 自動切段；切段進度見 longcut.list_longs）
 # ---------------------------------------------------------------------------
 def save_long(filename: str, stream, length: int) -> dict:
     store.require_user()
@@ -240,15 +240,4 @@ def save_long(filename: str, stream, length: int) -> dict:
             remaining -= len(chunk)
     return {"name": os.path.basename(path), "size": os.path.getsize(path), "inbox": inbox}
 
-
-def list_longs() -> dict:
-    inbox = long_inbox()
-    items = []
-    if os.path.isdir(inbox):
-        for f in sorted(os.listdir(inbox)):
-            full = os.path.join(inbox, f)
-            if os.path.isfile(full) and _is_video(f):
-                st = os.stat(full)
-                items.append({"name": f, "size": st.st_size, "modified": _stamp(st.st_mtime)})
-    return {"inbox": inbox, "items": items}
 

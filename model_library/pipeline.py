@@ -18,9 +18,12 @@ class ModelPipeline:
     # 該階段結果的 CPU 工作（例如車輛偵測後的鏡頭運動估計），與後續 GPU 推論並行。
     stage_callback = None
 
-    def infer(self, frame, context):
+    def infer(self, frame, context, skip=()):
+        """skip：這一幀不跑的階段（結果為空的 ModelResult；串流降頻篩選用，4bt）。"""
         results = {name: ModelResult() for name in STAGES}
         for name, model in self.models.items():
+            if name in skip:
+                continue
             result = model.infer(frame, context, results)
             if not isinstance(result, ModelResult):
                 raise TypeError(f"{name}.infer must return ModelResult")

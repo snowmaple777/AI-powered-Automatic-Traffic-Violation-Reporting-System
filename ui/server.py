@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from core import address, auth, clips, geo, gps_parser, gps_sim, longcut, store  # noqa: E402
+from core import address, auth, clips, geo, gps_parser, gps_sim, road_sim, store  # noqa: E402
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -202,15 +202,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(geo.PRESETS)
         if p == "/api/geocode/address":  # 線上反查路名（查不到回 ok: false）
             res = address.reverse_address(float(q["lat"][0]), float(q["lon"][0]))
-            return self._json({"ok": bool(res), **(res or {})})
+            return self._json({"ok": bool(res and res.get("address")), **(res or {})})
         if p == "/api/geocode":
             return self._json(geo.reverse_geocode(float(q["lat"][0]), float(q["lon"][0])))
         if p == "/api/cities":
             return self._json([{"name": k, "code": v} for k, v in geo.CITY_CODES.items()])
         if p == "/api/clips":
             return self._json(clips.list_clips())
-        if p == "/api/longs":  # 長片自動切段（4bu）：待切分＋切段進度
-            return self._json(longcut.list_longs())
+        if p == "/api/longs":
+            return self._json(clips.list_longs())
         if p == "/api/jobs":
             return self._json(store.list_jobs())
         if p.startswith("/api/jobs/"):
@@ -260,19 +260,25 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length") or 0)
             if n <= 0:
                 return self._error("沒有收到檔案")
-            saved = clips.save_long(q.get("filename", ["long.mp4"])[0], self.rfile, n)
-            return self._json(dict(saved, record=longcut.enqueue(saved["name"])))  # 上傳完就排進切段
-        if p == "/api/longs/start":
-            return self._json(longcut.enqueue(self._body_json().get("name")))
-        if p == "/api/longs/cancel":
-            return self._json(longcut.cancel(self._body_json().get("name")) or {})
+            return self._json(clips.save_long(q.get("filename", ["long.mp4"])[0], self.rfile, n))
         if p == "/api/gps/simulate":  # 沒有 GPS 檔時產生模擬軌跡（展示用）
             b = self._body_json()
             lat, lon = float(b.get("lat", geo.PRESETS[0]["lat"])), float(b.get("lon", geo.PRESETS[0]["lon"]))
             duration = min(max(float(b.get("duration") or 60), 5), 3600)
-            track = gps_sim.simulate(lat, lon, gps_sim.parse_local(b.get("start")), duration, b.get("seed"))
+            start, name = gps_sim.parse_local(b.get("start")), b.get("name") or "simulated"
+            # 先試沿真實道路（要網路）；沒網路或找不到合適路線就退回平面隨機軌跡
+            try:
+                track, roads = road_sim.simulate(lat, lon, start, duration, b.get("seed"), check="start", tries=5)
+            except road_sim.Offline:
+                track, roads = None, None
+            if track:
+                gpx = road_sim.to_gpx(track, name, roads)
+            else:
+                track, roads = gps_sim.simulate(lat, lon, start, duration, b.get("seed")), []
+                gpx = gps_sim.to_gpx(track, name)
             return self._json({"count": len(track), "track": gps_parser.track_to_json(track), "simulated": True,
-                               "geo": geo.reverse_geocode(lat, lon), "gpx": gps_sim.to_gpx(track, b.get("name") or "simulated")})
+                               "road": bool(roads), "roads": roads,
+                               "geo": geo.reverse_geocode(track[0]["lat"], track[0]["lon"]), "gpx": gpx})
         if p == "/api/gps/parse":
             n = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(n)
@@ -289,8 +295,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(store.create_job(self._body_json()))
         if p.startswith("/api/jobs/") and p.endswith("/cancel"):
             return self._json(store.cancel_job(p.split("/")[3]))
-        if p.startswith("/api/jobs/") and p.endswith("/stop"):
-            return self._json(store.stop_job(p.split("/")[3]))
         if p == "/api/cases":
             return self._json(store.create_case(self._body_json()))
         if p.startswith("/api/cases/") and p.endswith("/autofill"):
@@ -358,7 +362,6 @@ def main():
             print(f"  手機（同一個 Wi-Fi）：http://{ip}:{args.port}")
     print("  關閉：在這個視窗按 Ctrl+C")
     print("=" * 56)
-    longcut.resume()  # 排隊中的長片接著切
     if not args.no_browser:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     try:

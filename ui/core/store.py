@@ -231,7 +231,7 @@ def create_job(payload: dict) -> dict:
                     "triage": float(opts["triage"]) if stream_url and opts.get("triage") else 0},
         "cancel": False, "fps": None, "eta_sec": None, "remote": None,
         "recorded_at": payload.get("recorded_at"),
-        "gps": {"mode": gps.get("mode", "point"), "points": len(track),
+        "gps": {"mode": gps.get("mode", "point"), "points": len(track), "simulated": bool(gps.get("simulated")),
                 "lat": track[0]["lat"] if track else None, "lon": track[0]["lon"] if track else None},
         "gps_track": track,
         "stages": [{"key": k, "label": l, "weight": w, "progress": 0.0, "state": "pending"}
@@ -318,7 +318,9 @@ def _enrich(job, events):
         ev["datetime"] = when.strftime("%Y-%m-%d %H:%M:%S")
         ev["date"], ev["time"] = when.strftime("%Y-%m-%d"), when.strftime("%H:%M")
         ev["ts_label"] = fmt_ts(ev["t"])
-        pos = gps_parser.position_at(job.get("gps_track"), ev["t"], start)
+        # 模擬軌跡跟影片內容其實對不上，同一支影片的每筆違規都用影片開頭那一點，地址才會一致
+        sim = (job.get("gps") or {}).get("simulated")
+        pos = gps_parser.position_at(job.get("gps_track"), 0.0 if sim else ev["t"], start)
         if pos:
             ev["lat"], ev["lon"] = round(pos["lat"], 6), round(pos["lon"], 6)
             ev["geo"] = geo.reverse_geocode(pos["lat"], pos["lon"])

@@ -1,6 +1,9 @@
 /* 馬路三寶檢舉輔助系統 — 前端（原生 JS，不需要建置工具） */
 "use strict";
 
+// Set only by the bundled Android project page, before this shared script loads.
+const phoneWorkflow = window.autoFormMobile === true;
+
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -102,6 +105,10 @@ const confText = (v) => (v.evidence_kind === "conditions"
   ? `條件 ${v.conditions_met}/${v.conditions_total}` : `信心 ${Math.round((v.confidence || 0) * 100)}%`);
 
 async function api(path, opts = {}) {
+  if (phoneWorkflow && path === "/api/profile") {
+    if (opts.method === "POST") throw new Error("請在 App 的檢舉人設定儲存個資");
+    return {};
+  }
   const t = tokenStore.get();
   const headers = Object.assign({}, opts.headers || {});
   if (t && !headers["X-Auth-Token"]) headers["X-Auth-Token"] = t;
@@ -146,6 +153,7 @@ function animateNum(el, to) {
 
 /* ============================ 導覽 ============================ */
 function showView(name) {
+  if (phoneWorkflow && name === "profile") { location.href = "autoform://profile"; return; }
   $$(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
   $$(".nav a").forEach((a) => a.classList.toggle("active", a.dataset.view === name));
   if (name === "cases") loadCases();
@@ -735,6 +743,7 @@ function overallProgress(job) {
 async function pollJob() {
   let job;
   try { job = await api(`/api/jobs/${state.job.id}`); } catch (e) { return; }
+  if (job.id !== state.job?.id) return;
   applyJob(job, false);
 }
 /* 把分析狀態畫到畫面上；restoring=true 表示從草稿還原（不跳提示、不自動換頁） */
@@ -1031,6 +1040,7 @@ $("#case-form").addEventListener("input", () => {
 });
 const maskId = (id) => (id && id.length > 4 ? id.slice(0, 2) + "•".repeat(id.length - 4) + id.slice(-2) : id);
 function renderReporter() {
+  if (phoneWorkflow) { $("#reporter-box").textContent = "填表時會帶入此帳號的檢舉人資料（可在「檢舉人」修改）。"; return; }
   const p = state.profile;
   if (!p.reporter_name) { $("#reporter-box").innerHTML = `<div class="empty-reporter">${ic("alert")}尚未設定檢舉人資料，請點右上「修改」。</div>`; return; }
   $("#reporter-box").innerHTML = `<div class="reporter"><div class="avatar">${esc(p.reporter_name.slice(0, 1))}</div>
@@ -1112,10 +1122,16 @@ function renderSubmit(c, root, inModal = false) {
   stopAfPoll();
   const tabs = $(".af-tabs", root);
   if (c.status === "submitted") { tabs.remove(); return renderSuccess(c, area, false); }
+  const renderOnPhone = () => {
+    area.innerHTML = `<a class="btn primary big" href="autoform://case/${encodeURIComponent(c.id)}">${ic("send")}在手機開啟${esc(c.city)}自動填表</a>
+      <p class="muted small">案件與佐證將帶入官網。請在手機完成驗證，並依官網回覆確認受理狀態。</p>`;
+  };
   const setMode = (m) => {
     AF.mode = m;
     $$("[data-af-mode]", tabs).forEach((b) => b.classList.toggle("active", b.dataset.afMode === m));
-    if (m === "sim") renderSimSubmit(c, area); else renderRealSubmit(c, area);
+    if (m === "sim") renderSimSubmit(c, area);
+    else if (phoneWorkflow) renderOnPhone();
+    else renderRealSubmit(c, area);
   };
   $$("[data-af-mode]", tabs).forEach((b) => (b.onclick = () => { if (!AF.running) setMode(b.dataset.afMode); else toast("填表進行中，請先完成或取消", "alert"); }));
   setMode(c.autofill ? "real" : (AF.mode || "real"));
@@ -1419,6 +1435,7 @@ let appStarted = false, authMode = "login";
     catch (e) { tokenStore.set(null); }
   }
   if (!user) return showAuth();
+  if (phoneWorkflow) return enterApp(user);
   // 已登入但檢舉人資料還沒填齊：先請他補
   try {
     const prof = await api("/api/profile");
@@ -1506,6 +1523,7 @@ $("#auth-form").addEventListener("submit", async (e) => {
 
 async function finishLogin(res, remember, isNew) {
   tokenStore.set(res.token, remember);
+  if (phoneWorkflow) { $("#auth-form").reset(); enterApp(res.user); return; }
   // 第一次登入：把姓名與 Email 帶進檢舉人資料
   let prof = null;
   try {

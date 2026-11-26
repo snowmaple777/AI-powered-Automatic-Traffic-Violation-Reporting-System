@@ -23,6 +23,15 @@ try:
 except ImportError:  # 沒有 opencv 仍可用（只是沒有畫面）
     cv2 = None
 
+
+def _write_image(path, image):
+    """cv2.imwrite 在 Windows 遇到中文等非 ASCII 路徑會靜默失敗，改成先編碼再用 Python 寫檔。"""
+    ok, buf = cv2.imencode(os.path.splitext(path)[1] or ".jpg", image)
+    if ok:
+        with open(path, "wb") as f:
+            f.write(buf.tobytes())
+    return bool(ok)
+
 # ---------------------------------------------------------------------------
 # 分析流程階段（UI 進度條依此顯示）
 # ---------------------------------------------------------------------------
@@ -301,7 +310,9 @@ class SimulatedAnalyzer(BaseAnalyzer):
         size = (int(w * scale) // 2 * 2, int(h * scale) // 2 * 2)
         raw = dst + ".raw.mp4"
         vw = None
-        for codec in ("avc1", "mp4v"):
+        # 有 ffmpeg 時最後一定會轉成 H.264，直接寫 mp4v 即可；先試 avc1 只會讓沒附 OpenH264 的
+        # OpenCV 印出「Failed to load OpenH264 library」等錯誤（不影響結果）。
+        for codec in (("mp4v",) if ffmpeg else ("avc1", "mp4v")):
             vw = cv2.VideoWriter(raw, cv2.VideoWriter_fourcc(*codec), fps, size)
             if vw.isOpened():
                 break
@@ -368,7 +379,7 @@ class SimulatedAnalyzer(BaseAnalyzer):
             t = duration * i / n_samples
             f = grab(t)
             if f is not None:
-                cv2.imwrite(preview, self._draw(f, tracks, t, "DECODING", show_boxes=False))
+                _write_image(preview, self._draw(f, tracks, t, "DECODING", show_boxes=False))
             stats["frames_done"] = int(t * meta["fps"])
             report("decode", (i + 1) / (n_samples // 2), f"擷取影格 {int(t * meta['fps'])}/{meta['frames']}", preview)
             self._sleep(0.25)
@@ -379,7 +390,7 @@ class SimulatedAnalyzer(BaseAnalyzer):
             t = duration * (i + 0.5) / n_samples
             f = grab(t)
             if f is not None:
-                cv2.imwrite(preview, self._draw(f, tracks, t, "DETECTING"))
+                _write_image(preview, self._draw(f, tracks, t, "DETECTING"))
             active = [tr for tr in tracks if tr["t0"] <= t <= tr["t1"]]
             seen.update(tr["id"] for tr in active)
             plates = [tr["plate"] for tr in active if tr["plate"]]
@@ -416,7 +427,7 @@ class SimulatedAnalyzer(BaseAnalyzer):
             if cv2 is not None:
                 ok, snapshot = self._write_clip(video, clip, ev, tracks, meta["fps"], ffmpeg)
             if snapshot is not None:
-                cv2.imwrite(snap, snapshot)
+                _write_image(snap, snapshot)
             ev["clip"] = os.path.basename(clip) if ok else None
             ev["snapshot"] = os.path.basename(snap) if snapshot is not None else None
             report("clip", (i + 1) / len(events), f"剪輯 {ev['id']}：{fmt_ts(ev['t_start'])} ~ {fmt_ts(ev['t_end'])}")

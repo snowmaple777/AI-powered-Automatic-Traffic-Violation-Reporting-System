@@ -379,6 +379,8 @@ video{width:100%;border-radius:16px;background:#0e1222;display:block;max-height:
 .modal-card h2{font-size:18px;display:flex;align-items:center;gap:10px;margin-bottom:14px;padding-right:40px;flex-wrap:wrap}
 .modal-x{position:absolute;top:16px;right:16px;border:0;background:#f2f4f9;width:36px;height:36px;border-radius:50%;cursor:pointer;color:var(--ink-2);display:grid;place-items:center;transition:background .2s}
 .modal-x:hover{background:#e6e9f2}
+.modal-card h2{overflow-wrap:anywhere}
+@media (max-width:520px){.modal{padding:10px}.modal-card{padding:18px 14px;border-radius:20px}.modal-x{top:10px;right:10px}}
 #toast{position:fixed;bottom:28px;left:50%;transform:translate(-50%,20px);background:var(--ink);color:#fff;padding:12px 20px;border-radius:14px;font-size:14px;opacity:0;transition:all .3s var(--ease);pointer-events:none;z-index:60;box-shadow:var(--shadow-lg);display:flex;align-items:center;gap:8px}
 #toast.show{opacity:1;transform:translate(-50%,0)}
 

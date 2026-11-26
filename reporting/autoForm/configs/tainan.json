@@ -15,6 +15,8 @@
     "violation_subject": "#Subject",
     "violation_district": "#violation_place_area",
     "violation_road_search": "#violation_place_road_search",
+    "violation_description": "textarea[name='Content']",
+    "violation_road_items": "#roadDropdownList .dropdown-item",
     "violation_location_address": "#violation_place",
     "violation_date": "#violation_date",
     "violation_time_hours": "#violation_time1",

@@ -3,6 +3,7 @@ from pathlib import Path
 import hashlib
 import math
 import sys
+import warnings
 
 import cv2
 import numpy as np
@@ -158,10 +159,17 @@ class RoadMarkingSegmenter:
         from mmseg.apis import inference_model
         top = int(frame.shape[0] * self.roi_top)
         source = frame[top:] if top else frame
+        result = None
         if self.fp16:
             with torch.autocast("cuda", dtype=torch.float16):
                 result = inference_model(self.model, source)
-        else:
+            # 部分顯示卡（如 GTX 16 系列）半精度運算會溢位成 NaN，argmax 後整張變成背景、
+            # 標線全部消失；偵測到就改回全精度並重算這一幀，之後都用全精度。
+            if not torch.isfinite(result.seg_logits.data).all():
+                warnings.warn("道路標線模型半精度輸出含 NaN/Inf，此顯示卡改用全精度（fp32）推論。")
+                self.fp16 = False
+                result = None
+        if result is None:
             result = inference_model(self.model, source)
         mask = result.pred_sem_seg.data.squeeze().cpu().numpy().astype(np.uint8)
         if top:

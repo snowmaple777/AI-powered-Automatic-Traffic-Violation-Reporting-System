@@ -7,7 +7,7 @@ from .runtime import prepare_onnx_cuda
 
 
 class DepthModel(PerceptionModel):
-    def __init__(self, weights, device="cpu", input_size=392, interval=2, cuda_conv_search="HEURISTIC"):
+    def __init__(self, weights, device="cpu", input_size=392, interval=2, cuda_conv_search="HEURISTIC", canvas_hw=None):
         import onnxruntime as ort
         if interval < 1 or input_size < 14:
             raise ValueError("depth interval >= 1 and input_size >= 14 required")
@@ -24,6 +24,10 @@ class DepthModel(PerceptionModel):
         self.session = ort.InferenceSession(str(weights), providers=providers)
         self.input = self.session.get_inputs()[0]
         self.input_size, self.interval = input_size, interval
+        self.canvas_hw = tuple(canvas_hw) if canvas_hw is not None else None
+        if self.canvas_hw is not None and (len(self.canvas_hw) != 2 or
+                any(not isinstance(v, int) or v < 14 or v % 14 for v in self.canvas_hw)):
+            raise ValueError("canvas_hw must contain two positive multiples of 14")
         self.reset()
 
     def reset(self):
@@ -40,12 +44,30 @@ class DepthModel(PerceptionModel):
             if isinstance(self.input.shape[3], int):
                 tw = self.input.shape[3]
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB).astype(np.float32) / 255
-            rgb = cv2.resize(rgb, (tw, th), interpolation=cv2.INTER_CUBIC)
+            # The shipped export has a fixed positional embedding despite its dynamic axes.
+            # Keep the original resize for frames that already map to the exported token grid.
+            crop = None
+            if self.canvas_hw is not None and (th, tw) != self.canvas_hw:
+                th, tw = self.canvas_hw
+                scale = min(tw / w, th / h)
+                rw, rh = max(1, round(w * scale)), max(1, round(h * scale))
+                left, top = (tw - rw) // 2, (th - rh) // 2
+                resized = cv2.resize(rgb, (rw, rh), interpolation=cv2.INTER_CUBIC)
+                rgb = cv2.copyMakeBorder(resized, top, th - rh - top, left, tw - rw - left, cv2.BORDER_REPLICATE)
+                crop = (left, top, rw, rh)
+            else:
+                rgb = cv2.resize(rgb, (tw, th), interpolation=cv2.INTER_CUBIC)
             rgb = (rgb - np.array([.485, .456, .406], np.float32)) / np.array([.229, .224, .225], np.float32)
             tensor = np.ascontiguousarray(rgb.transpose(2, 0, 1)[None])
             output = self.session.run(None, {self.input.name: tensor})[0].squeeze()
             if output.ndim != 2:
                 raise ValueError(f"Expected 2D metric depth map, got {output.shape}")
+            if crop:
+                left, top, rw, rh = crop
+                oh, ow = output.shape
+                x, y = round(left * ow / tw), round(top * oh / th)
+                output = output[y:max(y + 1, round((top + rh) * oh / th)),
+                                x:max(x + 1, round((left + rw) * ow / tw))]
             self.cached = cv2.resize(output, (w, h), interpolation=cv2.INTER_LINEAR)
             self.source_frame = context.index
         records = []

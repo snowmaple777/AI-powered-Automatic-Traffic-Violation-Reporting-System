@@ -167,7 +167,7 @@ def run(args, resources, pipeline=None):
                         mask = result.marking_result.artifacts.get("mask")
                         if mask is not None:
                             args.save_masks.mkdir(parents=True, exist_ok=True)
-                            cv2.imwrite(str(args.save_masks / f"{frame_index:06d}.png"), mask)
+                            (args.save_masks / f"{frame_index:06d}.png").write_bytes(cv2.imencode(".png", mask)[1].tobytes())
                 record = result.record
                 with timer.measure("write_jsonl"):
                     jsonl.write(json.dumps(record, ensure_ascii=False) + "\n")

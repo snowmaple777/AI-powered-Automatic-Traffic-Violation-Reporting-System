@@ -408,9 +408,9 @@ def create_case(payload: dict) -> dict:
         old = None
     if old and old.get("status") == "submitted":
         return _public_case(old)  # 已送出的案件不再修改
-    cid = old["id"] if old else "case_" + datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + ev["id"]
+    cid = old["id"] if old else "case_" + datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex
     cdir = os.path.join(CASE_DIR, cid)
-    os.makedirs(cdir, exist_ok=True)
+    os.makedirs(cdir, exist_ok=old is not None)
     jdir = os.path.join(JOB_DIR, job["id"])
     for key in ("clip", "snapshot"):
         if ev.get(key):

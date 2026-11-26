@@ -58,7 +58,18 @@ def read_frame(path, index):
         cap.release()
 
 
-LIGHT_COLORS = {"red": (60, 60, 255), "green": (80, 200, 80), "yellow": (40, 200, 240)}
+def write_image(path, image, params=()):
+    """cv2.imwrite 在 Windows 遇到中文等非 ASCII 路徑會靜默失敗，改成先編碼再用 Python 寫檔。"""
+    ext = os.path.splitext(str(path))[1] or ".jpg"
+    ok, buf = cv2.imencode(ext, image, list(params))
+    if not ok:
+        return False
+    with open(path, "wb") as f:
+        f.write(buf.tobytes())
+    return True
+
+
+LIGHT_COLORS ={"red": (60, 60, 255), "green": (80, 200, 80), "yellow": (40, 200, 240)}
 
 
 def draw_preview(frame, record, out_path, max_width=960):
@@ -106,7 +117,8 @@ def draw_preview(frame, record, out_path, max_width=960):
     if w > max_width:
         frame = cv2.resize(frame, (max_width, int(h * max_width / w)))
     tmp = str(out_path) + ".tmp.jpg"
-    cv2.imwrite(tmp, frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+    if not write_image(tmp, frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80]):
+        return False
     os.replace(tmp, out_path)
     return True
 
@@ -129,7 +141,7 @@ def snapshot(video_path, out_path, seconds=None, frame_index=None, max_width=128
         h, w = frame.shape[:2]
         if w > max_width:
             frame = cv2.resize(frame, (max_width, int(h * max_width / w)))
-        return bool(cv2.imwrite(str(out_path), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 88]))
+        return write_image(out_path, frame, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
     finally:
         cap.release()
 

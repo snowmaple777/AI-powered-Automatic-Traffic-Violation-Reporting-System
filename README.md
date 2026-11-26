@@ -1,5 +1,10 @@
 # 全台交通違規檢舉自動化填表系統
 
+> traffic_ai 整合版入口：在專案根目錄執行 `啟動填表.cmd`；安裝方式見
+> [統一使用說明](../../docs/usage.md)。以下為填表子專案文件，直接使用 `python main.py`
+> 的例子需切換到本目錄。根目錄的影片辨識不會自動啟動填表，也尚無輸出轉案件的自動串接。
+> 各縣市網站操作為來源工具功能，本次整合未實測網站填表或送出。
+
 ![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)
 ![Playwright](https://img.shields.io/badge/playwright-1.48%2B-green)
 

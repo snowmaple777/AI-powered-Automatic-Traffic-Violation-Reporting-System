@@ -8,6 +8,7 @@
     "reporter_address": "#Address",
     "reporter_email": "#Mail",
     "subject": "#Subject",
+    "violation_items": "input[name='ViolationItems']",
     "license_plate": "#LicensePlateNumber",
     "location_town": "#ViolationArea",
     "location_detail": "#ViolationLocation",

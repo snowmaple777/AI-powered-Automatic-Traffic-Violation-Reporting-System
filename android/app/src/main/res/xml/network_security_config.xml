@@ -1,0 +1,7 @@
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false"/>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">hlpb.twgov.mobi</domain>
+        <domain includeSubdomains="true">analysis.autoform.invalid</domain>
+    </domain-config>
+</network-security-config>

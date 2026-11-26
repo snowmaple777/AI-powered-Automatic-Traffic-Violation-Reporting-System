@@ -154,6 +154,9 @@
   停等區貼邊佔用 `waiting_side_occupancy_ratio`（4bl）也是選項（precision 微降，只產生疑似）。
   4by：這三個選項（4bg、4bk 1 倍、4bl 0.8）組成 `--rule-profile high_recall`（`rule_profiles.py`、`configs/high_recall/`），
   合併 82/24/115 → 90/30/107、確認不變；一般預設不用，網頁長片切段使用。改預設設定檔時 high_recall 也要跟著改（測試會檢查只差三項）。
+  斑馬線違停模式 `crosswalk_parking_mode`（4ca）也是選項：不看燈號、累積靜止的疑似路徑，斑馬線 16/8/20 → 22/11/14，
+  但其他類別多 14 筆未計分疑似（車流中停在斑馬線上的車）；違停事件保留 3 秒、原路徑優先。一般預設不用，已加入 high_recall
+  （2026-11-26 標註：high_recall 96/33/99、確認 16/1/179）。
 - 4bn 起合併評估的新影片標註改用 `outputs/rough_truth_20261124.json`（使用者 2026-11-24 更新，事件帶 `verified`），
   基準 manifest 為 `eval/confirmation_experiments/baseline_20261124.json`；現行預設為全部候選 82/24/115、confirmed 16/1/181。
   4at–4bm 的數字是舊標註 `rough_truth_20261115.json` 算的，不能直接比較。`primary_only` 同時略過跨類別標註（只部分列出）。
@@ -231,7 +234,7 @@
 再以 manifest 加變體比較。指標摘要：`batch_eval.summarize(label)` 或 `eval/metrics.py`。影片層級＝該片是否輸出目標規則事件；事件層級只計 `reviewed: true` 的影片。
 
 ### 7.3 回報格式
-每次交付或整合，在 `docs/refactor_log.md` 新增一節（目前編號到 4bz；4aa 保留給 Astra 的標線尺度實驗），包含：修改內容、原因、驗證方式、
+每次交付或整合，在 `docs/refactor_log.md` 新增一節（目前編號到 4ca；4aa 保留給 Astra 的標線尺度實驗），包含：修改內容、原因、驗證方式、
 前後數字（影片層級、事件層級 TP／FP／FN、速度）、逐片變動的事件、已知副作用、是否採用。
 
 ---

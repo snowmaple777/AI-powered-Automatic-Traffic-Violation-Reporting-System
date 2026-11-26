@@ -34,5 +34,6 @@
     "lanes": [],
     "ego_polygons": []
   },
-  "waiting_side_occupancy_ratio": 0.8
+  "waiting_side_occupancy_ratio": 0.8,
+  "crosswalk_parking_mode": true
 }

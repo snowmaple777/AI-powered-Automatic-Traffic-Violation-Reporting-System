@@ -1,4 +1,4 @@
-"""規則設定組合（4by）：high_recall 設定檔只比預設多三個召回選項，且三個入口都能切換。"""
+"""規則設定組合（4by、4ca）：high_recall 設定檔只比預設多四個召回選項，且三個入口都能切換。"""
 import json
 import unittest
 from pathlib import Path
@@ -21,11 +21,11 @@ def raw(path):
 
 
 class HighRecallConfigTests(unittest.TestCase):
-    def test_differs_from_defaults_only_by_the_three_recall_options(self):
-        # 預設設定日後改了，high_recall 也要跟著改；這裡確保兩邊只差三個選項
+    def test_differs_from_defaults_only_by_the_recall_options(self):
+        # 預設設定日後改了，high_recall 也要跟著改；這裡確保兩邊只差這幾個召回選項
         expected = {
             'red_light_rules.json': {'stop_line_extension_widths': 1.0},
-            'area_rules.json': {'waiting_side_occupancy_ratio': 0.8},
+            'area_rules.json': {'waiting_side_occupancy_ratio': 0.8, 'crosswalk_parking_mode': True},
             'double_line_rules.json': {'geometry': {'trim_wide_rows': True}},
         }
         for name, extra in expected.items():
@@ -37,6 +37,7 @@ class HighRecallConfigTests(unittest.TestCase):
         self.assertEqual(red_light_rule_options(HIGH / 'red_light_rules.json')['stop_line_extension_widths'], 1.0)
         area = area_rule_options(HIGH / 'area_rules.json')
         self.assertEqual(area['car_motorcycle_waiting_area']['settings']['waiting_side_occupancy_ratio'], 0.8)
+        self.assertTrue(area['crosswalk_stopping']['settings']['crosswalk_parking_mode'])
         self.assertEqual(double_line_geometry_options(HIGH / 'double_line_rules.json'), {'trim_wide_rows': True})
         self.assertEqual(double_line_rule_options(HIGH / 'double_line_rules.json'),
                          double_line_rule_options(DEFAULT / 'double_line_rules.json'))  # 雙線規則參數相同，只差幾何

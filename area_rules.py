@@ -42,6 +42,16 @@ OPTIONAL |= {"confirm_crosswalk", "confirm_waiting_occupancy", "confirmation_min
 #   waiting_side_occupancy_ratio：貼著畫面左右邊緣（側邊界內或車框被裁切、但底邊未裁切）的汽車無法判定車頭方向，
 #     改以接地梯形在區域內的比例 ≥ 此值、持續 0.5 秒作為候選；只產生疑似，不進入佔用確認。
 OPTIONAL |= {"waiting_side_occupancy_ratio"}
+# 4ca 選用設定（斑馬線，預設不存在＝行為不變）：
+#   crosswalk_parking_mode：「斑馬線上違停」疑似路徑。原規則抓的是停留／阻擋（綠燈 3 秒內不報、排除橫移、要求連續靜止），
+#     路邊、轉角停放的車由行駛中的攝影車拍到時，常因鏡頭運動補償的誤差讓連續靜止一再中斷，或被綠燈抑制擋下。
+#     啟用後另以「最近 stationary_window_seconds 內沒有移動」的取樣累積靜止時間（中斷不歸零，持續移動的車累積不到），
+#     累積達 stationary_seconds 即產生疑似：不看燈號、不做橫移排除；重疊、接地大小、信心等其餘門檻與原規則相同。
+#     只產生疑似（conditions.parking_mode_candidate=True），不進入斑馬線確認；需要 stationary_window_seconds。
+#     違停事件成立後先保留 PARKING_HOLD_SECONDS：期間原路徑報告了同一台車（可能之後被確認）就丟棄違停事件，
+#     原路徑的事件與確認不受影響；保留期滿才輸出（事件時間仍是成立當下）。
+PARKING_HOLD_SECONDS = 3.0
+OPTIONAL |= {"crosswalk_parking_mode"}
 # 4ar 選用設定（斑馬線，預設不存在＝行為不變）：
 #   stationary_window_seconds：靜止判定改為「最近這段時間內」的接地中心位移不超過半徑，
 #     而不是與第一次的位置比較；拍攝者走動時的推移誤差不會一路累積到重置。
@@ -67,6 +77,13 @@ def settings_for(overrides=None):
             value = settings[key]
             if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f'{key} must be finite and positive')
+    if "crosswalk_parking_mode" in settings:
+        if type(settings["crosswalk_parking_mode"]) is not bool:
+            raise ValueError("crosswalk_parking_mode must be boolean")
+        if not settings["crosswalk_parking_mode"]:
+            settings.pop("crosswalk_parking_mode")  # 明確關閉也保持原參數與事件內容。
+        elif "stationary_window_seconds" not in settings:
+            raise ValueError("crosswalk_parking_mode requires stationary_window_seconds")
     if "waiting_side_occupancy_ratio" in settings:
         value = settings["waiting_side_occupancy_ratio"]
         if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 1:
@@ -564,6 +581,10 @@ class AreaOccupancyRule:
         # 斑馬線：停留前 3 秒是橫向移動的車（橫越路口或轉彎）不是本車道的停留（crosswalk_exclude_lateral）。
         self.history = TrackHistory(seconds=3.0) if self.kind == "crosswalk" or self.confirm_enabled else None
         self.last_green_time = None
+        # 4ca 違停路徑的累積靜止狀態：(車, 區域) → 累積秒數、最近取樣軌跡（隨鏡頭運動投影）；
+        # 成立後保留中的違停事件（原路徑優先）。
+        self.parking = {}
+        self.parking_pending = []
 
     def _confirmation_sample(self, state, frame, region, vehicle, area, geometry, matrix,
                              vehicles, lane_matched=False, strong_signal=False):
@@ -669,6 +690,8 @@ class AreaOccupancyRule:
 
     def evaluate(self, observation):
         events = self._evaluate_frame(observation)
+        if self.parking_pending:
+            events.extend(self._release_parking(observation["frame"]["timestamp_sec"]))
         if self.confirm_enabled:
             now = observation['frame']['timestamp_sec']
             retained = []
@@ -731,11 +754,14 @@ class AreaOccupancyRule:
                                           for t, p, e in state["track"]]
                 if self.history is not None:
                     self.history.project(lambda x, y: tuple(project_points([[x, y]], matrix)[0]))
+                for acc in self.parking.values():
+                    acc["track"] = [(t, project_points([q], matrix)[0]) for t, q in acc["track"]]
             except (TypeError, ValueError):
                 self.states.clear()
+                self.parking.clear()
                 self.diagnostics.update(status="blocked", reason="motion_unavailable")
                 return []
-        events, retained = [], set()
+        events, retained, parked = [], set(), set()
         vehicles = items.get("area_vehicles", items.get("rule_vehicles", items.get("vehicles", [])))
         if self.history is not None:
             self.history.update(now, index, vehicles)
@@ -853,6 +879,12 @@ class AreaOccupancyRule:
                         radius = max(cfg["stationary_radius_px"], cfg["stationary_radius_ratio"] * (box[2] - box[0]))
                         window, scale = cfg.get("stationary_window_seconds"), cfg.get("stationary_scale_tolerance")
                         edge = [[box[0], box[3]], [box[2], box[3]]] if scale is not None else None
+                        if cfg.get("crosswalk_parking_mode"):
+                            parked.add(key)
+                            parking_event = self._parking_sample(key, frame, vehicle, region, geometry, measured,
+                                                                 occluded, point, radius)
+                            if parking_event is not None:
+                                events.append(parking_event)
 
                         def moved(reference, reference_edge):
                             if np.linalg.norm(np.asarray(point) - np.asarray(reference)) > radius:
@@ -960,10 +992,83 @@ class AreaOccupancyRule:
         # 車輛仍在但已離開區域或條件不符者照舊清除。
         self.states = {key: state for key, state in self.states.items() if key in retained or (
             key[0] not in vehicle_ids and now - state["last_time"] <= cfg["max_observation_gap_sec"])}
+        self.parking = {key: acc for key, acc in self.parking.items()
+                        if key in parked or now - acc["last_time"] <= cfg["max_observation_gap_sec"]}
         self.reported = {k: v for k, v in self.reported.items() if now - v[0] <= cfg["rearm_seconds"]}
         self.diagnostics["states"] = [dict(object_id=k[0], region_id=k[1], count=s["count"], reported=s["reported"])
                                       for k, s in self.states.items()]
         return events
+
+    def _parking_sample(self, key, frame, vehicle, region, geometry, measured, occluded, point, radius):
+        """4ca 斑馬線違停：累積「最近一段時間內沒有移動」的取樣時間，達 stationary_seconds 時回傳疑似事件。"""
+        cfg, now, index = self.settings, frame["timestamp_sec"], frame["index"]
+        identity, region_id = key
+        acc = self.parking.get(key)
+        if acc is not None and now - acc["last_time"] > cfg["max_observation_gap_sec"]:
+            acc = None
+        snapshot = clone(dict(frame=frame, vehicle=vehicle, region=region, measurement=measured))
+        if acc is None:
+            acc = self.parking[key] = dict(since=now, last_time=now, count=0, still_sec=0., track=[],
+                                           before=snapshot, reported=False)
+        window = cfg["stationary_window_seconds"]
+        recent = [q for t, q in acc["track"] if now - t <= window + 1e-6]
+        # 有涵蓋整段窗口的歷史取樣、且都在半徑內，這段間隔才算靜止；移動時不累積，但已累積的時間不歸零。
+        if recent and now - acc["track"][0][0] + 1e-6 >= window and all(
+                np.linalg.norm(np.asarray(point) - np.asarray(q)) <= radius for q in recent):
+            acc["still_sec"] += now - acc["last_time"]
+        acc["track"] = [(t, q) for t, q in acc["track"] if now - t <= window + 1e-6] + [(now, point)]
+        acc.update(last_time=now, count=acc["count"] + 1)
+        if occluded:
+            acc["occlusion_extended"] = True
+        state = self.states.get(key)
+        if acc["reported"] or (state and state.get("reported")):
+            acc["reported"] = True
+            return None
+        if acc["count"] < cfg["min_observations"] or acc["still_sec"] + 1e-6 < cfg["stationary_seconds"]:
+            return None
+        if self._duplicate_of(identity, vehicle.get("bbox_xyxy"), now):
+            acc["reported"] = True
+            return None
+        acc["reported"] = True
+        event = dict(event_id=f"{self.context.source_id}:{self.rule_id}:{identity}:{region_id}:{index}",
+                     rule_id=self.rule_id, source_id=self.context.source_id, status="suspected",
+                     status_label="疑似違規", review_required=True, behavior=self.rule_id,
+                     confirmation_scope="configured_candidate_conditions",
+                     description="斑馬線上違停（疑似）；車輛在斑馬線上累積靜止達設定時間，未依燈號判斷，待人工覆核。",
+                     frame=index, timestamp_sec=now, object_id=identity, vehicle_class=vehicle["class_name"],
+                     conditions={"fresh_geometry": True, "temporal_support": True, "parking_mode_candidate": True,
+                                 "signal_checked": False,
+                                 "estimated_vehicle_geometry": bool(geometry.get("estimated")),
+                                 "predicted_region": bool(region.get("predicted")),
+                                 "direct_region_observation": bool(not region.get("predicted") and
+                                                                   region.get("marking_source", "direct") == "direct")},
+                     evidence=dict(vehicle=vehicle, region=region, before=acc["before"], after=snapshot,
+                                   measurement=measured, measurement_name="footprint_overlap_ratio",
+                                   duration_sec=now - acc["since"], parking_stationary_sec=acc["still_sec"],
+                                   parameters=cfg))
+        if cfg["occlusion_gap_ratio"] > 0:
+            event["conditions"]["region_visible_at_footprint"] = not acc.get("occlusion_extended", False)
+        self.parking_pending.append(dict(event=clone(event), key=key, box=list(vehicle["bbox_xyxy"]),
+                                         release=now + PARKING_HOLD_SECONDS))
+        return None
+
+    def _release_parking(self, now, final=False):
+        """保留期滿的違停事件輸出；期間原路徑已報告同一台車者丟棄。"""
+        released, kept = [], []
+        for item in self.parking_pending:
+            identity = item["key"][0]
+            state = self.states.get(item["key"])
+            if identity in self.reported or (state and state.get("reported")):
+                continue  # 原路徑已報告（含換號後的同一台車）：以原路徑為準
+            if not final and now + 1e-9 < item["release"]:
+                kept.append(item)
+                continue
+            self.reported[identity] = (now, item["box"])
+            if state is not None:
+                state["reported"] = True
+            released.append(clone(item["event"]))
+        self.parking_pending = kept
+        return released
 
     def _duplicate_of(self, identity, box, now):
         """回傳已報告的同一台車編號（同編號，或換號後車框高度重疊）；沒有則 None。依編號排序以保持可重現。"""
@@ -977,8 +1082,10 @@ class AreaOccupancyRule:
         return None
 
     def finalize(self):
+        tail = self._release_parking(None, final=True) if self.parking_pending else []
         self.states.clear()
+        self.parking.clear()
         self.reported.clear()
         self.previous_frame = None
         events, self.pending_confirmations = self.pending_confirmations, []
-        return clone(events)
+        return clone(events) + tail

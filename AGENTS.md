@@ -157,6 +157,9 @@
 - 4bn 起合併評估的新影片標註改用 `outputs/rough_truth_20261124.json`（使用者 2026-11-24 更新，事件帶 `verified`），
   基準 manifest 為 `eval/confirmation_experiments/baseline_20261124.json`；現行預設為全部候選 82/24/115、confirmed 16/1/181。
   4at–4bm 的數字是舊標註 `rough_truth_20261115.json` 算的，不能直接比較。`primary_only` 同時略過跨類別標註（只部分列出）。
+- 4bz 起改用 `outputs/rough_truth_20261126.json`（使用者 2026-11-26 更新：闖紅燈 vr012–vr021 重標並確認、vr023 改時間、CIM004 改開始時間、
+  四筆動作欄加括號備註），manifest `eval/confirmation_experiments/baseline_20261126.json`；轉換程式 `outputs/gt_20261126/build.py`
+  （括號備註只進 note）。現行預設全部候選 82/24/113、confirmed 16/1/179；high_recall 90/30/105。11-24 版的數字（4bn–4by）只有闖紅燈 FN 不同。
 
 ### 5.5 事件車牌補充（4w；4bm 起入口預設 4 秒）
 
@@ -224,11 +227,11 @@
 | 標線取樣策略（排程） | `tools/simulate_sampling.py --source outputs/eval/sampling_20261102_i1 --out <資料夾> --policy fixed:2 --policy <策略>`：以每幀直接觀測的遮罩離線模擬，不需 GPU；與實際 interval 2／refresh 的推論次數、未對齊幀逐片相同（4v） |
 | 效能 | `tools/verify_stage.py --label <名稱>`（測試＋三支短片完整辨識＋分段耗時＋與前次比較）；GPU 不可同時有其他工作 |
 
-合併評估（正式＋新影片主類別，兩層級）：`tools/confirmation_eval.py eval/confirmation_experiments/baseline_20261124.json --out <資料夾> --workers N`，
+合併評估（正式＋新影片主類別，兩層級）：`tools/confirmation_eval.py eval/confirmation_experiments/baseline_20261126.json --out <資料夾> --workers N`，
 再以 manifest 加變體比較。指標摘要：`batch_eval.summarize(label)` 或 `eval/metrics.py`。影片層級＝該片是否輸出目標規則事件；事件層級只計 `reviewed: true` 的影片。
 
 ### 7.3 回報格式
-每次交付或整合，在 `docs/refactor_log.md` 新增一節（目前編號到 4by；4aa 保留給 Astra 的標線尺度實驗），包含：修改內容、原因、驗證方式、
+每次交付或整合，在 `docs/refactor_log.md` 新增一節（目前編號到 4bz；4aa 保留給 Astra 的標線尺度實驗），包含：修改內容、原因、驗證方式、
 前後數字（影片層級、事件層級 TP／FP／FN、速度）、逐片變動的事件、已知副作用、是否採用。
 
 ---

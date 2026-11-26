@@ -1,0 +1,22 @@
+{
+  "_note": "4bz：現行預設的合併評估基準。新影片改用 2026-11-26 標註（outputs/rough_truth_20261126.json，由 input/六類違規影片_整理.txt 以 outputs/gt_20261126/build.py 轉出；動作欄括號備註只進 note）。usage：tools/confirmation_eval.py eval/confirmation_experiments/baseline_20261126.json --out <資料夾>",
+  "rules": [
+    "all"
+  ],
+  "variants": {
+    "defaults": {}
+  },
+  "sources": [
+    {
+      "name": "formal",
+      "path": "outputs/eval/eval_4aj",
+      "truth": "eval/ground_truth.json"
+    },
+    {
+      "name": "rough",
+      "path": "outputs/eval/new_20261114",
+      "truth": "outputs/rough_truth_20261126.json",
+      "primary_only": true
+    }
+  ]
+}

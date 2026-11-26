@@ -16,14 +16,83 @@ observations.traffic_regions / area_vehicles                 停等區／斑馬�
 postprocessing.ego_motion   鏡頭運動（road_compensation.EgoMotionTracker），1.6 起新增；
                             讀取請用 core.motion.road_motion()，舊紀錄會退回 road_marking_compensation.motion
 postprocessing.road_marking_compensation / rider_association / double_lines / area_geometry   各階段診斷
-postprocessing.road_marking_source  標線降頻（road_markings.interval > 1）時才有：本幀標線是由
-                            source_frame 的遮罩推移而來（warped=False 表示鏡頭運動無效、沿用未推移的遮罩）
+postprocessing.road_marking_source  本幀標線遮罩的來源（FrameProcessor）。1.8 起只要有標線遮罩就每幀寫入：
+                            source_frame  遮罩實際由模型推論的幀
+                            direct        True＝本幀模型直接觀測；False＝由 source_frame 的遮罩推移／沿用
+                            propagated    與 direct 相反（1.7 相容欄位）
+                            warped        本幀是否以鏡頭運動推移（運動無效時沿用未推移的遮罩）
+                            aligned       幾何是否對齊本幀：直接觀測，或自 source_frame 起每一步推移都有效
+                            age_frames    index − source_frame
+                            motion_valid  本幀鏡頭運動是否有效（未估計時為 null）
+                            讀取請用 marking_evidence()：舊紀錄沒有此欄位時視為直接觀測（1.7 以前只有推移幀才寫入）
+                            推移遮罩只是對齊當幀的估計，下游不得把它算成直接觀測（見 AGENTS.md 5.1）
 
-版本紀錄：1.6 新增 postprocessing.ego_motion（鏡頭運動成為獨立階段）；1.7 新增 postprocessing.road_marking_source。
+版本紀錄：1.6 新增 postprocessing.ego_motion（鏡頭運動成為獨立階段）；1.7 新增 postprocessing.road_marking_source；
+1.8 road_marking_source 改為每幀寫入並新增 direct／aligned／age_frames／motion_valid；
+    標線衍生幾何新增直接觀測欄位：停止線補償 compensation.direct_observed_frames／last_direct_observed_frame／
+    direct_rule_eligible，雙線 direct_observed_frames／geometry_source，區域 marking_source。
+1.9 停止線補償容忍鏡頭運動短暫失效（allow_motion_gaps）：postprocessing.road_marking_compensation 新增
+    motion_gap／motion_gap_seconds；失效期間輸出的停止線 compensation.motion_gap=True（規則只能據以產生疑似），
+    未被觀測更新的線 rule_eligible／direct_rule_eligible 一律為 False。舊紀錄沒有這些欄位，視為 False。
+
+事件輸出（*_violations.jsonl）另由 plate_backfill.PlateBackfill 新增頂層 plate；不改本模組的觀測版本 1.9。
+plate 包含 text、source（event_frame／same_track_after_event／none）、object_id、observed_frame、
+observed_timestamp_sec、delay_seconds、text_confidence、window_seconds、conflict、rejected。
+text 與讀數欄位允許 null；rejected 元素為 {text, frame, reason}。來源為補充時保留真實讀數時間，
+絕不改寫 evidence.vehicle.plate_text、原事件條件／狀態／時間／ID 或 merged_events。
+停用補充（window_seconds=0）仍輸出 plate，來源只會為 event_frame／none，不延遲事件。
+舊事件沒有 plate 時，消費端以 plate_backfill.event_plate_text() 退回 evidence.vehicle.plate_text；
+已有 plate 但 text=null 不退回其他來源。完整契約見 docs/handoff/plate_backfill_and_diagnostics_prompt.md 第 2 節。
+
+4af 選用的事件 motion_note 由 motion_notes.MotionNotes 寫入，不改觀測 schema 1.9。
+--motion-notes 關閉時不新增欄位；開啟只註記頂層 red_light_stop_line_crossing，不改 merged_events。
+motion_note.version=1；maneuver=straight/left_turn/right_turn/unknown，text 是待覆核的動作備註；
+method 區分 local_lane_and_ego_compensated_track 與 ego_compensated_track_only，estimated=true、
+affects_violation=false。reason 為診斷原因；evidence 記錄來源、樣本幀、參考幀與影像座標軌跡。
+固定視窗為事件前 1.5 秒、後 3 秒；新增備註不改原事件時間／狀態／條件／證據。
+局部幾何與來源寫在獨立 *_local_motion.jsonl，不冒充觀測或確認證據；此檔不是 detections JSONL。
+備註的文字／剪輯讀取端為 violation_visualization，缺欄位保留舊呈現。
+
+4ag motion_note.version=2：新增 level=classified/tentative/observed/unknown、tentative_maneuver、
+observation、quality。maneuver 只保留完整分類；疑似結果只寫 tentative_maneuver，舊讀取端仍見 unknown。
+observation 是包含鏡頭影響的畫面位移，不是車輛道路方向；quality 記錄有效區間、缺口與投影品質。
+投影改以事件幀為參考，有限時域中位數平滑不增加新樣本。取涵蓋事件的連續區間，不補失效 H 或跨 ID。
+較短／部分證據只補疑似文字或畫面描述，不改任何違規狀態。level=classified 也仍為待覆核的推估。
 """
 import math
 
-SCHEMA_VERSION = "1.7"
+SCHEMA_VERSION = "1.9"
+
+
+def marking_evidence(record):
+    """回傳本幀標線遮罩的來源（含舊紀錄退回值），規則與後處理一律以此讀取。
+
+    回傳 dict：source_frame、direct、propagated、warped、aligned、age_frames、motion_valid、legacy。
+    legacy=True 表示紀錄沒有 1.8 欄位、部分值為推定：沒有欄位＝直接觀測；1.7 的推移幀以 warped 推定 aligned
+    （1.7 未記錄先前步驟是否失效，interval ≥ 3 時可能高估）。
+    """
+    index = record.get("frame", {}).get("index")
+    source = record.get("postprocessing", {}).get("road_marking_source")
+    if not isinstance(source, dict):
+        return {"source_frame": index, "direct": True, "propagated": False, "warped": False,
+                "aligned": True, "age_frames": 0, "motion_valid": None, "legacy": True}
+    legacy = "direct" not in source
+    direct = bool(source.get("direct", not source.get("propagated", False)))
+    source_frame = source.get("source_frame", index)
+    warped = bool(source.get("warped", False))
+    age = source.get("age_frames")
+    if age is None:
+        age = index - source_frame if isinstance(index, int) and isinstance(source_frame, int) else None
+    return {"source_frame": source_frame, "direct": direct, "propagated": not direct, "warped": warped,
+            "aligned": bool(source.get("aligned", direct or warped)), "age_frames": age,
+            "motion_valid": source.get("motion_valid"), "legacy": legacy}
+
+
+def marking_geometry_source(evidence):
+    """把 marking_evidence() 的結果濃縮成幾何來源標籤：direct／propagated（推移且對齊）／stale（未對齊）。"""
+    if evidence["direct"]:
+        return "direct"
+    return "propagated" if evidence["aligned"] else "stale"
 
 
 def build_frame_observation(frame_index, timestamp_sec, width, height, fps,

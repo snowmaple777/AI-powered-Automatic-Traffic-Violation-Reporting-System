@@ -14,6 +14,7 @@ from core.continuity import is_continuous
 from core.geometry import project_points  # noqa: F401  舊模組仍由此匯入
 from core.motion import homography, road_motion
 from core.fastcopy import clone
+from observation_schema import marking_evidence, marking_geometry_source
 
 
 DOUBLE_LINE_CLASSES = {"solid double yellow", "solid double white"}
@@ -22,7 +23,8 @@ DOUBLE_LINE_CLASSES = {"solid double yellow", "solid double white"}
 RULE_DEFAULTS = dict(
     min_line_observations=3, min_line_length_px=30.0, min_pair_gap_px=2.0,
     max_pair_angle_deg=20.0, max_pair_gap_ratio=4.0, endpoint_margin_px=6.0,
-    side_margin_px=4.0, margin_width_ratio=.2, max_motion_error_px=5.0,
+    # 4ay：側別邊距近乎為零（驗證要求 >0），車底點離開線帶即算該側；配準誤差項仍保留。
+    side_margin_px=.01, margin_width_ratio=.001, max_motion_error_px=5.0,
     min_vehicle_confidence=.35, stable_observations=3, stable_seconds=.15,
     max_observation_gap_sec=.3, max_frame_gap_sec=.2, max_crossing_seconds=6.0,
     max_box_scale_ratio=1.7, max_step_box_ratio=1.0, rearm_seconds=1.0,
@@ -34,8 +36,81 @@ RULE_DEFAULTS = dict(
     footprint_inset_ratio=.15,
     # 以下放寬條件只讓事件成為「疑似」：
     allow_motion_gaps=True, max_motion_gap_sec=1.0,  # 鏡頭運動短暫失敗時以「不動」近似，不清除候選
-    max_extrapolation_ratio=.5,
-    max_line_handoff_px=25.0)  # 雙線追蹤換編號時，依位置把候選轉移到新編號的距離上限（0＝停用）  # 車底超出雙線可見端點時，可沿端點方向外插（上限為車框高度的比例）
+    max_extrapolation_ratio=.5,  # 車底超出雙線可見端點時，可沿端點方向外插（上限為車框高度的比例）
+    max_line_handoff_px=25.0,  # 雙線追蹤換編號時，依位置把候選轉移到新編號的距離上限（0＝停用）
+    # 確認需要直接觀測的標線：線本身至少 min_line_observations 次直接觀測，越線前後各至少一個樣本
+    # 落在直接觀測的幾何上，且沒有樣本落在未對齊（鏡頭運動失效時沿用）的推移幾何上。不成立時最多為疑似。
+    require_direct_marking_evidence=True, detailed_diagnostics=False,
+    # 4az 方向分類取樣邊距（預設啟用，等於 4ay 以前的側別邊距）。側別邊距很小時（4ay），靠近線帶的橫移樣本
+    # 會進入方向判斷，使變換車道／迴轉退回 complete_crossing。啟用時方向分類只用車底三點離線帶超過
+    # 「固定值＋線帶寬度比例＋配準誤差」的樣本，至少 direction_min_samples 個；只影響 behavior／direction，
+    # 不改變事件是否成立、時間、狀態與條件。
+    direction_side_margin_px=4.0,  # 方向取樣的固定邊距（0＝停用，沿用原跨越前後全部樣本）
+    direction_margin_width_ratio=.2,  # 方向取樣邊距中的線帶寬度比例
+    direction_min_samples=2,  # 啟用時每側至少需要的方向樣本數
+    # 4ba 起點與終點推定（方案二，預設關閉；同樣不寫入預設設定）。原規則某（車, 線）候選剛建立穩定起點
+    # （seeding→armed）時，用目前這條線重新量測同車較早、經運動補償帶到目前座標的車框：另一側至少
+    # direction_min_samples 個方向邊距外（4az）的樣本（彼此相距 1 秒內），與終點側方向邊距外樣本的間隔
+    # 不超過此秒數（中間可缺車框或量不到位置）時，輸出疑似事件（stable_origin／complete_band_crossing=False，
+    # 永遠不會確認）。需要 direction_side_margin_px > 0。
+    endpoint_inference_seconds=0.0,  # 起點與終點最長間隔秒數（0＝停用）
+    # 遠方小車防護：建立終點穩定時的車框高度至少為畫面高度的此比例（0＝不檢查）。試算的誤報多是壓在線
+    # 遠端的遠方小車（車框約畫面高 5–6%），真違規車框 ≥ 8.8%；此值參考少量人工覆核選定，見 refactor_log 4ba。
+    endpoint_min_box_height_ratio=.07,
+    # 4bb 壓線停留跨越（預設關閉；同樣不寫入預設設定）。不經原規則狀態機，只看每台車逐幀相對「同一幀雙線」的
+    # 側別序列（不分雙線追蹤編號；每幀量測本身不需要運動補償，鏡頭運動失效或線換編號時序列不中斷）：
+    # 一側至少 direction_min_samples 個方向邊距外樣本（彼此 1 秒內）→ 至少 band_dwell_min_observations 次
+    # 車底點落在線帶本身 → 另一側連續 stable_observations 次、跨 stable_seconds（其中至少 direction_min_samples
+    # 個方向邊距外樣本）。只採用可見長度達 band_dwell_min_line_ratio × 畫面高度的雙線上的量測（排除碎片線）。
+    # 輸出疑似事件（stable_origin=False，永遠不會確認）；需要 direction_side_margin_px > 0。
+    band_dwell_seconds=0.0,  # 起點側最後一個方向樣本到終點側第一個方向樣本的最長秒數（0＝停用）
+    band_dwell_min_observations=3,  # 起點與終點之間落在線帶本身的最少觀測次數
+    band_dwell_min_line_ratio=.15,  # 採用量測的雙線最短可見長度（畫面高度比例）
+    band_dwell_min_box_height_ratio=.07,  # 確認時車框高度下限（畫面高度比例；0＝不檢查）
+    # 4bj 召回細節（預設關閉；等於預設值時不寫入規則設定與事件參數，輸出與先前逐位元相同）。
+    # same_vehicle_merge_seconds：同一規則、同一車在上一筆雙線事件（以輸出時間計）之後此秒數內的疑似事件不再輸出
+    #   （一次越線超車常被原規則、4ba、4bb 各判一次，或在線的遠端尖點反覆成立）；確認事件一律照常輸出。
+    same_vehicle_merge_seconds=0.0,
+    # band_dwell_last_band_time：4bb 事件時間取最後一個線帶樣本（原規則的事件時間也是最後一個跨越中樣本），
+    #   而不是第一個線帶樣本；只改事件時間與 transition 快照，不改是否成立。
+    band_dwell_last_band_time=False)
+
+# 4ba 選項：等於預設值時不放進規則的設定字典（事件 evidence.parameters 不變）。
+ENDPOINT_OPTION_KEYS = ("endpoint_inference_seconds", "endpoint_min_box_height_ratio")
+
+# 4bb 選項：同 ENDPOINT_OPTION_KEYS。
+# 4bj 選項：同 ENDPOINT_OPTION_KEYS。
+RECALL_OPTION_KEYS = ("same_vehicle_merge_seconds", "band_dwell_last_band_time")
+BAND_DWELL_OPTION_KEYS = ("band_dwell_seconds", "band_dwell_min_observations", "band_dwell_min_line_ratio",
+                          "band_dwell_min_box_height_ratio")
+
+
+# 4bg 雙線幾何選項（後處理，不是規則參數；寫在雙線設定檔的 "geometry" 子物件，預設關閉）。
+# trim_wide_rows：過寬元件（某列寬度 > 畫面寬 WIDE_ROW_RATIO）原本整個丟棄；啟用時只去掉過寬的列，
+# 保留最長一段連續的合格列（至少 MIN_TRIMMED_ROWS 列），沒有就仍丟棄。分割常把兩條漆線連同中間間隔
+# 標成同一塊，彎道、近處或斜度大的雙線因此在畫面下方變寬；截掉那幾列後，其餘幾何與追蹤流程不變，
+# 截短後的元件仍是單一語意帶，不會成為成對元件。只在 FrameProcessor 重算幾何時生效（run_pipeline、
+# real_replay）；rule_eval 等只重算規則的工具沿用 JSONL 裡的幾何。評估見 refactor_log 4be／4bf／4bg。
+GEOMETRY_DEFAULTS = dict(trim_wide_rows=False)
+WIDE_ROW_RATIO = .08
+MIN_TRIMMED_ROWS = 8
+
+
+def validate_geometry_settings(overrides=None):
+    overrides = {} if overrides is None else overrides
+    if not isinstance(overrides, dict) or set(overrides) - GEOMETRY_DEFAULTS.keys():
+        raise ValueError("Unknown double-line geometry settings")
+    settings = {**GEOMETRY_DEFAULTS, **overrides}
+    if type(settings["trim_wide_rows"]) is not bool:
+        raise ValueError("geometry.trim_wide_rows must be boolean")
+    return settings
+
+
+def double_line_geometry_options(path):
+    data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    if not isinstance(data, dict) or data.get("version") != 1:
+        raise ValueError("Double-line rule config requires version=1")
+    return validate_geometry_settings(data.get("geometry"))
 
 
 def validate_rule_settings(overrides=None):
@@ -44,12 +119,26 @@ def validate_rule_settings(overrides=None):
         raise ValueError("Unknown double-line rule settings")
     settings = {**RULE_DEFAULTS, **overrides}
     for key, value in settings.items():
-        if key in ("emit_suspected", "allow_semantic_band", "allow_motion_gaps"):
+        if key in ("emit_suspected", "allow_semantic_band", "allow_motion_gaps", "require_direct_marking_evidence", "detailed_diagnostics",
+                   "band_dwell_last_band_time"):
             if type(value) is not bool:
                 raise ValueError(f"{key} must be boolean")
-        elif type(value) not in (int, float) or not math.isfinite(value) or (value < 0 if key in ("footprint_inset_ratio", "max_extrapolation_ratio", "max_line_handoff_px") else value <= 0):
+        elif type(value) not in (int, float) or not math.isfinite(value) or (value < 0 if key in ("footprint_inset_ratio", "max_extrapolation_ratio", "max_line_handoff_px",
+                                                                                                         "direction_side_margin_px", "direction_margin_width_ratio",
+                                                                                                         "endpoint_inference_seconds", "endpoint_min_box_height_ratio",
+                                                                                                         "band_dwell_seconds", "band_dwell_min_line_ratio",
+                                                                                                         "band_dwell_min_box_height_ratio", "same_vehicle_merge_seconds") else value <= 0):
             raise ValueError(f"{key} must be finite and positive")
-    for key in ("min_line_observations", "stable_observations"):
+    for key in ("endpoint_min_box_height_ratio", "band_dwell_min_line_ratio", "band_dwell_min_box_height_ratio"):
+        if settings[key] >= 1:
+            raise ValueError(f"{key} must be less than 1")
+    if type(settings["band_dwell_min_observations"]) is not int or settings["band_dwell_min_observations"] < 1:
+        raise ValueError("band_dwell_min_observations must be an integer >= 1")
+    if settings["band_dwell_seconds"] > 0 and not settings["direction_side_margin_px"]:
+        raise ValueError("band_dwell_seconds requires direction_side_margin_px > 0")
+    if settings["endpoint_inference_seconds"] > 0 and not settings["direction_side_margin_px"]:
+        raise ValueError("endpoint_inference_seconds requires direction_side_margin_px > 0")
+    for key in ("min_line_observations", "stable_observations", "direction_min_samples"):
         if type(settings[key]) is not int or settings[key] < 2:
             raise ValueError(f"{key} must be an integer >= 2")
     for key in ("min_vehicle_confidence", "heading_consistency", "min_longitudinal_alignment"):
@@ -70,6 +159,7 @@ def double_line_rule_options(path):
     data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     if not isinstance(data, dict) or data.pop("version", None) != 1:
         raise ValueError("Double-line rule config requires version=1")
+    validate_geometry_settings(data.pop("geometry", None))  # 幾何選項由 double_line_geometry_options 讀取
     settings = validate_rule_settings(data)
     return {f"double_{color}_line_crossing": {"settings": settings}
             for color in ("yellow", "white")}
@@ -87,7 +177,21 @@ def _distance(first, second):
                                np.interp(ys, b[:, 1], b[:, 0]))))
 
 
-def extract_double_lines(mask, markings, min_area=40):
+def _longest_narrow_block(rows, limit):
+    """回傳列寬都不超過 limit 的最長連續列（等長時取較下方者）；不足 MIN_TRIMMED_ROWS 列時回傳 None。"""
+    best, start = (0, 0), None
+    for i, row in enumerate(rows + [None]):
+        narrow = row is not None and row[1] - row[0] <= limit
+        if narrow and start is None:
+            start = i
+        elif not narrow and start is not None:
+            best = max(best, (i - start, start))
+            start = None
+    length, start = best
+    return rows[start:start + length] if length >= MIN_TRIMMED_ROWS else None
+
+
+def extract_double_lines(mask, markings, min_area=40, trim_wide_rows=False):
     """Extract row envelopes from the current segmentation, never from fitLine.
 
     Nearby, mutually unique components of the same semantic double-line class
@@ -116,8 +220,13 @@ def extract_double_lines(mask, markings, min_area=40):
             last = x + width - 1 - crop[:, ::-1].argmax(axis=1)
             rows = [[float(first[r]), float(last[r]), y + r] for r in np.flatnonzero(present).tolist()]
             # Very broad/branching components are not usable line geometry.
-            if max(right - left for left, right, _ in rows) > mask.shape[1] * .08:
-                continue
+            if max(right - left for left, right, _ in rows) > mask.shape[1] * WIDE_ROW_RATIO:
+                if not trim_wide_rows:
+                    continue
+                # 4bg：只去掉過寬的列（元件仍是 8 連通，保留的列在 y 上連續）
+                rows = _longest_narrow_block(rows, mask.shape[1] * WIDE_ROW_RATIO)
+                if rows is None:
+                    continue
             strips.append(rows)
         curves = [[[.5 * (left + right), y] for left, right, y in rows]
                   for rows in strips]
@@ -263,6 +372,38 @@ def line_quality(line, settings):
     return None
 
 
+def project_line_geometry(line, matrix):
+    """把一條雙線（含 members）的所有路徑以單應矩陣帶到目前影像座標；回傳新物件。
+
+    投影後非單調或沒有共同支援時丟 ValueError。端點只修剪到共同範圍，不延伸。
+    """
+    anchor = clone(line)
+    for part in [anchor] + anchor.get("members", []):
+        for key in ("centerline", "left_boundary", "right_boundary"):
+            part[key] = project_points(part[key], matrix)
+            path = np.asarray(part[key])
+            if np.any(np.diff(path[:, 1]) < -.5):
+                raise ValueError("Non-monotone projection")
+            # Pixel-quantized edges can swap adjacent rows by a fraction
+            # of a pixel after homography; canonicalize that ordering.
+            _, unique = np.unique(path[:, 1], return_index=True)
+            part[key] = path[unique].tolist()
+    # Perspective rotation moves boundary endpoints to different rows.
+    # Trim all paths to shared support instead of extending endpoints.
+    parts = [anchor] + anchor.get("members", [])
+    paths = [np.asarray(part[key]) for part in parts
+             for key in ("centerline", "left_boundary", "right_boundary")]
+    low, high = max(p[0, 1] for p in paths), min(p[-1, 1] for p in paths)
+    if high <= low:
+        raise ValueError("No common projected support")
+    for part in parts:
+        for key in ("centerline", "left_boundary", "right_boundary"):
+            p = np.asarray(part[key])
+            ys = np.unique(np.r_[low, p[(p[:, 1] > low) & (p[:, 1] < high), 1], high])
+            part[key] = np.column_stack((np.interp(ys, p[:, 1], p[:, 0]), ys)).tolist()
+    return anchor
+
+
 def resolve_rule_lines(lines, memory, matrix, frame, settings, vehicles=()):
     """Maintain finite observed support through matching collinear fragments.
 
@@ -275,32 +416,8 @@ def resolve_rule_lines(lines, memory, matrix, frame, settings, vehicles=()):
     current = [clone(line) for line in lines if line.get("source_frame") == frame["index"]]
     anchors = []
     for old in memory.values():
-        anchor = clone(old)
         try:
-            for part in [anchor] + anchor.get("members", []):
-                for key in ("centerline", "left_boundary", "right_boundary"):
-                    part[key] = project_points(part[key], matrix)
-                    path = np.asarray(part[key])
-                    if np.any(np.diff(path[:, 1]) < -.5):
-                        raise ValueError("Non-monotone projection")
-                    # Pixel-quantized edges can swap adjacent rows by a fraction
-                    # of a pixel after homography; canonicalize that ordering.
-                    _, unique = np.unique(path[:, 1], return_index=True)
-                    part[key] = path[unique].tolist()
-            # Perspective rotation moves boundary endpoints to different rows.
-            # Trim all paths to shared support instead of extending endpoints.
-            parts = [anchor] + anchor.get("members", [])
-            paths = [np.asarray(part[key]) for part in parts
-                     for key in ("centerline", "left_boundary", "right_boundary")]
-            low, high = max(p[0, 1] for p in paths), min(p[-1, 1] for p in paths)
-            if high <= low:
-                raise ValueError("No common projected support")
-            for part in parts:
-                for key in ("centerline", "left_boundary", "right_boundary"):
-                    p = np.asarray(part[key])
-                    ys = np.unique(np.r_[low, p[(p[:, 1] > low) & (p[:, 1] < high), 1], high])
-                    part[key] = np.column_stack((np.interp(ys, p[:, 1], p[:, 0]), ys)).tolist()
-            anchors.append(anchor)
+            anchors.append(project_line_geometry(old, matrix))
         except (ValueError, KeyError):
             continue
     candidates = []
@@ -391,9 +508,10 @@ def resolve_rule_lines(lines, memory, matrix, frame, settings, vehicles=()):
 
 
 def _extend_line(line, y_target, max_extension):
-    """沿可見端點的方向，把中心線與兩側邊界線性外插到 y_target（只用於遠端）。
+    """沿可見端點的方向，把中心線與兩側邊界外插到 y_target（只用於被車身遮住的端點）。
 
-    超出 max_extension 像素、或端點附近不足以估計方向時回傳 None。只用於車身遮擋雙線的情況。
+    以端點附近的直線外插。
+    超出 max_extension 像素、或端點附近不足以估計方向時回傳 None。
     """
     paths = {key: np.asarray(line[key], dtype=float) for key in ("centerline", "left_boundary", "right_boundary")}
     top, bottom = paths["centerline"][0, 1], paths["centerline"][-1, 1]
@@ -413,7 +531,47 @@ def _extend_line(line, y_target, max_extension):
     return extended
 
 
-def vehicle_line_position(vehicle, line, settings, motion_error=0):
+def _position_failure(detail, reason, line, settings, *, box=None, point=None,
+                      original_line=None, position=None, bbox_reason=None, extrapolated=False):
+    """只描述已作出的拒絕；距離沿影像 y 軸，比例分母為車框高度，不是建議外插量。"""
+    if detail is None:
+        return
+    path = line.get("centerline", [])
+    original = (original_line or line).get("centerline", [])
+    ends = [list(map(float, p)) for p in (path[0], path[-1])] if len(path) >= 2 else None
+    original_ends = [list(map(float, p)) for p in (original[0], original[-1])] if len(original) >= 2 else None
+    height = float(box[3]-box[1]) if box is not None else None
+    pad = settings["endpoint_margin_px"]+1
+    gap = required = None
+    if point is not None and original_ends:
+        y, top, bottom = float(point[1]), original_ends[0][1], original_ends[1][1]
+        gap = max(top-y, y-bottom, 0.)
+        required = max(top-(y-pad), (y+pad)-bottom, 0.)
+    detail.update(reason=reason, bbox_reason=bbox_reason,
+                  failed_point=list(map(float, point)) if point is not None else None,
+                  line_endpoints=ends, original_line_endpoints=original_ends,
+                  endpoint_distance_px=float(position["endpoint_distance_px"]) if position is not None else None,
+                  endpoint_margin_px=settings["endpoint_margin_px"], extrapolated=bool(extrapolated),
+                  extension_limit_ratio=settings.get("max_extrapolation_ratio", 0),
+                  extension_limit_px=settings.get("max_extrapolation_ratio", 0)*height+pad if height else None,
+                  support_gap_px=gap, required_extension_px=required,
+                  required_extension_ratio=required/height if required is not None and height else None,
+                  ratio_denominator="bbox_height", distance_axis="image_y",
+                  extension_policy="occluded_far_endpoint_only")
+
+
+def write_final_double_line_diagnostics(stream, rules):
+    """只在詳細診斷啟用時補寫片尾清除；不改原逐幀格式或事件。"""
+    if stream is None:
+        return
+    final = {r.rule_id: r.final_diagnostics for r in rules
+             if isinstance(getattr(r, "final_diagnostics", None), dict) and r.final_diagnostics}
+    if final:
+        stream.write(json.dumps({"frame": next(iter(final.values()))["frame"],
+                                 "finalize": True, "rules": final}, ensure_ascii=False)+"\n")
+
+
+def vehicle_line_position(vehicle, line, settings, motion_error=0, *, diagnostics=None):
     """Inset bottom-edge proxy must clear the entire band; not tire localization.
 
     車底超出雙線遠端可見端點、且該端點被車身遮住時，若設定允許，沿端點方向外插後再判斷，
@@ -422,10 +580,13 @@ def vehicle_line_position(vehicle, line, settings, motion_error=0):
     try:
         box = np.asarray(vehicle.get("bbox_xyxy", []), dtype=float)
     except (TypeError, ValueError):
+        _position_failure(diagnostics, "invalid_bbox", line, settings, bbox_reason="conversion_failed")
         return None
     if box.shape != (4,) or not np.isfinite(box).all() or box[2] <= box[0] or box[3] <= box[1]:
+        _position_failure(diagnostics, "invalid_bbox", line, settings, bbox_reason="invalid_shape_or_extent")
         return None
     x1, y1, x2, y2 = box
+    original_line = line
     extrapolated = False
     ratio = settings.get("max_extrapolation_ratio", 0)
     if ratio > 0:
@@ -445,12 +606,20 @@ def vehicle_line_position(vehicle, line, settings, motion_error=0):
                     line, extrapolated = extended, True
     inset = (x2 - x1) * settings["footprint_inset_ratio"]
     points = [[x1 + inset, y2], [(x1 + x2) / 2, y2], [x2 - inset, y2]]
-    sides, measurements = [], []
+    sides, measurements, direction_sides = [], [], []
+    direction_margin = settings.get("direction_side_margin_px", RULE_DEFAULTS["direction_side_margin_px"])
     for point in points:
         position = finite_line_position(point, line["centerline"])
         if position is None or position["endpoint_distance_px"] < settings["endpoint_margin_px"]:
             position = row_line_position(point, line["centerline"])
         if position is None or position["endpoint_distance_px"] < settings["endpoint_margin_px"]:
+            if diagnostics is not None:
+                path = line["centerline"]
+                reason = ("endpoint_margin" if position is not None else
+                          "outside_near_support" if point[1] > path[-1][1] else
+                          "outside_far_support" if point[1] < path[0][1] else "unsupported_line_projection")
+                _position_failure(diagnostics, reason, line, settings, box=box, point=point,
+                                  original_line=original_line, position=position, extrapolated=extrapolated)
             return None
         foot = np.asarray(position["projection"])
         tangent = np.asarray(position["tangent"])
@@ -464,18 +633,34 @@ def vehicle_line_position(vehicle, line, settings, motion_error=0):
         margin = settings["side_margin_px"] + (high - low) * settings["margin_width_ratio"] + motion_error
         distance = position["signed_distance_px"]
         sides.append(-1 if distance < low - margin else 1 if distance > high + margin else 0)
+        if direction_margin:
+            wide = direction_margin + (high - low) * settings.get(
+                "direction_margin_width_ratio", RULE_DEFAULTS["direction_margin_width_ratio"]) + motion_error
+            direction_sides.append(-1 if distance < low - wide else 1 if distance > high + wide else 0)
         measurements.append({**position, "in_band": low <= distance <= high})
-    return {"side": sides[0] if sides[0] == sides[1] == sides[2] else 0,
+    result = {"side": sides[0] if sides[0] == sides[1] == sides[2] else 0,
             "point": points[1], "center_in_band": measurements[1]["in_band"],
+            "band_points": sum(m["in_band"] for m in measurements),  # 落在線帶本身（不含邊距）的車底點數
             "tangent": measurements[1]["tangent"], "box": box.tolist(), "extrapolated": extrapolated}
+    if direction_margin:  # 4az：停用（0）時不加欄位
+        result["direction_side"] = direction_sides[0] if direction_sides[0] == direction_sides[1] == direction_sides[2] else 0
+    return result
 
 
 
 def classify_maneuver(before, after, tangent, settings):
-    """Infer maneuver from camera-compensated ground trajectories, not box heading."""
+    """Infer maneuver from camera-compensated ground trajectories, not box heading.
+
+    4az：direction_side_margin_px > 0 時只用離線帶夠遠的樣本（direction_clear），門檻改為 direction_min_samples。
+    """
     vectors = []
+    needed = settings["stable_observations"]
+    if settings.get("direction_side_margin_px", RULE_DEFAULTS["direction_side_margin_px"]):
+        before = [s for s in before if s.get("direction_clear")]
+        after = [s for s in after if s.get("direction_clear")]
+        needed = settings.get("direction_min_samples", RULE_DEFAULTS["direction_min_samples"])
     for samples in (before, after):
-        if len(samples) < settings["stable_observations"]:
+        if len(samples) < needed:
             return "complete_crossing", {"reason": "insufficient_direction_samples"}
         points = np.asarray([s["point"] for s in samples], dtype=float)
         vector = points[-1] - points[0]
@@ -496,8 +681,10 @@ def classify_maneuver(before, after, tangent, settings):
                       "longitudinal_directions": longitudinal, "inferred": True}
 
 
-def attach_double_lines(record, mask, state):
+def attach_double_lines(record, mask, state, geometry=None):
     """Mutate the frame record and a caller-owned dict; retain observed tracks only.
+
+    geometry：validate_geometry_settings() 的結果（None＝預設，等同 4bg 以前的行為）。
 
     Motion maps previous-frame coordinates into the current frame. Missing or
     ambiguous matches get new IDs; IDs are never reused within a video.
@@ -523,7 +710,12 @@ def attach_double_lines(record, mask, state):
     if mask is not None and np.asarray(mask).shape != (frame["height"], frame["width"]):
         mask, reset_reason = None, "mask_shape_mismatch"
     lines = extract_double_lines(mask, observations.get("road_markings_raw",
-                                                          observations.get("road_markings", [])))
+                                                          observations.get("road_markings", [])),
+                                 trim_wide_rows=bool((geometry or {}).get("trim_wide_rows")))
+    # 標線降頻時本幀遮罩可能是推移估計：observed_frames 仍計入（追蹤品質，行為不變），
+    # direct_observed_frames 只計模型直接觀測，供規則的確認條件使用。
+    evidence = marking_evidence(record)
+    direct = bool(evidence["direct"])
     previous = [] if reset_reason else state.get("tracks", [])
     projected = []
     for track in previous:
@@ -561,10 +753,14 @@ def attach_double_lines(record, mask, state):
         unique = len(choices) == 1 and sum(choices[0] in others for others in matches) == 1
         if unique:
             old = projected[choices[0]][0]
-            line.update(track_id=old["track_id"], observed_frames=old["observed_frames"] + 1)
+            line.update(track_id=old["track_id"], observed_frames=old["observed_frames"] + 1,
+                        direct_observed_frames=old.get("direct_observed_frames", 0) + direct)
         else:
             state["next_id"] = state.get("next_id", 0) + 1
-            line.update(track_id=f"double-line-{state['next_id']}", observed_frames=1)
+            line.update(track_id=f"double-line-{state['next_id']}", observed_frames=1,
+                        direct_observed_frames=int(direct))
+        line.update(geometry_source=marking_geometry_source(evidence),
+                    marking_source_frame=evidence["source_frame"])
         uncompensated = motion_fallback or line.pop("_uncompensated_match", False)
         line.update(source_frame=frame["index"], tracking_status=(
             ("matched_without_motion" if uncompensated else "matched") if unique else "new"))
@@ -574,6 +770,7 @@ def attach_double_lines(record, mask, state):
         "version": 1, "status": "observed" if lines else
         ("geometry_unavailable" if mask is None else "no_double_lines"),
         "reset_reason": reset_reason, "motion_fallback": motion_fallback, "observed_count": len(lines),
+        "geometry_source": marking_geometry_source(evidence),
         "eligibility": "evaluated_by_rule",
         "motion_source": "ego_motion" if "ego_motion" in diagnostics else "road_marking_compensation"}
     state.update(frame=frame["index"], time=frame["timestamp_sec"],

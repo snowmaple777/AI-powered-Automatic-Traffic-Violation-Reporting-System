@@ -15,7 +15,9 @@ from core.continuity import is_continuous
 from core.geometry import project_points
 from core.motion import homography, road_motion
 from core.fastcopy import clone
+from observation_schema import marking_evidence, marking_geometry_source
 from signal_state import CombinedSignalState, signal_lights
+from core.trajectory import TrackHistory
 
 
 AREA_RULES = {
@@ -25,19 +27,91 @@ AREA_RULES = {
 DEFAULTS = dict(min_confidence=.5, min_observations=3, intrusion_seconds=.15,
                 overlap_ratio=.5, stationary_seconds=1., stationary_radius_px=4.,
                 min_intrusion_length_px=2., max_observation_gap_sec=.3,
-                max_frame_gap_sec=.2, rearm_seconds=2., side_margin_ratio=.02)
+                max_frame_gap_sec=.2, rearm_seconds=5., side_margin_ratio=.02,
+                duplicate_box_iou=.5, occlusion_gap_ratio=.25, stationary_radius_ratio=.2,
+                crosswalk_two_wheelers=False, crosswalk_suppress_on_green=True, crosswalk_green_hold_seconds=3.,
+                crosswalk_exclude_lateral=True)
+# 允許為 0（停用）的數值設定；布林設定。其餘必須為正數。
+NONNEGATIVE = {"occlusion_gap_ratio", "stationary_radius_ratio", "crosswalk_green_hold_seconds"}
+BOOLEAN = {"crosswalk_two_wheelers", "crosswalk_suppress_on_green", "crosswalk_exclude_lateral"}
+# 4aq 選用設定（預設不存在＝沿用 min_confidence，設定內容與事件不變）：只套用在車輛偵測信心，
+# 區域、燈號與接地幾何仍用 min_confidence。區域規則事件一律是疑似。
+OPTIONAL = {"min_vehicle_confidence", "stationary_window_seconds", "stationary_scale_tolerance"}
+OPTIONAL |= {"confirm_crosswalk", "confirm_waiting_occupancy", "confirmation_min_footprint_px", "crosswalk_min_footprint_px"}
+# 4bl 選用設定（停等區，預設不存在＝行為不變）：
+#   waiting_side_occupancy_ratio：貼著畫面左右邊緣（側邊界內或車框被裁切、但底邊未裁切）的汽車無法判定車頭方向，
+#     改以接地梯形在區域內的比例 ≥ 此值、持續 0.5 秒作為候選；只產生疑似，不進入佔用確認。
+OPTIONAL |= {"waiting_side_occupancy_ratio"}
+# 4ca 選用設定（斑馬線，預設不存在＝行為不變）：
+#   crosswalk_parking_mode：「斑馬線上違停」疑似路徑。原規則抓的是停留／阻擋（綠燈 3 秒內不報、排除橫移、要求連續靜止），
+#     路邊、轉角停放的車由行駛中的攝影車拍到時，常因鏡頭運動補償的誤差讓連續靜止一再中斷，或被綠燈抑制擋下。
+#     啟用後另以「最近 stationary_window_seconds 內沒有移動」的取樣累積靜止時間（中斷不歸零，持續移動的車累積不到），
+#     累積達 stationary_seconds 即產生疑似：不看燈號、不做橫移排除；重疊、接地大小、信心等其餘門檻與原規則相同。
+#     只產生疑似（conditions.parking_mode_candidate=True），不進入斑馬線確認；需要 stationary_window_seconds。
+#     違停事件成立後先保留 PARKING_HOLD_SECONDS：期間原路徑報告了同一台車（可能之後被確認）就丟棄違停事件，
+#     原路徑的事件與確認不受影響；保留期滿才輸出（事件時間仍是成立當下）。
+PARKING_HOLD_SECONDS = 3.0
+OPTIONAL |= {"crosswalk_parking_mode"}
+# 4ar 選用設定（斑馬線，預設不存在＝行為不變）：
+#   stationary_window_seconds：靜止判定改為「最近這段時間內」的接地中心位移不超過半徑，
+#     而不是與第一次的位置比較；拍攝者走動時的推移誤差不會一路累積到重置。
+# 4as 選用設定（斑馬線，預設不存在＝行為不變）：
+#   stationary_scale_tolerance：靜止判定另比較車框下緣寬度與「參考時的下緣隨道路推移投影後」的寬度，
+#     相差超過此比例（例如 0.35＝寬度比超出 1/1.35～1.35）視為移動。朝鏡頭或遠離鏡頭行駛的車在畫面上
+#     位移很小，但相對路面的放大縮小不一致；參考位置與 stationary_window_seconds 相同（未設定時為起點）。
+# 4au 起 configs/area_rules.json 預設啟用 stationary_window_seconds=0.5、stationary_scale_tolerance=0.35；
+#   程式在設定檔沒有這兩個鍵時仍維持原判定（舊設定檔行為不變）。
 
 
 def settings_for(overrides=None):
-    if overrides is not None and (not isinstance(overrides, dict) or set(overrides) - DEFAULTS.keys()):
+    if overrides is not None and (not isinstance(overrides, dict) or set(overrides) - DEFAULTS.keys() - OPTIONAL):
         raise ValueError("Unknown area-rule settings")
     settings = {**DEFAULTS, **(overrides or {})}
-    for key, value in settings.items():
+    for key in ("confirm_crosswalk", "confirm_waiting_occupancy"):
+        if key in settings and type(settings[key]) is not bool:
+            raise ValueError(f"{key} must be boolean")
+        if settings.get(key) is False:
+            settings.pop(key)  # 明確關閉也保持原參數與事件內容。
+    for key in ('confirmation_min_footprint_px', 'crosswalk_min_footprint_px'):
+        if key in settings:
+            value = settings[key]
+            if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f'{key} must be finite and positive')
+    if "crosswalk_parking_mode" in settings:
+        if type(settings["crosswalk_parking_mode"]) is not bool:
+            raise ValueError("crosswalk_parking_mode must be boolean")
+        if not settings["crosswalk_parking_mode"]:
+            settings.pop("crosswalk_parking_mode")  # 明確關閉也保持原參數與事件內容。
+        elif "stationary_window_seconds" not in settings:
+            raise ValueError("crosswalk_parking_mode requires stationary_window_seconds")
+    if "waiting_side_occupancy_ratio" in settings:
+        value = settings["waiting_side_occupancy_ratio"]
+        if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 1:
+            raise ValueError("waiting_side_occupancy_ratio must be in (0, 1]")
+    if "min_vehicle_confidence" in settings:
+        value = settings["min_vehicle_confidence"]
+        if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 1:
+            raise ValueError("min_vehicle_confidence must be in (0, 1]")
+    if "stationary_window_seconds" in settings:
+        value = settings["stationary_window_seconds"]
         if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+            raise ValueError("stationary_window_seconds must be finite and positive")
+    if "stationary_scale_tolerance" in settings:
+        value = settings["stationary_scale_tolerance"]
+        if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+            raise ValueError("stationary_scale_tolerance must be finite and positive")
+    for key, value in settings.items():
+        if key in OPTIONAL:
+            continue
+        if key in BOOLEAN:
+            if type(value) is not bool:
+                raise ValueError(f"{key} must be boolean")
+        elif type(value) not in (int, float) or not math.isfinite(value) or (value < 0 if key in NONNEGATIVE else value <= 0):
             raise ValueError(f"{key} must be finite and positive")
     if type(settings["min_observations"]) is not int or settings["min_observations"] < 2:
         raise ValueError("min_observations must be an integer >= 2")
-    if max(settings["overlap_ratio"], settings["min_confidence"], settings["side_margin_ratio"]) > 1:
+    if max(settings["overlap_ratio"], settings["min_confidence"], settings["side_margin_ratio"],
+           settings["duplicate_box_iou"]) > 1:
         raise ValueError("Ratios must be <= 1")
     return settings
 
@@ -204,7 +278,10 @@ def attach_area_geometry(record, mask, state, cfg):
     current = extract_traffic_regions(mask if mask_ok else None,
         obs.get("road_markings_raw", obs.get("road_markings", [])), cfg)
     used = set()
+    # 標線降頻時本幀遮罩可能是推移估計：區域保留來源（direct／propagated／stale），不當成直接觀測。
+    geometry_source = marking_geometry_source(marking_evidence(record))
     for region in current:
+        region["marking_source"] = geometry_source
         scores = sorted([(_polygon_iou(region["polygon"], item["polygon"]), n)
                          for n, item in enumerate(old) if item["kind"] == region["kind"] and n not in used], reverse=True)
         if scores and scores[0][0] >= cfg["region_match_iou"]:
@@ -271,6 +348,14 @@ def _associate_area_lanes(regions, obs, state, cfg, frame):
     return lanes
 
 
+def lower_body_footprint(box, cfg):
+    """車框下緣的接地梯形近似（footprint_height_ratio／footprint_width_ratio）。"""
+    x1, y1, x2, y2 = box
+    inset = (x2-x1)*(1-cfg["footprint_width_ratio"])/2
+    top = y2-(y2-y1)*cfg["footprint_height_ratio"]
+    return [[x1+inset, top], [x2-inset, top], [x2-inset/2, y2], [x1+inset/2, y2]]
+
+
 def _prepare_area_vehicles(obs, state, cfg, frame, matrix, valid_motion, lanes):
     """Filter duplicates/ego detections and estimate explicitly labelled geometry."""
     size = (frame["width"], frame["height"])
@@ -317,9 +402,7 @@ def _prepare_area_vehicles(obs, state, cfg, frame, matrix, valid_motion, lanes):
         if x1 <= 1 or y1 <= 1 or x2 >= size[0]-1 or y2 >= size[1]-1:
             vehicle["geometry_unavailable_reason"] = "clipped_vehicle"
             continue
-        inset = (x2-x1)*(1-cfg["footprint_width_ratio"])/2
-        top = y2-(y2-y1)*cfg["footprint_height_ratio"]
-        footprint = [[x1+inset, top], [x2-inset, top], [x2-inset/2, y2], [x1+inset/2, y2]]
+        footprint = lower_body_footprint(vehicle["bbox_xyxy"], cfg)
         geometry = dict(source_frame=index, confidence=cfg["estimated_quality"],
             method="lower_body_trapezoid_estimate", quality_kind="heuristic_not_probability",
             footprint=footprint, estimated=True)
@@ -380,6 +463,62 @@ def polygon(value):
     return points
 
 
+def _band_edges(hull):
+    """斑馬線區域的遠端／近端邊界線：在區域的水平範圍內取多個 x，量凸多邊形在該 x 的上下界並各擬合一直線。
+
+    回傳 (遠端線, 近端線, x 範圍)，線為 (斜率, 截距)，y = 斜率 * x + 截距；無法擬合或太斜（> 35 度）時回傳 None。
+    """
+    hull = np.asarray(hull, dtype=np.float64)
+    px1, px2 = float(hull[:, 0].min()), float(hull[:, 0].max())
+    if px2 - px1 < 10:
+        return None
+    edges = list(zip(hull, np.roll(hull, -1, axis=0)))
+    xs, tops, bottoms = [], [], []
+    for x in np.linspace(px1, px2, 22)[1:-1]:
+        ys = [a[1] + (x - a[0]) * (b[1] - a[1]) / (b[0] - a[0]) for a, b in edges
+              if (a[0] - x) * (b[0] - x) <= 0 and a[0] != b[0]]
+        if len(ys) >= 2:
+            xs.append(x), tops.append(min(ys)), bottoms.append(max(ys))
+    if len(xs) < 3:
+        return None
+    lines = [tuple(np.polyfit(xs, values, 1)) for values in (tops, bottoms)]
+    if any(math.degrees(math.atan(abs(slope))) > 35 for slope, _ in lines):
+        return None
+    return lines[0], lines[1], (px1, px2)
+
+
+def occluded_band_overlap(region_polygon, footprint, box, gap_ratio):
+    """車身遮住斑馬線時的足跡重疊比例（估計，只支持疑似）。
+
+    停在斑馬線上的車會遮住車身底下的條紋，分割出的斑馬線區域因此止於車身側緣，足跡與區域幾乎不重疊。
+    只有在區域的一端落在車框水平範圍內（或距車框不超過車寬 × gap_ratio）、且斑馬線帶延伸後穿過車框時，
+    才把斑馬線帶（遠端與近端邊界線之間）沿原方向延伸到車框範圍，計算足跡與延伸帶的重疊。否則回傳 0。
+    """
+    if gap_ratio <= 0:
+        return 0.0
+    edges = _band_edges(cv2.convexHull(np.asarray(region_polygon, dtype=np.float32)).reshape(-1, 2))
+    if edges is None:
+        return 0.0
+    far, near, (px1, px2) = edges
+    bx1, by1, bx2, by2 = (float(v) for v in box)
+    tolerance = (bx2 - bx1) * gap_ratio
+    ends_at_right = px1 < bx1 and bx1 - tolerance <= px2 <= bx2
+    ends_at_left = px2 > bx2 and bx1 <= px1 <= bx2 + tolerance
+    if not (ends_at_right or ends_at_left):
+        return 0.0
+    y_at = lambda line, x: line[0] * x + line[1]
+    center = (bx1 + bx2) / 2
+    if not (y_at(near, center) > by1 and y_at(far, center) < by2 and y_at(near, center) > y_at(far, center)):
+        return 0.0
+    xa, xb = min(px1, bx1), max(px2, bx2)
+    band = np.asarray([[xa, y_at(far, xa)], [xb, y_at(far, xb)], [xb, y_at(near, xb)], [xa, y_at(near, xa)]],
+                      dtype=np.float32)
+    if not cv2.isContourConvex(band) or cv2.contourArea(band) <= 1:
+        return 0.0
+    intersection, _ = cv2.intersectConvexConvex(footprint, band)
+    return float(intersection / cv2.contourArea(footprint))
+
+
 def front_overlap(edge, region):
     """Clip the finite front segment to a convex region, including crossing ends."""
     edge = np.asarray(edge, dtype=float)
@@ -405,6 +544,19 @@ def front_overlap(edge, region):
     return max(0., high - low) * length
 
 
+def _box_iou(a, b):
+    try:
+        ax1, ay1, ax2, ay2 = (float(v) for v in a)
+        bx1, by1, bx2, by2 = (float(v) for v in b)
+    except (TypeError, ValueError):
+        return 0.0
+    w, h = min(ax2, bx2) - max(ax1, bx1), min(ay2, by2) - max(ay1, by1)
+    if w <= 0 or h <= 0:
+        return 0.0
+    inter = w * h
+    return inter / ((ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - inter)
+
+
 class AreaOccupancyRule:
     """One shared state machine; no geometry estimators or model objects here."""
 
@@ -413,11 +565,110 @@ class AreaOccupancyRule:
         self.kind, self.label = AREA_RULES[rule_id]
         self.settings = settings_for(settings)
         self.states, self.previous_frame, self.diagnostics = {}, None, {}
-        # 已報告的車輛 → 最後一次仍在區域內的時間。區域編號換號或量測短暫低於門檻時，
-        # 同一台車在 rearm_seconds 內持續侵入只報告一次。
+        self.confirm_enabled = self.settings.get(
+            "confirm_crosswalk" if self.kind == "crosswalk" else "confirm_waiting_occupancy", False)
+        self.pending_confirmations = []
+        # 已報告的車輛 → (最後一次仍在區域內的時間, 當時車框)。區域編號換號或量測短暫低於門檻時，
+        # 同一台車在 rearm_seconds 內持續侵入只報告一次；追蹤換號時，新編號的車框與 rearm_seconds 內
+        # 已報告車輛的車框 IoU ≥ duplicate_box_iou 也視為同一台車（只抑制重複報告，不產生事件、不累積證據）。
         self.reported = {}
         # 沒有車道標定（行車紀錄器）時改用整個畫面的燈號；與闖紅燈規則相同的強／弱／延續證據。
-        self.signal = CombinedSignalState(context.fps) if self.kind == "motorcycle_waiting_area" else None
+        # 斑馬線：本車方向主燈號為綠燈時（車流通行、行人紅燈）不報告停留（crosswalk_suppress_on_green），
+        # 衝突時沿用主燈號（只會解出綠／黃）；停等區維持原本的燈號判定。
+        self.signal = (CombinedSignalState(context.fps) if self.kind == "motorcycle_waiting_area" else
+                       CombinedSignalState(context.fps, selected_continuity=True)
+                       if self.settings["crosswalk_suppress_on_green"] else None)
+        # 斑馬線：停留前 3 秒是橫向移動的車（橫越路口或轉彎）不是本車道的停留（crosswalk_exclude_lateral）。
+        self.history = TrackHistory(seconds=3.0) if self.kind == "crosswalk" or self.confirm_enabled else None
+        self.last_green_time = None
+        # 4ca 違停路徑的累積靜止狀態：(車, 區域) → 累積秒數、最近取樣軌跡（隨鏡頭運動投影）；
+        # 成立後保留中的違停事件（原路徑優先）。
+        self.parking = {}
+        self.parking_pending = []
+
+    def _confirmation_sample(self, state, frame, region, vehicle, area, geometry, matrix,
+                             vehicles, lane_matched=False, strong_signal=False):
+        """獨立確認證據；推移幀不投票，反證清除證據。既有候選門檻不變。"""
+        from violation_engine import RedLightStopLineCrossingRule
+        now, index = frame["timestamp_sec"], frame["index"]
+        box = vehicle["bbox_xyxy"]
+        width = box[2] - box[0]
+        proof = state.setdefault("confirmation", {"count": 0})
+        pending = state.get("confirmation_event")
+        if pending is not None and (pending['status'] == 'confirmed' or now - pending['timestamp_sec'] > 3.):
+            return pending['status'] == 'confirmed'
+        if pending is not None and pending['conditions'].get('front_direction_available') is False:
+            return False  # 4bl 貼邊佔用候選只產生疑似。
+        direct = not region.get("predicted") and region.get("marking_source", "direct") == "direct"
+        visible = (min(box[:2]) > 1 and box[2] < frame["width"] - 1 and box[3] < frame["height"] - 1
+                   and not RedLightStopLineCrossingRule._contact_occluded(box, vehicle["object_id"], vehicles))
+        motion_ok = matrix is not None
+        # 誤差帶以車寬 3%（至少 2px）定義，四向擾動仍須符合重疊條件。
+        error = max(2., width * .03)
+        offsets = ((0, 0), (error, 0), (-error, 0), (0, error), (0, -error))
+        direction_ok = True
+        if self.kind == "motorcycle_waiting_area":
+            # 佔用確認（4aw confirm_waiting_occupancy）：大部分接地範圍持續位於區域深處、車輛靜止且非橫移，
+            # 不依賴「哪邊是車頭」。
+            footprint = polygon(geometry.get('footprint'))
+            robust = all(cv2.intersectConvexConvex((footprint + shift).astype(np.float32), area)[0]
+                         / cv2.contourArea(footprint) >= .8 for shift in offsets)
+            d = self.history.displacement(vehicle['object_id'], now, 1.)
+            direction_ok = bool(d and d['seconds'] >= .8 and math.hypot(d['dx'], d['dy']) <= max(3., width * .1)
+                                and abs(math.log(width / d['width'])) <= math.log1p(.15)
+                                and not self.history.lateral(vehicle['object_id'], now, 3.))
+            signal_ok = strong_signal and (lane_matched or (
+                self.signal.evidence.get('last_observed_frame') == index and self._confirm_signal_unopposed))
+            signal_id = region.get('lane_id') if lane_matched else self.signal.evidence.get('signal_id')
+            if proof.get('signal_id') != signal_id:
+                proof.update(count=0, signal_id=signal_id)
+            duration = .5
+        else:
+            footprint = polygon(geometry.get("footprint"))
+            robust = all(cv2.intersectConvexConvex((footprint + shift).astype(np.float32), area)[0]
+                         / cv2.contourArea(footprint) >= self.settings["overlap_ratio"] for shift in offsets)
+            radius = max(4., width * .2)
+            robust = robust and np.linalg.norm(footprint.mean(axis=0) - np.asarray(state["anchor"])) <= radius
+            if "edge" in state:
+                expected = np.linalg.norm(np.subtract(*state["edge"]))
+                robust = robust and expected > 0 and abs(math.log(width / expected)) <= math.log1p(.2)
+            signal_ok = not (self.last_green_time is not None and
+                             now - self.last_green_time <= self.settings["crosswalk_green_hold_seconds"])
+            direction_ok = not self.history.lateral(vehicle["object_id"], now, 3.)
+            duration = 1.5
+        checks = dict(contact_visible=visible, motion_valid=motion_ok, robust_overlap=bool(robust),
+                      direction_supported=bool(direction_ok), signal_supported=bool(signal_ok), direct_region=direct)
+        if self.kind == 'crosswalk' and 'confirmation_min_footprint_px' in self.settings:
+            # 影像解析度支援：足跡短邊須能容納像素誤差；不是車輛距離或違規程度門檻。
+            checks['geometry_resolved'] = bool(min(np.ptp(footprint, axis=0)) >= self.settings['confirmation_min_footprint_px'])
+        proof["checks"] = checks
+        if not all(v for k, v in checks.items() if k != "direct_region"):
+            proof.update(count=0)
+        elif direct:
+            if not proof["count"] or now - proof["last"] > self.settings["max_observation_gap_sec"]:
+                proof.update(count=0, since=now, frames=[])
+            proof["count"] += 1
+            proof["last"] = now
+            proof["frames"].append(index)
+        ready = (direct and all(checks.values()) and proof["count"] >= 3
+                 and now - proof.get("since", now) >= duration)
+        self.diagnostics.setdefault("confirmation", []).append(dict(object_id=vehicle["object_id"],
+            region_id=region["region_id"], checks=checks, count=proof["count"], ready=bool(ready)))
+        event = state.get("confirmation_event")
+        if event is not None and event["status"] != "confirmed":
+            event["evidence"]["confirmation_review"] = dict(checks=checks, count=proof["count"])
+            if ready and now - event["timestamp_sec"] <= 3.:
+                event.update(status="confirmed", status_label="確認違規", confirmation_scope="configured_rule_conditions",
+                             confirmation_basis=["robust_waiting_area_occupancy" if self.kind == 'motorcycle_waiting_area'
+                                                 else "robust_area_temporal_evidence"],
+                             confirmation_frame=index, confirmation_timestamp_sec=now)
+                event["description"] = self.label + "；直接區域觀測、幾何誤差帶與時間證據符合確認條件，待人工覆核。"
+                event["evidence"]["confirmation_review"].update(
+                    direct_frames=list(proof["frames"]), since_sec=proof["since"],
+                    after=clone(dict(frame=frame, vehicle=vehicle, region=region)),
+                    direction_basis="stationary_full_occupancy" if self.kind == 'motorcycle_waiting_area'
+                    else "matched_lane" if lane_matched else "compensated_track")
+        return ready
 
     def _red_signal(self, region, vehicle, index, cfg, frame_signal):
         """回傳 (lane_matched, strong)；沒有可用紅燈時拋出 ValueError。
@@ -438,18 +689,49 @@ class AreaOccupancyRule:
         return False, strength == "strong"
 
     def evaluate(self, observation):
+        events = self._evaluate_frame(observation)
+        if self.parking_pending:
+            events.extend(self._release_parking(observation["frame"]["timestamp_sec"]))
+        if self.confirm_enabled:
+            now = observation['frame']['timestamp_sec']
+            retained = []
+            for event in self.pending_confirmations:
+                if event['status'] == 'confirmed' or now - event['timestamp_sec'] >= 3.:
+                    events.append(clone(event))
+                else:
+                    retained.append(event)
+            self.pending_confirmations = retained
+        return events
+
+    def _evaluate_frame(self, observation):
         frame, items, cfg = observation["frame"], observation.get("observations", {}), self.settings
         index, now = frame["index"], frame["timestamp_sec"]
         self.diagnostics = dict(status="evaluating", blocked=[], states=[], measurements=[])
         frame_signal = (None, None)
+        if self.confirm_enabled:
+            self._confirm_signal_unopposed = not any(l.get('class_name') in {'green', 'yellow'} and
+                l.get('confidence', 0) >= .18 for l in items.get('traffic_lights', []))
         if self.signal is not None:
             # 每幀都要更新，燈號的時間窗口才連續（包括沒有區域的幀）。
             frame_signal = (self.signal.update(items.get("traffic_lights", []), index), self.signal.strength)
             self.diagnostics["signal"] = dict(self.signal.evidence)
+            if frame_signal == ("green", "strong"):
+                self.last_green_time = now
         if not is_continuous(self.previous_frame, frame, cfg["max_frame_gap_sec"]):
             self.states.clear()
+            if self.confirm_enabled and self.history is not None:
+                self.history.tracks.clear()
             self.diagnostics["reset_reason"] = "discontinuous_input"
         self.previous_frame = dict(frame)
+        if self.confirm_enabled and self.kind == "motorcycle_waiting_area":
+            try:
+                confirm_matrix = homography(road_motion(observation))
+                if confirm_matrix is None:
+                    raise ValueError("motion_unavailable")
+                self.history.project(lambda x, y: tuple(project_points([[x, y]], confirm_matrix)[0]))
+            except (ValueError, TypeError):
+                confirm_matrix = None
+                self.history.tracks.clear()
         regions = [r for r in items.get("traffic_regions", []) if r.get("kind") == self.kind]
         if not regions:
             self.states.clear()
@@ -465,12 +747,24 @@ class AreaOccupancyRule:
                     raise ValueError("motion_unavailable")
                 for state in self.states.values():
                     state["anchor"] = project_points([state["anchor"]], matrix)[0]
+                    if "edge" in state:
+                        state["edge"] = project_points(state["edge"], matrix)
+                    if "track" in state:
+                        state["track"] = [(t, project_points([p], matrix)[0], e if e is None else project_points(e, matrix))
+                                          for t, p, e in state["track"]]
+                if self.history is not None:
+                    self.history.project(lambda x, y: tuple(project_points([[x, y]], matrix)[0]))
+                for acc in self.parking.values():
+                    acc["track"] = [(t, project_points([q], matrix)[0]) for t, q in acc["track"]]
             except (TypeError, ValueError):
                 self.states.clear()
+                self.parking.clear()
                 self.diagnostics.update(status="blocked", reason="motion_unavailable")
                 return []
-        events, retained = [], set()
+        events, retained, parked = [], set(), set()
         vehicles = items.get("area_vehicles", items.get("rule_vehicles", items.get("vehicles", [])))
+        if self.history is not None:
+            self.history.update(now, index, vehicles)
         region_ids = Counter(r.get("region_id") for r in regions)
         vehicle_ids = Counter(v.get("object_id") for v in vehicles)
         for region in regions:
@@ -482,19 +776,27 @@ class AreaOccupancyRule:
                         raise ValueError("missing_identity")
                     if vehicle_ids[identity] != 1 or region_ids[region_id] != 1:
                         raise ValueError("ambiguous_identity")
-                    allowed = {"car", "truck", "bus"} if self.kind == "motorcycle_waiting_area" else {"car", "truck", "bus", "motorcycle", "bicycle"}
+                    allowed = ({"car", "truck", "bus"} if self.kind == "motorcycle_waiting_area" or not cfg["crosswalk_two_wheelers"]
+                               else {"car", "truck", "bus", "motorcycle", "bicycle"})
                     if vehicle.get("class_name") not in allowed:
                         continue
                     if region.get("source_frame") != index:
                         raise ValueError("stale_region")
                     area = polygon(region.get("polygon"))
-                    for item in (region, vehicle):
+                    for item, minimum in ((region, cfg["min_confidence"]),
+                                          (vehicle, cfg.get("min_vehicle_confidence", cfg["min_confidence"]))):
                         confidence = item.get("confidence", 0)
-                        if not isinstance(confidence, (float, int)) or not math.isfinite(confidence) or not cfg["min_confidence"] <= confidence <= 1:
+                        if not isinstance(confidence, (float, int)) or not math.isfinite(confidence) or not minimum <= confidence <= 1:
+                            # 偵測信心短暫低於門檻：與短暫漏偵測相同處理——不累積證據、不更新時間，
+                            # 但保留累積中的狀態到 max_observation_gap_sec，避免信心在門檻附近跳動時停留時間一再歸零。
+                            previous = self.states.get(key)
+                            if previous and now - previous["last_time"] <= cfg["max_observation_gap_sec"]:
+                                retained.add(key)
                             raise ValueError("low_confidence")
                     state = self.states.get(key)
                     if state and now - state["last_time"] > cfg["max_observation_gap_sec"]:
                         state = None
+                    side_occupancy = False
                     if self.kind == "motorcycle_waiting_area":
                         lane_matched, strong_signal = self._red_signal(region, vehicle, index, cfg, frame_signal)
                     if vehicle.get("source_frame") != index:
@@ -502,6 +804,15 @@ class AreaOccupancyRule:
                             retained.add(key)
                         continue  # Cached detections cannot add evidence or trigger events.
                     geometry = vehicle.get("road_geometry", {})
+                    side_ratio = cfg.get("waiting_side_occupancy_ratio") if self.kind == "motorcycle_waiting_area" else None
+                    if (side_ratio is not None and geometry.get("source_frame") != index
+                            and vehicle.get("geometry_unavailable_reason") == "clipped_vehicle"
+                            and vehicle["bbox_xyxy"][3] < frame["height"] - 1):
+                        # 4bl：底邊可見的裁切車框（貼左右或上緣）仍可估接地範圍，但只走佔用候選。
+                        geometry = dict(source_frame=index, confidence=GEOMETRY_DEFAULTS["estimated_quality"],
+                                        method="clipped_lower_body_estimate", quality_kind="heuristic_not_probability",
+                                        footprint=lower_body_footprint(vehicle["bbox_xyxy"], GEOMETRY_DEFAULTS),
+                                        estimated=True)
                     if geometry.get("source_frame") != index or not geometry.get("method"):
                         raise ValueError("vehicle_geometry_unavailable")
                     confidence = geometry.get("confidence", 0)
@@ -515,41 +826,124 @@ class AreaOccupancyRule:
                             # 貼著畫面左右邊緣的車多半是從側面看到的並行車，遠端邊不是車頭，不使用此假設。
                             footprint = geometry.get("footprint")
                             box, margin = vehicle["bbox_xyxy"], frame["width"] * cfg["side_margin_ratio"]
-                            if lane_matched or not footprint or box[0] <= margin or box[2] >= frame["width"] - margin:
-                                raise ValueError("front_direction_unavailable")
-                            front_edge, front_assumed = min(
-                                ((footprint[n], footprint[(n+1) % len(footprint)]) for n in range(len(footprint))),
-                                key=lambda edge: edge[0][1] + edge[1][1]), True
-                        measured = front_overlap(front_edge, area)
-                        self.diagnostics["measurements"].append(dict(object_id=identity, region_id=region_id,
-                            measurement=measured, threshold=cfg["min_intrusion_length_px"], name="front_overlap_px"))
-                        if measured < cfg["min_intrusion_length_px"]:
-                            continue
-                        point, duration = None, cfg["intrusion_seconds"]
+                            if (lane_matched or not footprint or box[0] <= margin or box[2] >= frame["width"] - margin
+                                    or geometry["method"] == "clipped_lower_body_estimate"):
+                                if side_ratio is None or lane_matched or not footprint:
+                                    raise ValueError("front_direction_unavailable")
+                                # 4bl：不判定車頭，改看接地範圍有多少在區域內（只產生疑似）。
+                                side_occupancy, front_assumed = True, True
+                            else:
+                                front_edge, front_assumed = min(
+                                    ((footprint[n], footprint[(n+1) % len(footprint)]) for n in range(len(footprint))),
+                                    key=lambda edge: edge[0][1] + edge[1][1]), True
+                        if side_occupancy:
+                            footprint = polygon(footprint)
+                            measured = float(cv2.intersectConvexConvex(footprint, area)[0] / cv2.contourArea(footprint))
+                            self.diagnostics["measurements"].append(dict(object_id=identity, region_id=region_id,
+                                measurement=measured, threshold=side_ratio, name="side_footprint_overlap_ratio"))
+                            if measured + 1e-6 < side_ratio:
+                                continue
+                            duration = max(cfg["intrusion_seconds"], .5)
+                        else:
+                            measured = front_overlap(front_edge, area)
+                            self.diagnostics["measurements"].append(dict(object_id=identity, region_id=region_id,
+                                measurement=measured, threshold=cfg["min_intrusion_length_px"], name="front_overlap_px"))
+                            if measured < cfg["min_intrusion_length_px"]:
+                                continue
+                            duration = cfg["intrusion_seconds"]
+                        point, edge = None, None
                     else:
                         footprint = polygon(geometry.get("footprint"))
+                        if 'crosswalk_min_footprint_px' in cfg:
+                            footprint_px = float(min(np.ptp(footprint, axis=0)))
+                            self.diagnostics['measurements'].append(dict(object_id=identity, region_id=region_id,
+                                name='footprint_min_extent_px', measurement=footprint_px,
+                                threshold=cfg['crosswalk_min_footprint_px']))
+                            if footprint_px < cfg['crosswalk_min_footprint_px']:
+                                raise ValueError('crosswalk_footprint_unresolved')
                         intersection, _ = cv2.intersectConvexConvex(footprint, area)
                         measured = float(intersection / cv2.contourArea(footprint))
+                        occluded = False
+                        if measured + 1e-6 < cfg["overlap_ratio"]:
+                            # 斑馬線被這台車遮住：沿斑馬線帶延伸到車框範圍再量（只支持疑似，事件會標記）。
+                            extended = occluded_band_overlap(area, footprint, vehicle["bbox_xyxy"], cfg["occlusion_gap_ratio"])
+                            if extended + 1e-6 >= cfg["overlap_ratio"]:
+                                measured, occluded = extended, True
                         self.diagnostics["measurements"].append(dict(object_id=identity, region_id=region_id,
-                            measurement=measured, threshold=cfg["overlap_ratio"], name="footprint_overlap_ratio"))
+                            measurement=measured, threshold=cfg["overlap_ratio"], name="footprint_overlap_ratio",
+                            occlusion_extended=occluded))
                         if measured + 1e-6 < cfg["overlap_ratio"]:
                             continue
                         point, duration = footprint.mean(axis=0).tolist(), cfg["stationary_seconds"]
-                        if state and np.linalg.norm(np.asarray(point) - state["anchor"]) > cfg["stationary_radius_px"]:
+                        box = vehicle["bbox_xyxy"]
+                        radius = max(cfg["stationary_radius_px"], cfg["stationary_radius_ratio"] * (box[2] - box[0]))
+                        window, scale = cfg.get("stationary_window_seconds"), cfg.get("stationary_scale_tolerance")
+                        edge = [[box[0], box[3]], [box[2], box[3]]] if scale is not None else None
+                        if cfg.get("crosswalk_parking_mode"):
+                            parked.add(key)
+                            parking_event = self._parking_sample(key, frame, vehicle, region, geometry, measured,
+                                                                 occluded, point, radius)
+                            if parking_event is not None:
+                                events.append(parking_event)
+
+                        def moved(reference, reference_edge):
+                            if np.linalg.norm(np.asarray(point) - np.asarray(reference)) > radius:
+                                return True
+                            if reference_edge is None:
+                                return False
+                            # 停著的車，下緣寬度應隨路面同比例放大縮小。
+                            predicted = float(np.linalg.norm(np.subtract(reference_edge[1], reference_edge[0])))
+                            return predicted <= 0 or abs(math.log((box[2] - box[0]) / predicted)) > math.log1p(scale)
+                        if window is None:
+                            if state and moved(state["anchor"], state.get("edge")):
+                                state = None
+                        elif state and any(moved(p, e) for t, p, e in state["track"] if now - t <= window + 1e-6):
                             state = None
+                    if state and state.get("side_occupancy", False) != side_occupancy:
+                        state = None  # 4bl：佔用與車頭兩條路徑的觀測不互相累積；車頭路徑的判定與未啟用時相同。
                     snapshot = clone(dict(frame=frame, vehicle=vehicle, region=region, measurement=measured))
                     if state is None:
                         state = dict(since=now, count=0, anchor=point, before=snapshot, reported=False)
+                        if side_occupancy:
+                            state["side_occupancy"] = True
+                        if point is not None and cfg.get("stationary_window_seconds") is not None:
+                            state["track"] = []
+                        if point is not None and edge is not None:
+                            state["edge"] = edge
                     state.update(last_time=now, count=state["count"] + 1)
+                    if "track" in state:
+                        window = cfg["stationary_window_seconds"]
+                        state["track"] = [(t, p, e) for t, p, e in state["track"] if now - t <= window + 1e-6] + [(now, point, edge)]
+                        state["max_drift_px"] = max(state.get("max_drift_px", 0.),
+                                                    float(np.linalg.norm(np.asarray(point) - np.asarray(state["anchor"]))))
+                    if self.kind == "crosswalk" and occluded:
+                        state["occlusion_extended"] = True
                     self.states[key] = state
                     retained.add(key)
-                    if state["reported"] or (identity in self.reported and now - self.reported[identity] <= cfg["rearm_seconds"]):
-                        self.reported[identity] = now
+                    if self.confirm_enabled:
+                        self._confirmation_sample(state, frame, region, vehicle, area, geometry,
+                            matrix if self.kind == "crosswalk" else confirm_matrix, vehicles,
+                            lane_matched if self.kind == "motorcycle_waiting_area" else False,
+                            strong_signal if self.kind == "motorcycle_waiting_area" else False)
+                    duplicate = self._duplicate_of(identity, vehicle.get("bbox_xyxy"), now)
+                    if state["reported"] or duplicate:
+                        self.reported[identity] = (now, list(vehicle["bbox_xyxy"]))
+                        if duplicate and duplicate != identity and not state["reported"]:
+                            self.diagnostics.setdefault("duplicates", []).append(
+                                dict(object_id=identity, region_id=region_id, duplicate_of=duplicate))
                         state["reported"] = True
                         continue
                     if state["count"] < cfg["min_observations"] or now - state["since"] + 1e-6 < duration:
                         continue
-                    self.reported[identity] = now
+                    if self.kind == "crosswalk":
+                        # 綠燈後至少經過黃燈（約 3 秒）才會轉紅：最近 crosswalk_green_hold_seconds 內主燈號是綠燈時不報告。
+                        # 保留狀態：燈號轉紅後仍停留才報告。
+                        if (cfg["crosswalk_suppress_on_green"] and self.last_green_time is not None
+                                and now - self.last_green_time <= cfg["crosswalk_green_hold_seconds"]):
+                            raise ValueError("own_signal_green")
+                        if cfg["crosswalk_exclude_lateral"] and self.history.lateral(identity, now, 3.0):
+                            raise ValueError("lateral_motion")
+                    self.reported[identity] = (now, list(vehicle["bbox_xyxy"]))
                     event = dict(event_id=f"{self.context.source_id}:{self.rule_id}:{identity}:{region_id}:{index}",
                                  rule_id=self.rule_id, source_id=self.context.source_id, status="suspected",
                                  status_label="疑似違規", review_required=True, behavior=self.rule_id,
@@ -559,19 +953,38 @@ class AreaOccupancyRule:
                                  conditions={"fresh_geometry": True, "temporal_support": True},
                                  evidence=dict(vehicle=vehicle, region=region, before=state["before"], after=snapshot,
                                                measurement=measured, duration_sec=now-state["since"], parameters=cfg,
-                                               measurement_name="front_overlap_px" if point is None else "footprint_overlap_ratio"))
+                                               measurement_name="side_footprint_overlap_ratio" if side_occupancy else
+                                               "front_overlap_px" if point is None else "footprint_overlap_ratio"))
                     event["conditions"]["estimated_vehicle_geometry"] = bool(geometry.get("estimated"))
+                    if "track" in state:
+                        event["evidence"]["stationary_drift_from_start_px"] = state["max_drift_px"]
+                    if "edge" in state:
+                        event["evidence"]["stationary_width_ratio_from_start"] = (box[2] - box[0]) / float(
+                            np.linalg.norm(np.subtract(state["edge"][1], state["edge"][0])))
                     event["conditions"]["predicted_region"] = bool(region.get("predicted"))
+                    if self.kind == "crosswalk" and cfg["occlusion_gap_ratio"] > 0:
+                        event["conditions"]["region_visible_at_footprint"] = not state.get("occlusion_extended", False)
+                    event["conditions"]["direct_region_observation"] = bool(
+                        not region.get("predicted") and region.get("marking_source", "direct") == "direct")
                     if self.kind == "motorcycle_waiting_area":
                         event["conditions"].update(lane_matched=lane_matched, strong_signal_evidence=strong_signal,
                                                    front_edge_from_lane=not front_assumed)
+                        if cfg.get("waiting_side_occupancy_ratio") is not None:
+                            event["conditions"]["front_direction_available"] = not side_occupancy
                         event["evidence"]["signal"] = (region.get("signal") if lane_matched
                                                        else self.diagnostics.get("signal"))
                         if not lane_matched:
                             event["description"] = self.label + "；未配對車道，依畫面燈號與車頭方向假設符合門檻，待人工覆核。"
                     if geometry.get("estimated"):
                         event["description"] = self.label + "；依車輛接地近似符合設定門檻，待人工覆核。"
-                    events.append(clone(event))
+                    if side_occupancy:
+                        event["description"] = self.label + "；車輛貼近畫面邊緣、無法判定車頭，依接地範圍佔用區域比例符合門檻，待人工覆核。"
+                    if self.confirm_enabled:
+                        event["confirmation_basis"] = []
+                        state["confirmation_event"] = event
+                        self.pending_confirmations.append(event)
+                    else:
+                        events.append(clone(event))
                     state["reported"] = True
                 except (ValueError, TypeError, KeyError, cv2.error) as exc:
                     self.diagnostics["blocked"].append(dict(object_id=identity, region_id=region_id, reason=str(exc)))
@@ -579,13 +992,100 @@ class AreaOccupancyRule:
         # 車輛仍在但已離開區域或條件不符者照舊清除。
         self.states = {key: state for key, state in self.states.items() if key in retained or (
             key[0] not in vehicle_ids and now - state["last_time"] <= cfg["max_observation_gap_sec"])}
-        self.reported = {k: t for k, t in self.reported.items() if now - t <= cfg["rearm_seconds"]}
+        self.parking = {key: acc for key, acc in self.parking.items()
+                        if key in parked or now - acc["last_time"] <= cfg["max_observation_gap_sec"]}
+        self.reported = {k: v for k, v in self.reported.items() if now - v[0] <= cfg["rearm_seconds"]}
         self.diagnostics["states"] = [dict(object_id=k[0], region_id=k[1], count=s["count"], reported=s["reported"])
                                       for k, s in self.states.items()]
         return events
 
+    def _parking_sample(self, key, frame, vehicle, region, geometry, measured, occluded, point, radius):
+        """4ca 斑馬線違停：累積「最近一段時間內沒有移動」的取樣時間，達 stationary_seconds 時回傳疑似事件。"""
+        cfg, now, index = self.settings, frame["timestamp_sec"], frame["index"]
+        identity, region_id = key
+        acc = self.parking.get(key)
+        if acc is not None and now - acc["last_time"] > cfg["max_observation_gap_sec"]:
+            acc = None
+        snapshot = clone(dict(frame=frame, vehicle=vehicle, region=region, measurement=measured))
+        if acc is None:
+            acc = self.parking[key] = dict(since=now, last_time=now, count=0, still_sec=0., track=[],
+                                           before=snapshot, reported=False)
+        window = cfg["stationary_window_seconds"]
+        recent = [q for t, q in acc["track"] if now - t <= window + 1e-6]
+        # 有涵蓋整段窗口的歷史取樣、且都在半徑內，這段間隔才算靜止；移動時不累積，但已累積的時間不歸零。
+        if recent and now - acc["track"][0][0] + 1e-6 >= window and all(
+                np.linalg.norm(np.asarray(point) - np.asarray(q)) <= radius for q in recent):
+            acc["still_sec"] += now - acc["last_time"]
+        acc["track"] = [(t, q) for t, q in acc["track"] if now - t <= window + 1e-6] + [(now, point)]
+        acc.update(last_time=now, count=acc["count"] + 1)
+        if occluded:
+            acc["occlusion_extended"] = True
+        state = self.states.get(key)
+        if acc["reported"] or (state and state.get("reported")):
+            acc["reported"] = True
+            return None
+        if acc["count"] < cfg["min_observations"] or acc["still_sec"] + 1e-6 < cfg["stationary_seconds"]:
+            return None
+        if self._duplicate_of(identity, vehicle.get("bbox_xyxy"), now):
+            acc["reported"] = True
+            return None
+        acc["reported"] = True
+        event = dict(event_id=f"{self.context.source_id}:{self.rule_id}:{identity}:{region_id}:{index}",
+                     rule_id=self.rule_id, source_id=self.context.source_id, status="suspected",
+                     status_label="疑似違規", review_required=True, behavior=self.rule_id,
+                     confirmation_scope="configured_candidate_conditions",
+                     description="斑馬線上違停（疑似）；車輛在斑馬線上累積靜止達設定時間，未依燈號判斷，待人工覆核。",
+                     frame=index, timestamp_sec=now, object_id=identity, vehicle_class=vehicle["class_name"],
+                     conditions={"fresh_geometry": True, "temporal_support": True, "parking_mode_candidate": True,
+                                 "signal_checked": False,
+                                 "estimated_vehicle_geometry": bool(geometry.get("estimated")),
+                                 "predicted_region": bool(region.get("predicted")),
+                                 "direct_region_observation": bool(not region.get("predicted") and
+                                                                   region.get("marking_source", "direct") == "direct")},
+                     evidence=dict(vehicle=vehicle, region=region, before=acc["before"], after=snapshot,
+                                   measurement=measured, measurement_name="footprint_overlap_ratio",
+                                   duration_sec=now - acc["since"], parking_stationary_sec=acc["still_sec"],
+                                   parameters=cfg))
+        if cfg["occlusion_gap_ratio"] > 0:
+            event["conditions"]["region_visible_at_footprint"] = not acc.get("occlusion_extended", False)
+        self.parking_pending.append(dict(event=clone(event), key=key, box=list(vehicle["bbox_xyxy"]),
+                                         release=now + PARKING_HOLD_SECONDS))
+        return None
+
+    def _release_parking(self, now, final=False):
+        """保留期滿的違停事件輸出；期間原路徑已報告同一台車者丟棄。"""
+        released, kept = [], []
+        for item in self.parking_pending:
+            identity = item["key"][0]
+            state = self.states.get(item["key"])
+            if identity in self.reported or (state and state.get("reported")):
+                continue  # 原路徑已報告（含換號後的同一台車）：以原路徑為準
+            if not final and now + 1e-9 < item["release"]:
+                kept.append(item)
+                continue
+            self.reported[identity] = (now, item["box"])
+            if state is not None:
+                state["reported"] = True
+            released.append(clone(item["event"]))
+        self.parking_pending = kept
+        return released
+
+    def _duplicate_of(self, identity, box, now):
+        """回傳已報告的同一台車編號（同編號，或換號後車框高度重疊）；沒有則 None。依編號排序以保持可重現。"""
+        cfg = self.settings
+        if identity in self.reported and now - self.reported[identity][0] <= cfg["rearm_seconds"]:
+            return identity
+        for other in sorted(self.reported):
+            seen, other_box = self.reported[other]
+            if now - seen <= cfg["rearm_seconds"] and _box_iou(box, other_box) >= cfg["duplicate_box_iou"]:
+                return other
+        return None
+
     def finalize(self):
+        tail = self._release_parking(None, final=True) if self.parking_pending else []
         self.states.clear()
+        self.parking.clear()
         self.reported.clear()
         self.previous_frame = None
-        return []
+        events, self.pending_confirmations = self.pending_confirmations, []
+        return clone(events) + tail

@@ -2,11 +2,17 @@
 
 模型只載入一次；每支影片輸出到 outputs/eval/<label>/<影片>/（含逐幀遮罩，供離線重播後處理與規則）。
 已完成的影片會略過（可中斷後續跑）。用法：python tools/batch_eval.py --label baseline
+比較不同模型設定時，每個設定使用不同的 label：
+  python tools/batch_eval.py --label marking_i4 --model-config configs/marking_interval_4_refresh.json
+done.json 記錄設定指紋（模型與規則設定檔的 SHA-256）；同一 label 下設定不同時拒絕續跑，避免混用結果。
 """
 import argparse
+import hashlib
 import json
+import subprocess
 import sys
 import time
+import uuid
 from collections import Counter
 from contextlib import ExitStack
 from pathlib import Path
@@ -26,7 +32,10 @@ def diagnose(folder, video, category):
     reasons, signal, frames, stop_lines = Counter(), Counter(), 0, 0
     with path.open(encoding="utf-8") as source:
         for line in source:
-            rules = json.loads(line)["rules"]
+            row = json.loads(line)
+            if row.get("finalize") is True:
+                continue  # 片尾清除是診斷記錄，不是額外一幀。
+            rules = row["rules"]
             frames += 1
             if category == "red_light_stop_line_crossing":
                 d = rules.get(category, {})
@@ -52,12 +61,217 @@ def diagnose(folder, video, category):
     return result
 
 
-def summarize(label):
+FINGERPRINT_CONFIGS = ("configs/double_line_rules.json", "configs/area_rules.json", "configs/red_light_rules.json",
+                       "configs/marking_compensation.json", "configs/bytetrack_perception.yaml")
+DEFAULT_TRUTH = ROOT / "eval/ground_truth.json"
+
+
+def truth_name(path):
+    path = Path(path).resolve()
+    return path.relative_to(ROOT).as_posix() if path.is_relative_to(ROOT) else path.as_posix()
+
+
+def file_identity(path):
+    path = Path(path)
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {"size": path.stat().st_size, "sha256": digest.hexdigest()}
+
+
+def settings_fingerprint(model_config, truth=DEFAULT_TRUTH):
+    """設定及實際權重／字典指紋；不只依賴設定中宣告的雜湊。
+
+    影片清單來源（truth）也列入：預設的 eval/ground_truth.json 鍵名不變，舊結果可續跑；
+    以 --truth 指定其他清單時，執行中修改 eval/ground_truth.json 不會中斷這批。
+    """
+    from model_library import load_config
+    path = Path(model_config).resolve()
+    name = path.relative_to(ROOT).as_posix() if path.is_relative_to(ROOT) else path.as_posix()
+    files = {name: path, **{item: ROOT / item for item in FINGERPRINT_CONFIGS},
+             truth_name(truth): Path(truth).resolve()}
+    config = load_config(path)
+    for stage, spec in config["models"].items():
+        if not spec.get("enabled", True):
+            continue
+        for key in ("weights", "config", "tracker", "dict_path"):
+            if key not in spec.get("params", {}):
+                continue
+            target = Path(spec["params"][key])
+            for item in sorted(target.rglob("*")) if target.is_dir() else [target]:
+                if item.is_file():
+                    suffix = item.relative_to(target).as_posix() if target.is_dir() else item.name
+                    files[f"{stage}.{key}:{suffix}"] = item
+    digest = {key: file_identity(value) for key, value in sorted(files.items())}
+    return {"model_config": name, "sha256": digest}
+
+
+def code_version():
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
+                          text=True, timeout=10, check=True).stdout.strip()
+    paths = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "*.py"],
+                           cwd=ROOT, capture_output=True, timeout=30, check=True).stdout.decode("utf-8").split("\0")
+    sources = {p: file_identity(ROOT / p) if (ROOT / p).is_file() else None for p in sorted(set(paths)) if p}
+    return {"commit": head, "source_sha256": hashlib.sha256(
+        json.dumps(sources, sort_keys=True).encode("utf-8")).hexdigest()}
+
+
+def write_json_atomic(path, value):
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
+def rename_with_retry(source, target, attempts=10, delay=2.0):
+    """Windows 上防毒或索引程式剛好開著新寫出的檔案時，改名會暫時被拒（WinError 5）；稍候重試。
+
+    new_20261114 的 141 支中發生 2 次（vr018、cy021），事後同一資料夾可正常改名。
+    """
+    for attempt in range(attempts):
+        try:
+            return source.rename(target)
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay)
+
+
+def runtime_devices(pipeline):
+    """推論後檢查已建立的 session／實際模型參數裝置，而非只有可用 provider 清單。"""
+    import torch
+    result, seen = {}, set()
+    def visit(node, path, depth):
+        if node is None or id(node) in seen or depth > 7:
+            return
+        seen.add(id(node))
+        if callable(getattr(node, "get_providers", None)):
+            result[path] = {"providers": node.get_providers()}
+        if isinstance(node, torch.nn.Module):
+            parameter = next(node.parameters(), None)
+            if parameter is not None:
+                result[path] = {"device": str(parameter.device)}
+        for key in ("backend", "model", "predictor", "session", "scan_model"):
+            child = getattr(node, "__dict__", {}).get(key)
+            if child is not None:
+                visit(child, path + "." + key, depth + 1)
+    for name, model in pipeline.models.items():
+        visit(model, name, 0)
+    return result
+
+
+def output_inventory(folder):
+    return {p.relative_to(folder).as_posix(): file_identity(p) for p in sorted(folder.rglob("*"))
+            if p.is_file() and p.name != "done.json"}
+
+
+def validate_outputs(folder, name, masks_required, allow_short_decode=False):
+    """只對已關閉的輸出驗證；失敗不得發布完成標記。"""
+    from tools.real_replay import read_mask
+    timings = json.loads((folder / f"{name}_timings.json").read_text(encoding="utf-8"))
+    frames = timings["frames"]
+    completion = timings["completion"]
+    allowed = ("eof", "max_frames", "short_eof") if allow_short_decode else ("eof", "max_frames")
+    if frames <= 0 or completion["termination"] not in allowed:
+        raise ValueError("未完成可驗證的解碼範圍")
+    if completion["termination"] == "short_eof" and not (
+            completion["expected_frames"] and frames < completion["expected_frames"]):
+        raise ValueError("short_eof 幀數必須少於影片中繼資料")
+    if completion["termination"] == "eof" and frames != completion["expected_frames"]:
+        raise ValueError("EOF 幀數與影片中繼資料不符")
+    if completion["termination"] == "max_frames" and frames != completion["max_frames"]:
+        raise ValueError("局部範圍尚未完成")
+    for suffix, key in (("detections", "frame"), ("rule_diagnostics", "frame")):
+        count = 0
+        final_seen = False
+        with (folder / f"{name}_{suffix}.jsonl").open(encoding="utf-8") as source:
+            for line in source:
+                row = json.loads(line)
+                if final_seen:
+                    raise ValueError("片尾診斷之後仍有資料")
+                if suffix == "rule_diagnostics" and row.get("finalize") is True:
+                    rules = row.get("rules", {})
+                    if (count != frames or row.get("frame") != frames-1 or not isinstance(rules, dict) or not rules
+                            or any(name not in ("double_yellow_line_crossing", "double_white_line_crossing")
+                                   or not isinstance(detail, dict) or detail.get("frame") != frames-1
+                                   or not isinstance(detail.get("state_changes"), list)
+                                   for name, detail in rules.items())):
+                        raise ValueError("片尾診斷範圍或格式不符")
+                    final_seen = True
+                    continue
+                actual = row[key]["index"] if suffix == "detections" else row[key]
+                if actual != count:
+                    raise ValueError(f"{suffix} 幀序不連續")
+                count += 1
+        if count != frames:
+            raise ValueError(f"{suffix} 幀數不符")
+    with (folder / f"{name}_violations.jsonl").open(encoding="utf-8") as source:
+        for line in source:
+            json.loads(line)
+    if (folder / f"{name}_detections.csv").stat().st_size == 0:
+        raise ValueError("CSV 為空")
+    if masks_required:
+        masks = sorted((folder / "masks").glob("*.png"))
+        if len(masks) != frames or completion["masks_written"] != frames:
+            raise ValueError("遮罩數量不符")
+        for index, path in enumerate(masks):
+            if path.stem != f"{index:06d}" or read_mask(path) is None:
+                raise ValueError(f"遮罩不可讀或順序錯誤：{path}")
+    return timings
+
+
+def verify_done(folder, request=None):
+    done = json.loads((folder / "done.json").read_text(encoding="utf-8"))
+    if done.get("version") != 2 or done.get("status") not in ("complete", "partial"):
+        raise ValueError(f"{folder} 缺少新版完整性紀錄；請用新的 label")
+    if request is not None and done.get("request") != request:
+        raise ValueError(f"{folder} 的程式、設定、影片或處理範圍不同；請用新的 label")
+    if done.get("outputs") != output_inventory(folder):
+        raise ValueError(f"{folder} 輸出遭修改、遺失或新增，不能略過")
+    return done
+
+
+def short_decode_notes(out, truth, videos):
+    """列出以 short_eof 完成的影片；超出實際解碼時間的 GT 事件無法命中，須另外說明。"""
+    notes = {}
+    for video in videos:
+        path = out / video / f"{video}_timings.json"
+        if not path.is_file():
+            continue
+        timings = json.loads(path.read_text(encoding="utf-8"))
+        completion = timings.get("completion", {})
+        if completion.get("termination") != "short_eof":
+            continue
+        fps = timings.get("fps")
+        detections = out / video / f"{video}_detections.jsonl"
+        if not fps:
+            with detections.open(encoding="utf-8") as source:
+                first = json.loads(source.readline())
+                fps = first.get("frame", {}).get("fps")
+        decoded = timings["frames"] / fps if fps else float("nan")
+        events = truth["videos"].get(video, {}).get("events", [])
+        notes[video] = {"frames": timings["frames"], "expected_frames": completion["expected_frames"],
+                        "decoded_seconds": round(decoded, 3),
+                        "events_beyond": sum(e.get("end_sec", e.get("start_sec", 0)) > decoded for e in events)}
+    return notes
+
+
+def summarize(label, verified_only=False, truth_path=DEFAULT_TRUTH):
     from eval.metrics import evaluate, load_predictions
     out = EVAL_DIR / label
-    truth = json.loads((ROOT / "eval/ground_truth.json").read_text(encoding="utf-8-sig"))
-    rows, per_rule, plate_total, plate_correct = evaluate(truth, load_predictions([out], "suspected"))
+    truth = json.loads(Path(truth_path).read_text(encoding="utf-8-sig"))
+    folders = [out]
+    if verified_only:
+        folders = [p for p in sorted(out.iterdir()) if p.is_dir() and not p.name.startswith(".")
+                   and verify_done(p)["status"] == "complete"]
+    predictions = load_predictions(folders, "suspected")
+    rows, per_rule, plate_total, plate_correct = evaluate(truth, predictions)
+    _, original_rules, original_total, original_correct = evaluate(truth, predictions, plate_at_event=True)
     lines = [f"===== 全片評估 {label} ====="]
+    if Path(truth_path).resolve() != DEFAULT_TRUTH.resolve():
+        lines.append(f"影片清單：{truth_name(truth_path)}（未覆核影片只計影片層級）")
+    if verified_only:
+        lines.append(f"只計完整且驗證通過的影片：{len(folders)} 支；partial 與 .attempts 不計分。")
     by_category = {}
     for video, category, hit, count in rows:
         by_category.setdefault(category, []).append(hit)
@@ -67,9 +281,18 @@ def summarize(label):
         precision = f"{c['tp'] / (c['tp'] + c['fp']):.0%}" if c["tp"] + c["fp"] else "—"
         recall = f"{c['tp'] / (c['tp'] + c['fn']):.0%}" if c["tp"] + c["fn"] else "—"
         lines.append(f"事件層級 {rule}: TP {c['tp']} FP {c['fp']} FN {c['fn']}  精確率 {precision}  召回率 {recall}")
-    lines.append(f"車牌完全正確：{plate_correct}/{plate_total}")
+    lines.append(f"事件當下車牌完全正確：{original_correct}/{original_total}；含補充：{plate_correct}/{plate_total}")
+    short = short_decode_notes(out, truth, [video for video, *_ in rows])
+    for video, note in short.items():
+        beyond = f"；GT 事件超出解碼範圍 {note['events_beyond']} 筆" if note["events_beyond"] else ""
+        lines.append(f"短解碼（--allow-short-decode）：{video} 解碼 {note['frames']}/{note['expected_frames']} 幀"
+                     f"（{note['decoded_seconds']:.2f} 秒）{beyond}")
     lines.append("逐片（命中與否、事件、目標規則最常見的阻擋原因）：")
-    report = {"rows": rows, "event_level": per_rule, "videos": {}}
+    report = {"rows": rows, "event_level": per_rule, "videos": {},
+              "truth": truth_name(truth_path), "truth_identity": file_identity(truth_path),
+              "verified_only": verified_only, "plate": [plate_correct, plate_total],
+              "plate_at_event": [original_correct, original_total], "event_level_at_event": original_rules,
+              "short_decode": short}
     for video, category, hit, count in rows:
         folder = out / video
         events = [json.loads(l) for l in (folder / f"{video}_violations.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
@@ -94,35 +317,102 @@ def main(argv=None):
     parser.add_argument("--only", nargs="*", help="只跑指定影片（例如 ms01 cdy02）")
     parser.add_argument("--max-frames", type=int, default=0)
     parser.add_argument("--summary-only", action="store_true", help="只重新產生摘要")
+    parser.add_argument("--allow-short-decode", action="store_true",
+                        help="可解碼幀數少於中繼資料的影片以實際範圍計分（short_eof，摘要另列）；預設關閉")
+    parser.add_argument("--model-config", type=Path, default=ROOT / "configs/default.json",
+                        help="模型設定檔（不同設定請用不同 --label）")
+    parser.add_argument("--truth", type=Path, default=DEFAULT_TRUTH,
+                        help="影片清單與標註（格式同 eval/ground_truth.json；未覆核影片只計影片層級）")
     args = parser.parse_args(argv)
+    if args.max_frames < 0:
+        parser.error("--max-frames 不可為負數")
+    if not args.label or Path(args.label).name != args.label or args.label in (".", ".."):
+        parser.error("--label 必須是單一目錄名稱")
     out = EVAL_DIR / args.label
+    out.mkdir(parents=True, exist_ok=True)
+    lock = out / ".run.lock"
+    try:
+        lock_file = lock.open("x", encoding="utf-8")
+    except FileExistsError:
+        parser.error(f"{lock} 已存在；請先確認沒有同 label 工作，再人工移除殘留鎖")
+    try:
+        with lock_file:
+            lock_file.write(str(time.time()))
+            lock_file.flush()
+            execute_batch(args, out)
+    finally:
+        lock.unlink()
+    return 0
+
+
+def execute_batch(args, out):
     if not args.summary_only:
         import run_pipeline
         from model_library import ModelPipeline, load_config
-        truth = json.loads((ROOT / "eval/ground_truth.json").read_text(encoding="utf-8-sig"))
+        truth = json.loads(Path(args.truth).read_text(encoding="utf-8-sig"))
+        if args.only and set(args.only) - set(truth["videos"]):
+            raise ValueError(f"未知影片：{sorted(set(args.only) - set(truth['videos']))}")
         videos = {k: v for k, v in truth["videos"].items() if not args.only or k in args.only}
+        fingerprint = settings_fingerprint(args.model_config, args.truth)
+        version = code_version()
+        pending = []
+        for name, spec in videos.items():
+            source = (ROOT / spec["file"]).resolve()
+            request = {"settings": fingerprint, "code": version, "input": {
+                "path": str(source), **file_identity(source)}, "max_frames": args.max_frames}
+            folder = out / name
+            if folder.exists():
+                done = verify_done(folder, request)
+                if done.get("completion", {}).get("termination") == "short_eof" and not getattr(args, "allow_short_decode", False):
+                    raise ValueError(f"{folder} 是短解碼結果；續跑請加 --allow-short-decode 或改用新的 label")
+                print(f"{name} 已驗證完成指定範圍，略過", flush=True)
+            else:
+                pending.append((name, source, request))
+        if not pending:
+            print(summarize(args.label, verified_only=True, truth_path=args.truth))
+            return
         with ExitStack() as shared:
-            config = load_config(ROOT / "configs/default.json")
+            config = load_config(args.model_config)
+            load_started = time.perf_counter()
             pipeline = shared.enter_context(ModelPipeline(config, run_pipeline.resolve_device("auto")))
+            load_seconds = time.perf_counter() - load_started
+            print(f"模型載入 {load_seconds:.2f} 秒", flush=True)
             started = time.perf_counter()
-            for n, (name, spec) in enumerate(videos.items(), 1):
+            for n, (name, source, request) in enumerate(pending, 1):
                 folder = out / name
-                done = folder / "done.json"
-                if done.is_file():
-                    print(f"[{n}/{len(videos)}] {name} 已完成，略過", flush=True)
-                    continue
-                print(f"[{n}/{len(videos)}] {name}（已用 {(time.perf_counter() - started) / 60:.1f} 分鐘）", flush=True)
-                argv_run = [str(ROOT / spec["file"]), "--output-dir", str(folder), "--rules", "all",
-                            "--no-violation-clips", "--save-masks", str(folder / "masks")]
+                staging = out / ".attempts" / f"{name}-{uuid.uuid4().hex}"
+                staging.mkdir(parents=True)
+                print(f"[{n}/{len(pending)}] {name}（已用 {(time.perf_counter() - started) / 60:.1f} 分鐘）", flush=True)
+                argv_run = [str(source), "--output-dir", str(staging), "--rules", "all",
+                            "--no-violation-clips", "--save-masks", str(staging / "masks"),
+                            "--model-config", str(args.model_config)]
                 if args.max_frames:
                     argv_run += ["--max-frames", str(args.max_frames)]
+                allow_short = getattr(args, "allow_short_decode", False)
+                if allow_short:
+                    argv_run.append("--allow-short-decode")
                 video_started = time.perf_counter()
-                with ExitStack() as resources:
-                    run_pipeline.run(run_pipeline.parse_args(argv_run), resources, pipeline=pipeline)
-                done.write_text(json.dumps({"seconds": round(time.perf_counter() - video_started, 1)}), encoding="utf-8")
-    print("\n" + summarize(args.label))
+                try:
+                    with ExitStack() as resources:
+                        run_pipeline.run(run_pipeline.parse_args(argv_run), resources, pipeline=pipeline)
+                    timings = validate_outputs(staging, name, "road_markings" in pipeline.models, allow_short)
+                    # 執行中也可能有人改碼／設定／影片；不能把混合版本發布為完成。
+                    if code_version() != version or settings_fingerprint(args.model_config, args.truth) != fingerprint:
+                        raise ValueError("執行中程式或設定／權重變更，結果保留在 .attempts")
+                    if file_identity(source) != {k: request["input"][k] for k in ("size", "sha256")}:
+                        raise ValueError("執行中輸入影片變更")
+                    write_json_atomic(staging / "done.json", {
+                        "version": 2, "status": timings["completion"]["status"], "request": request,
+                        "completion": timings["completion"], "frames": timings["frames"],
+                        "seconds": round(time.perf_counter() - video_started, 3),
+                        "model_load_seconds": round(load_seconds, 3),
+                        "runtime_devices": runtime_devices(pipeline), "outputs": output_inventory(staging)})
+                    rename_with_retry(staging, folder)
+                except BaseException as exc:
+                    write_json_atomic(staging / "failure.json", {"error": repr(exc), "request": request})
+                    raise
+    print("\n" + summarize(args.label, verified_only=True, truth_path=args.truth))
     print(f"\n摘要已存於 {out / 'summary.txt'}")
-    return 0
 
 
 if __name__ == "__main__":

@@ -6,44 +6,116 @@
     "cdy01": {
       "file": "input/違規跨越雙實線/cdy01.mp4",
       "category": "double_yellow_line_crossing",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "double_yellow_line_crossing",
+          "start_sec": 3.7,
+          "end_sec": 7.4,
+          "plate": null,
+          "note": "input/違規參考.txt（2026-11-01）：左側橘黃色計程車由左向右進入前方車道，跨越中央雙黃線",
+          "vehicle": "car"
+        }
+      ],
+      "note": "2026-11-02 使用者確認：約 11.4 秒右側路口轉角深色車的斑馬線事件為誤報"
     },
     "cdy02": {
       "file": "input/違規跨越雙實線/cdy02.mp4",
       "category": "double_yellow_line_crossing",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "double_yellow_line_crossing",
+          "start_sec": 5.0,
+          "end_sec": 6.3,
+          "plate": null,
+          "note": "input/違規參考.txt（2026-11-01）：中央偏左、橫向進入右側的機車跨越雙黃線迴轉",
+          "vehicle": "motorcycle"
+        }
+      ]
     },
     "cdy03": {
       "file": "input/違規跨越雙實線/cdy03.mp4",
       "category": "double_yellow_line_crossing",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "double_yellow_line_crossing",
+          "start_sec": 3.9,
+          "end_sec": 6.5,
+          "plate": null,
+          "note": "input/違規參考.txt（2026-11-01）：前方紅色轎車在彎道越過畫面中央雙黃線，向左側道路轉",
+          "vehicle": "car"
+        }
+      ]
     },
     "cdy04": {
       "file": "input/違規跨越雙實線/cdy04.mp4",
       "category": "double_yellow_line_crossing",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "double_yellow_line_crossing",
+          "start_sec": 1.0,
+          "end_sec": 4.1,
+          "plate": null,
+          "note": "input/違規參考.txt（2026-11-01）：對向車道駛來的藍色轎車跨越中央雙黃線",
+          "vehicle": "car"
+        }
+      ]
     },
     "cdy05": {
       "file": "input/違規跨越雙實線/cdy05.mp4",
       "category": "double_yellow_line_crossing",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "double_yellow_line_crossing",
+          "start_sec": 5.8,
+          "end_sec": 8.8,
+          "plate": null,
+          "note": "input/違規參考.txt（2026-11-01）：左側黑色車超越攝影車並移至前方，跨越雙黃線（前鏡頭片段）",
+          "vehicle": "car"
+        },
+        {
+          "rule_id": "double_yellow_line_crossing",
+          "start_sec": 11.7,
+          "end_sec": 18.0,
+          "plate": null,
+          "note": "input/違規參考.txt（2026-11-01）：同一台黑色車在後視畫面壓線並於 18 秒完全跨越（約 10.5 秒起切換為另一支鏡頭的片段）",
+          "vehicle": "car"
+        }
+      ]
     },
     "cdy06": {
       "file": "input/違規跨越雙實線/cdy06.mp4",
       "category": "double_yellow_line_crossing",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "double_yellow_line_crossing",
+          "start_sec": 3.1,
+          "end_sec": 4.2,
+          "plate": "MFF6278",
+          "note": "input/違規參考.txt（2026-11-01）：前方騎士的機車在彎道貼近／壓到雙黃線（壓線，未必完整跨越）",
+          "vehicle": "motorcycle"
+        }
+      ]
     },
     "cdy07": {
       "file": "input/違規跨越雙實線/cdy07.mp4",
       "category": "double_yellow_line_crossing",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "double_yellow_line_crossing",
+          "start_sec": 1.0,
+          "end_sec": 5.0,
+          "plate": null,
+          "note": "input/違規參考.txt（2026-11-01）：前方黑色轎車車身覆蓋雙黃線並向右行駛",
+          "vehicle": "car"
+        }
+      ]
     },
     "mm01": {
       "file": "input/闖紅燈/多台車輛違規/mm01.mp4",
@@ -55,7 +127,7 @@
           "start_sec": 2.0,
           "end_sec": 5.0,
           "plate": "BHX3155",
-          "note": "違規參考.txt：約2~5秒處，汽車",
+          "note": "input/違規參考.txt（2026-11-01）：汽車，左側白色汽車通過路口",
           "vehicle": "car"
         },
         {
@@ -63,7 +135,7 @@
           "start_sec": 2.0,
           "end_sec": 5.0,
           "plate": "MSC6626",
-          "note": "違規參考.txt：約2~5秒處，機車",
+          "note": "input/違規參考.txt（2026-11-01）：機車，前方機車通過路口",
           "vehicle": "motorcycle"
         }
       ]
@@ -75,10 +147,10 @@
       "events": [
         {
           "rule_id": "red_light_stop_line_crossing",
-          "start_sec": 1.0,
-          "end_sec": 3.0,
+          "start_sec": 2.0,
+          "end_sec": 3.9,
           "plate": "CAA8738",
-          "note": "違規參考.txt：約2秒處，貨車",
+          "note": "input/違規參考.txt（2026-11-01）：中央藍色貨車在紅燈時駛向並進入路口",
           "vehicle": "car"
         }
       ]
@@ -93,10 +165,11 @@
           "start_sec": 2.0,
           "end_sec": 4.0,
           "plate": "9696L2",
-          "note": "違規參考.txt：約3秒處，汽車",
+          "note": "input/違規參考.txt（2026-11-01）：前方偏右淺色汽車穿越路口",
           "vehicle": "car"
         }
-      ]
+      ],
+      "note": "2026-11-02 使用者確認：同時段的 2938-VJ 進入路口時為黃燈，技術上不是違規（闖紅燈與停留斑馬線事件皆為誤報）；此路口情況較複雜"
     },
     "ms03": {
       "file": "input/闖紅燈/單台車輛違規/ms03.mp4",
@@ -108,7 +181,7 @@
           "start_sec": 1.0,
           "end_sec": 3.0,
           "plate": "KB1998",
-          "note": "違規參考.txt：約2秒處，機車",
+          "note": "input/違規參考.txt（2026-11-01）：前方偏左機車朝路口駛去",
           "vehicle": "motorcycle"
         }
       ]
@@ -123,7 +196,7 @@
           "start_sec": 3.0,
           "end_sec": 5.0,
           "plate": "EMT9517",
-          "note": "違規參考.txt：約4秒處，機車",
+          "note": "input/違規參考.txt（2026-11-01）：中央前方機車於紅燈畫面中駛入斑馬線／路口",
           "vehicle": "motorcycle"
         }
       ]
@@ -136,9 +209,9 @@
         {
           "rule_id": "red_light_stop_line_crossing",
           "start_sec": 3.0,
-          "end_sec": 5.0,
+          "end_sec": 6.0,
           "plate": "9165G9",
-          "note": "違規參考.txt：約4秒處，汽車",
+          "note": "input/違規參考.txt（2026-11-01）：前方偏左銀色汽車往路口前進",
           "vehicle": "car"
         }
       ]
@@ -146,110 +219,291 @@
     "ms06": {
       "file": "input/闖紅燈/單台車輛違規/ms06.mp4",
       "category": "red_light_stop_line_crossing",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "red_light_stop_line_crossing",
+          "start_sec": 3.5,
+          "end_sec": 5.2,
+          "plate": "NKE8589",
+          "note": "input/違規參考.txt（2026-11-01）：中央偏左、橘色上衣騎士向前越過路口標線",
+          "vehicle": "motorcycle"
+        }
+      ]
     },
     "ms07": {
       "file": "input/闖紅燈/單台車輛違規/ms07.mp4",
       "category": "red_light_stop_line_crossing",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "red_light_stop_line_crossing",
+          "start_sec": 2.8,
+          "end_sec": 3.9,
+          "plate": "RFW8778",
+          "note": "input/違規參考.txt（2026-11-01）：左前方白色廂型車在燈號由黃轉紅後超越停止線",
+          "vehicle": "car"
+        }
+      ]
     },
     "s01": {
       "file": "input/闖紅燈/單台車輛違規/s01.mp4",
       "category": "red_light_stop_line_crossing",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "red_light_stop_line_crossing",
+          "start_sec": 0.0,
+          "end_sec": 3.2,
+          "plate": "CA2330",
+          "note": "input/違規參考.txt（2026-11-01）：紅色背心騎士在紅燈時跨越斑馬線；影片沒有跨越停止線的瞬間",
+          "vehicle": "motorcycle"
+        }
+      ]
     },
     "s02": {
       "file": "input/闖紅燈/單台車輛違規/s02.mp4",
       "category": "red_light_stop_line_crossing",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "red_light_stop_line_crossing",
+          "start_sec": 1.7,
+          "end_sec": 5.9,
+          "plate": "KLH9920",
+          "note": "input/違規參考.txt（2026-11-01）：淺藍安全帽騎士在紅燈時跨越斑馬線；影片沒有跨越停止線的瞬間",
+          "vehicle": "motorcycle"
+        }
+      ]
     },
     "s03": {
       "file": "input/闖紅燈/單台車輛違規/s03.mp4",
       "category": "red_light_stop_line_crossing",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "red_light_stop_line_crossing",
+          "start_sec": 2.6,
+          "end_sec": 4.0,
+          "plate": "056JPQ",
+          "note": "input/違規參考.txt（2026-11-01）：機車跨越停止線；跨越瞬間紅綠燈沒入鏡但能確定是紅燈",
+          "vehicle": "motorcycle"
+        }
+      ]
     },
     "s04": {
       "file": "input/闖紅燈/單台車輛違規/s04.mp4",
       "category": "red_light_stop_line_crossing",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "red_light_stop_line_crossing",
+          "start_sec": 10.6,
+          "end_sec": 15.9,
+          "plate": "ACX6626",
+          "note": "input/違規參考.txt（2026-11-01）：左前方白色汽車接近並通過路口；跨越瞬間紅綠燈沒入鏡但能確定是紅燈",
+          "vehicle": "car"
+        }
+      ]
     },
     "s05": {
       "file": "input/闖紅燈/單台車輛違規/s05.mp4",
       "category": "red_light_stop_line_crossing",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "red_light_stop_line_crossing",
+          "start_sec": 2.3,
+          "end_sec": 2.9,
+          "plate": "AHX3097",
+          "note": "input/違規參考.txt（2026-11-01）：左前方紅色休旅車跨越機車停等區與停止線",
+          "vehicle": "car"
+        }
+      ]
     },
     "soc01": {
       "file": "input/停止在斑馬線上/soc01.mp4",
       "category": "crosswalk_stopping",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "crosswalk_stopping",
+          "start_sec": 0.0,
+          "end_sec": 10.0,
+          "plate": null,
+          "note": "input/違規參考.txt（2026-11-01）：畫面右側灰色休旅車臨停於斑馬線上",
+          "vehicle": "car"
+        }
+      ]
     },
     "soc02": {
       "file": "input/停止在斑馬線上/soc02.mp4",
       "category": "crosswalk_stopping",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "crosswalk_stopping",
+          "start_sec": 7.4,
+          "end_sec": 22.1,
+          "plate": "TDL2506",
+          "note": "input/違規參考.txt（2026-11-01）：右前方深色休旅車長時間位於斑馬線右端附近",
+          "vehicle": "car"
+        }
+      ]
     },
     "soc03": {
       "file": "input/停止在斑馬線上/soc03.mp4",
       "category": "crosswalk_stopping",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "crosswalk_stopping",
+          "start_sec": 0.0,
+          "end_sec": 1.7,
+          "plate": "BTP1022",
+          "note": "input/違規參考.txt（2026-11-01）：左側路邊白色轎車停在斑馬線端點附近",
+          "vehicle": "car"
+        }
+      ]
     },
     "soc04": {
       "file": "input/停止在斑馬線上/soc04.mp4",
       "category": "crosswalk_stopping",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "crosswalk_stopping",
+          "start_sec": 0.0,
+          "end_sec": 0.8,
+          "plate": null,
+          "note": "input/違規參考.txt（2026-11-01）：右前方白色箱型貨車停在路口斑馬線附近",
+          "vehicle": "car"
+        }
+      ],
+      "excluded": true,
+      "excluded_reason": "2026-11-02 使用者決定暫時排除：影片僅 0.88 秒，無法判斷是否停留（規則需停留 1 秒）；能更準確判斷車輛是否停止時再納入"
     },
     "soc05": {
       "file": "input/停止在斑馬線上/soc05.mp4",
       "category": "crosswalk_stopping",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "crosswalk_stopping",
+          "start_sec": 0.0,
+          "end_sec": 6.1,
+          "plate": null,
+          "note": "input/違規參考.txt（2026-11-01）：右側路邊淺藍色車輛停在斑馬線上",
+          "vehicle": "car"
+        }
+      ]
     },
     "ctm01": {
       "file": "input/汽車駛入機車停等區/ctm01.mp4",
       "category": "car_motorcycle_waiting_area",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "car_motorcycle_waiting_area",
+          "start_sec": 5.0,
+          "end_sec": 11.9,
+          "plate": "AQJ1651",
+          "note": "input/違規參考.txt（2026-11-01）：右前方銀色轎車駛入機車停等區",
+          "vehicle": "car"
+        },
+        {
+          "rule_id": "red_light_stop_line_crossing",
+          "start_sec": 12.4,
+          "end_sec": 13.9,
+          "plate": null,
+          "vehicle": "car",
+          "note": "2026-11-02 使用者確認（依闖紅燈法規定義）：銀色轎車在紅燈時越過斑馬線，約 0.5 秒後轉綠；系統於 13.37 秒以斑馬線代理線偵測到（refactor_log 4r）"
+        }
+      ]
     },
     "ctm02": {
       "file": "input/汽車駛入機車停等區/ctm02.mp4",
       "category": "car_motorcycle_waiting_area",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "car_motorcycle_waiting_area",
+          "start_sec": 9.0,
+          "end_sec": 15.8,
+          "plate": "RDB0178",
+          "note": "input/違規參考.txt（2026-11-01）：前方中央黑色休旅車停在機車停等區",
+          "vehicle": "car"
+        }
+      ]
     },
     "ctm03": {
       "file": "input/汽車駛入機車停等區/ctm03.mp4",
       "category": "car_motorcycle_waiting_area",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "car_motorcycle_waiting_area",
+          "start_sec": 3.0,
+          "end_sec": 7.1,
+          "plate": "ARV7182",
+          "note": "input/違規參考.txt（2026-11-01）：前方偏左黑色轎車進入標線框",
+          "vehicle": "car"
+        }
+      ]
     },
     "ctm04": {
       "file": "input/汽車駛入機車停等區/ctm04.mp4",
       "category": "car_motorcycle_waiting_area",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "car_motorcycle_waiting_area",
+          "start_sec": 6.7,
+          "end_sec": 7.8,
+          "plate": "5363XT",
+          "note": "input/違規參考.txt（2026-11-01）：前方灰色休旅車停在路口機車停等區",
+          "vehicle": "car"
+        }
+      ]
     },
     "ctm05": {
       "file": "input/汽車駛入機車停等區/ctm05.mp4",
       "category": "car_motorcycle_waiting_area",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "car_motorcycle_waiting_area",
+          "start_sec": 0.0,
+          "end_sec": 17.8,
+          "plate": "ALY5102",
+          "note": "input/違規參考.txt（2026-11-01）：前方中央紅色轎車",
+          "vehicle": "car"
+        },
+        {
+          "rule_id": "car_motorcycle_waiting_area",
+          "start_sec": 0.0,
+          "end_sec": 17.8,
+          "plate": "8395C",
+          "note": "input/違規參考.txt（2026-11-01）：右側黃色計程車",
+          "vehicle": "car"
+        }
+      ]
     },
     "ctm06": {
       "file": "input/汽車駛入機車停等區/ctm06.mp4",
       "category": "car_motorcycle_waiting_area",
-      "reviewed": false,
-      "events": []
+      "reviewed": true,
+      "events": [
+        {
+          "rule_id": "car_motorcycle_waiting_area",
+          "start_sec": 9.0,
+          "end_sec": 20.9,
+          "plate": "BKD5082",
+          "note": "input/違規參考.txt（2026-11-01）：由左側進入畫面的紅色轎車",
+          "vehicle": "car"
+        }
+      ]
     }
-  }
+  },
+  "_標註來源": "2026-11-01 依 input/違規參考.txt（2026-11-01） 轉入全部 31 支影片並設 reviewed=true；舊版（只有 mm01、ms01–ms05）備份於 outputs/patches/ground_truth_before_2026-11-01.json"
 }

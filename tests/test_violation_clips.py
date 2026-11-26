@@ -43,6 +43,10 @@ class ViolationClipTests(unittest.TestCase):
         clips = export_violation_clips(self.video, self.data,
             [self.event('suspected', 1), self.event('confirmed', 18)], self.root / 'clips', 1, 1)
         self.assertEqual([(c['start_frame'], c['end_frame']) for c in clips], [(0, 11), (8, 19)])
+        # 短檔名：序號＋狀態＋規則，不含 event_id（4bw）；完整事件在同名 .json
+        self.assertEqual([Path(c['clip_path']).name for c in clips],
+                         ['001_suspected_red_light_stop_line_crossing.mp4',
+                          '002_confirmed_red_light_stop_line_crossing.mp4'])
         for clip in clips:
             cap = cv2.VideoCapture(clip['clip_path'])
             decoded = []
@@ -146,6 +150,47 @@ class ViolationClipTests(unittest.TestCase):
         self.assertIn('跨越雙白線', summary)
         self.assertIn('ABC-1234', summary)
         self.assertIn('vehicle-1', summary)
+
+
+class RawClipTests(unittest.TestCase):
+    """4bu 長片切段：原始片段（不畫標註）、片段相隔很遠時直接定位。"""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.video = self.root / 'long.avi'
+        self.data = self.root / 'long_detections.jsonl'
+        writer = cv2.VideoWriter(str(self.video), cv2.VideoWriter_fourcc(*'MJPG'), 10., (160, 120))
+        vehicle = dict(object_id='vehicle-1', bbox_xyxy=[20, 20, 80, 90], class_id=2, class_name='car',
+                       track_id=1, confidence=.9, center=[50, 55], bottom_center=[50, 90])
+        with self.data.open('w', encoding='utf-8') as output:
+            for index in range(300):  # 30 秒，每幀灰階不同，可從片段第一幀反推原幀號
+                writer.write(np.full((120, 160, 3), (index * 7) % 200 + 20, np.uint8))
+                output.write(json.dumps(dict(
+                    frame=dict(index=index, timestamp_sec=index / 10, fps=10., width=160, height=120),
+                    observations=dict(vehicles=[vehicle]))) + '\n')
+        writer.release()
+
+    def test_raw_clips_keep_source_pixels_and_jump_between_far_events(self):
+        events = [dict(event_id=f'e{i}', frame=f, timestamp_sec=f / 10, status='suspected',
+                       rule_id='red_light_stop_line_crossing', object_id='vehicle-1', evidence={})
+                  for i, f in enumerate((20, 260))]
+        clips = export_violation_clips(self.video, self.data, events, self.root / 'clips', 1, 1, raw=True)
+        # 第二段（250–270）離第一段結尾（30）超過 10 秒 → 直接定位；第一幀的灰階確認定位到正確的幀
+        self.assertEqual([c['start_frame'] for c in clips], [10, 250])
+        for clip in clips:
+            self.assertFalse(clip['annotated'])
+            self.assertIn(clip['codec'], ('h264', 'mp4v'))
+            cap = cv2.VideoCapture(clip['clip_path'])
+            ok, first = cap.read()
+            count = 1 if ok else 0
+            while cap.read()[0]:
+                count += 1
+            cap.release()
+            self.assertEqual(count, 21)
+            expected = (clip['start_frame'] * 7) % 200 + 20
+            self.assertTrue(abs(float(first.mean()) - expected) < 12, (first.mean(), expected))  # 沒有畫標註框
 
 
 if __name__ == '__main__':

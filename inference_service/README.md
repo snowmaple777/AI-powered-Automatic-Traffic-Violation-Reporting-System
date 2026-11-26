@@ -22,12 +22,23 @@
 第一次啟動時，如果找不到 ffmpeg，`啟動推論服務.cmd` 會在 `.venv` 裡安裝 `imageio-ffmpeg`（約 30 MB），
 用來把違規片段轉成瀏覽器能播放的 H.264。不想裝也可以，UI 會改播原影片的那一段。
 
+### 模型預先載入
+
+服務一啟動就在背景開一個常駐程序（`pipeline_worker.py`）載入模型並暖機（實測約 45 秒，載入 24 秒＋暖機 18 秒），
+之後每支影片直接開始分析，不必再等載入；UI 的分析方式卡片會顯示「模型已預先載入」，`/health` 的 `preload` 欄位有狀態。
+
+- 常駐期間一直佔用 GPU 記憶體（實測約 4 GB）。不想佔用就用 `啟動推論服務.cmd --no-preload`，回到每支影片各開一個程序。
+- 每支影片開始前會重設追蹤狀態；工作失敗、被取消或程序意外結束時，會在背景重開並重新載入（約 45 秒，這段期間的工作改用每次開新程序）。
+  累計 20 支影片後也會自動重開一次。
+- 工作指定的 `device` 與常駐程序不同（例如指定 `cpu`）時，那支影片改用每次開新程序。
+- 改了程式或 `configs/` 的模型設定後要重開推論服務，常駐程序不會自動套用。
+
 ## 它做了什麼
 
 收到影片後：
 
-1. 在背景執行
-   `.venv\Scripts\python.exe run_pipeline.py <影片> --output-dir <工作資料夾>\outputs --rules all`
+1. 交給常駐程序執行 `run_pipeline.run(...)`（停用預先載入時改為在背景執行
+   `.venv\Scripts\python.exe run_pipeline.py <影片> --output-dir <工作資料夾>\outputs --rules all`；兩者輸出相同）
 2. 讀它印出的「已處理 N 幀…FPS」算進度、剩餘時間
 3. 一邊讀它逐幀寫出的 `*_detections.jsonl`，把偵測框畫在畫面上當作**即時預覽**，並統計追蹤目標數、車牌數
 4. 一邊讀 `*_violations.jsonl`，有違規就即時回報
@@ -40,10 +51,12 @@
 
 | 方法 | 路徑 | 說明 |
 |---|---|---|
-| GET | `/health` | 服務狀態、模型檔是否齊全、GPU、ffmpeg、是否忙碌 |
+| GET | `/health` | 服務狀態、模型檔是否齊全、GPU、ffmpeg、是否忙碌、模型預先載入狀態（`preload`） |
+| POST | `/jobs?stream_url=&rules=all&max_seconds=&triage=` | 串流工作（不必上傳）：run_pipeline 以串流模式邊收邊分析，`max_seconds` 是收錄上限；`triage`＝降頻篩選幀率（2～30，預設 0＝每幀分析） |
+| POST | `/jobs/<id>/stop` | 串流：停止收錄，已收錄的部分照常分析完並整理結果 |
 | GET | `/jobs` | 工作列表 |
-| POST | `/jobs?filename=&rules=all&max_seconds=&clip_before=5&clip_after=5&device=auto` | body 直接放影片內容，回傳工作 |
-| GET | `/jobs/<id>` | 進度：`state`、`stage`、`frames_done/frames_total`、`fps`、`eta_sec`、`stats`、`found`（已發現違規）、`log` |
+| POST | `/jobs?filename=&rules=all&max_seconds=&clip_before=5&clip_after=5&device=auto&triage=&clip_raw=` | body 直接放影片內容，回傳工作；`triage`＝降頻篩選幀率（2～30，預設 0），`clip_raw=1`＝片段不畫標註（長片切段，4bu）；`profile=high_recall`＝高召回規則組合（只多疑似事件，4by；串流工作也可用） |
+| GET | `/jobs/<id>` | 進度：`state`、`stage`、`frames_done/frames_total`、`fps`、`eta_sec`、`stats`、`found`（已發現違規）、`log`；串流另有 `stream`（`state`、`recorded_sec`、`analyzed_sec`、`behind_sec`）；降頻篩選時 `triage`：`fps`、`windows` 已逐幀分析的段數、`deep` 正在逐幀分析的時段秒數或 null（串流也放在 `stream.triage`） |
 | GET | `/jobs/<id>/preview.jpg` | 即時畫面（畫上模型偵測框） |
 | GET | `/jobs/<id>/result` | 最終結果：違規事件（規則、確認／疑似、車牌、判定條件、片段與截圖檔名） |
 | GET | `/jobs/<id>/files/<檔名>` | 片段 mp4、截圖 jpg |

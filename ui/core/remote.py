@@ -133,6 +133,13 @@ class RemoteAnalyzer(BaseAnalyzer):
         ("clipping", "剪輯違規片段", 0.07),
         ("packaging", "轉檔並整理結果", 0.08),
     ]
+    STREAM_STAGES = [
+        ("connect", "連線串流", 0.05),
+        ("loading", "載入模型", 0.05),
+        ("analyzing", "收錄與分析", 0.75),
+        ("clipping", "剪輯違規片段", 0.07),
+        ("packaging", "整理結果", 0.08),
+    ]
 
     def __init__(self, base_url, api_key=""):
         self.base = base_url.rstrip("/")
@@ -199,7 +206,9 @@ class RemoteAnalyzer(BaseAnalyzer):
     # ---------------- 主流程 ----------------
     def analyze(self, job, report):
         self._check_cancel(job)
-        report("upload", 0.0, f"連線到推論服務 {self.base} …")
+        streaming = job.get("source") == "stream"
+        first = "connect" if streaming else "upload"
+        report(first, 0.0, f"連線到推論服務 {self.base} …")
         try:
             h = self.health(timeout=4)
         except Exception:  # noqa: BLE001
@@ -208,26 +217,38 @@ class RemoteAnalyzer(BaseAnalyzer):
         if missing:
             raise RuntimeError("推論服務缺少模型檔：" + "、".join(missing) + "。請先執行「下載模型.cmd」。")
         gpu = h.get("gpu") or {}
-        report("upload", 0.02, "推論服務已連線（" + (f"GPU：{gpu.get('name')}" if gpu.get("cuda") else "沒有偵測到 GPU，將用 CPU 執行，速度會較慢") + "）")
+        report(first, 0.02, "推論服務已連線（" + (f"GPU：{gpu.get('name')}" if gpu.get("cuda") else "沒有偵測到 GPU，將用 CPU 執行，速度會較慢") + "）")
 
         opts = job.get("options") or {}
         query = {"filename": job.get("video_name") or "video.mp4", "rules": opts.get("rules") or "all"}
         if opts.get("max_seconds"):
             query["max_seconds"] = opts["max_seconds"]
-        last = [0.0]
+        if streaming:
+            query["stream_url"] = job["stream_url"]
+            if opts.get("triage"):
+                query["triage"] = f"{float(opts['triage']):g}"
+            remote = self._req("POST", "/jobs?" + urllib.parse.urlencode(query), timeout=15)
+        else:
+            last = [0.0]
 
-        def on_up(frac):
-            if frac - last[0] >= 0.1 or frac >= 1:
-                last[0] = frac
-                report("upload", frac, f"上傳影片 {frac * 100:.0f}%" if frac < 1 else None)
+            def on_up(frac):
+                if frac - last[0] >= 0.1 or frac >= 1:
+                    last[0] = frac
+                    report("upload", frac, f"上傳影片 {frac * 100:.0f}%" if frac < 1 else None)
 
-        remote = self._upload(job["video_path"], query, on_up)
+            remote = self._upload(job["video_path"], query, on_up)
         rid = remote["id"]
         job["remote"] = {"url": self.base, "job_id": rid}
-        report("upload", 1.0, f"上傳完成，推論服務工作編號 {rid}")
+        report(first, 1.0 if not streaming else 0.5, f"推論服務工作編號 {rid}")
 
-        log_seen, preview_seen, stage = 0, 0, "loading"
+        log_seen, preview_seen, stage, stop_sent = 0, 0, "loading", False
         while True:
+            if streaming and job.get("stop") and not stop_sent:
+                try:
+                    self._req("POST", f"/jobs/{rid}/stop")
+                    stop_sent = True
+                except Exception:  # noqa: BLE001
+                    pass
             if job.get("cancel"):
                 try:
                     self._req("POST", f"/jobs/{rid}/cancel")
@@ -245,12 +266,22 @@ class RemoteAnalyzer(BaseAnalyzer):
                 "suspected": sum(f.get("status") == "suspected" for f in found),
             }
             job["fps"], job["eta_sec"] = st.get("fps_recent"), st.get("eta_sec")
-            if st.get("video") and not job.get("video_meta"):
+            if streaming:
+                job["stream"] = st.get("stream")
+            if st.get("video") and (streaming or not job.get("video_meta")):  # 串流的長度會一直增加
                 job["video_meta"] = st["video"]
             job["found"] = [self._brief(f, i) for i, f in enumerate(found, 1)]
 
-            if sstage in ("queued", "loading"):
+            live = (st.get("stream") or {}) if streaming else {}
+            if streaming and sstage == "queued":
+                stage, prog = "connect", 0.5
+            elif sstage in ("queued", "loading"):
                 stage, prog = "loading", 0.1 if sstage == "queued" else 0.5
+            elif sstage == "analyzing" and streaming:
+                # 串流沒有總長度：進度＝已分析／已收錄（收錄結束後才會走到 100%）
+                rec = live.get("recorded_sec") or 0
+                prog = (live.get("analyzed_sec") or 0) / rec if rec else 0.0
+                stage, prog = "analyzing", min(prog, 0.99 if live.get("state") == "recording" else 1.0)
             elif sstage == "analyzing":
                 stage, prog = "analyzing", (frames_done / frames_total) if frames_total else 0.5
             elif sstage == "clipping":

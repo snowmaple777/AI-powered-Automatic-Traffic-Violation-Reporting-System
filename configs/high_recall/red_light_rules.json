@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "_說明": "高召回設定（4by）：預設闖紅燈設定＋停止線有限延伸 1 倍車寬（4bk，延伸越線只產生疑似）。用於長片切段、串流篩選等會再人工看片段的場合。",
+  "confirm_line_handoff": true,
+  "confirm_crosswalk_proxy": true,
+  "deferred_confirmation_seconds": 3.0,
+  "stop_line_extension_widths": 1.0
+}

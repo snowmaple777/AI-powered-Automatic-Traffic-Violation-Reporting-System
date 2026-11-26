@@ -18,6 +18,8 @@
     <linearGradient id="g-brand" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5b7cff"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient>
   </defs>
   <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></symbol>
+  <symbol id="i-broadcast" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49"/><path d="M7.76 16.24a6 6 0 0 1 0-8.49"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M4.93 19.07a10 10 0 0 1 0-14.14"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
   <symbol id="i-video" viewBox="0 0 24 24"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="m22 8-6 4 6 4V8z"/></symbol>
   <symbol id="i-pin" viewBox="0 0 24 24"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></symbol>
   <symbol id="i-scan" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/><path d="M12 5v2M12 17v2M5 12h2M17 12h2"/></symbol>
@@ -262,6 +264,10 @@
                     <button class="btn ghost small" type="button" data-src="cloud"><svg class="ic"><use href="#i-download"/></svg>雲端</button>
                   </span></span>
               </div>
+              <button class="src-mini wide" type="button" data-src="stream">
+                <span class="src-art violet sm"><svg class="ic"><use href="#i-broadcast"/></svg></span>
+                <span class="src-txt"><b>即時串流</b><small>RTSP／HTTP 網址，邊收邊分析</small></span>
+              </button>
             </div>
             <div class="src-drop-hint"><svg class="ic"><use href="#i-upload"/></svg>放開即可上傳這段影片</div>
           </div>
@@ -324,12 +330,20 @@
         </div>
         <div class="svc-detail" id="svc-detail" data-for="remote"></div>
         <div class="row mode-extra">
-          <label data-for="remote">分析長度
+          <label data-for="remote"><span id="max-label">分析長度</span>
             <select id="max-seconds">
               <option value="">整支影片</option>
               <option value="10">只分析前 10 秒（快速測試）</option>
               <option value="30">只分析前 30 秒</option>
               <option value="60">只分析前 60 秒</option>
+              <option value="300" data-stream hidden>5 分鐘</option>
+              <option value="600" data-stream hidden>10 分鐘</option>
+            </select>
+          </label>
+          <label id="triage-field" class="hidden">分析密度
+            <select id="triage">
+              <option value="0">每一幀都分析</option>
+              <option value="10">降頻篩選，事件前後才逐幀</option>
             </select>
           </label>
           <label data-for="simulated" class="hidden">模擬分析速度
@@ -374,6 +388,7 @@
             <div class="ring-info">
               <div class="ring-stage" id="ring-stage">準備開始</div>
               <div class="muted small" id="ring-eta"><svg class="ic xs"><use href="#i-clock"/></svg> 預估剩餘 --</div>
+              <div class="stream-chips hidden" id="stream-chips"></div>
             </div>
           </div>
           <div class="card">
@@ -403,6 +418,7 @@
         </div>
       </div>
       <div class="actions">
+        <button class="btn soft big hidden" id="btn-stop-stream"><svg class="ic"><use href="#i-stop"/></svg>停止串流</button>
         <button class="btn ghost big hidden" id="btn-cancel"><svg class="ic"><use href="#i-x"/></svg>取消分析</button>
         <button class="btn ghost big hidden" id="btn-rerun"><svg class="ic"><use href="#i-refresh"/></svg>重新分析</button>
         <button class="btn primary big hidden" id="btn-to-review">查看違規結果<svg class="ic"><use href="#i-right"/></svg></button>
@@ -427,7 +443,7 @@
         <div class="timeline-wrap">
           <video id="full-video" controls muted playsinline></video>
           <div class="timeline" id="timeline"></div>
-          <div class="muted small"><svg class="ic xs"><use href="#i-info"/></svg> 點時間軸上的色塊可以跳到違規時間點</div>
+          <div class="muted small" id="timeline-hint"><svg class="ic xs"><use href="#i-info"/></svg> 點時間軸上的色塊可以跳到違規時間點</div>
         </div>
       </div>
       <div class="violations" id="violations"></div>

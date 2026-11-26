@@ -4,14 +4,27 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
+from pathlib import Path
 
 try:
     import cv2  # type: ignore
 except ImportError:  # 推論服務也能用沒有 OpenCV 的 Python 啟動
     cv2 = None
+
+
+def write_jpg(path, frame, quality):
+    """存 jpg。cv2.imwrite 在 Windows 遇到非 ASCII 路徑（如「新增資料夾」）會靜靜回傳 False，
+    所以先編碼成位元組，再用 Python 寫檔。"""
+    ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
+    if not ok:
+        return False
+    with open(path, "wb") as f:
+        f.write(buf.tobytes())
+    return True
 
 
 def find_ffmpeg():
@@ -45,6 +58,20 @@ def video_meta(path):
         cap.release()
 
 
+def read_segment_frame(folder, index):
+    """串流工作：從 run_pipeline 錄的分段資料夾（segments.jsonl）取第 index 幀；還沒錄到就回傳 None。"""
+    folder = Path(folder)
+    try:
+        segments = [json.loads(line) for line in (folder / "segments.jsonl").read_text(encoding="utf-8").splitlines()
+                    if line.strip()]
+    except (OSError, ValueError):
+        return None
+    for segment in segments:
+        if segment["first_frame"] <= index < segment["first_frame"] + segment["frames"]:
+            return read_frame(folder / segment["file"], index - segment["first_frame"])
+    return None
+
+
 def read_frame(path, index):
     if cv2 is None:
         return None
@@ -56,17 +83,6 @@ def read_frame(path, index):
         return frame if ok else None
     finally:
         cap.release()
-
-
-def write_image(path, image, params=()):
-    """cv2.imwrite 在 Windows 遇到中文等非 ASCII 路徑會靜默失敗，改成先編碼再用 Python 寫檔。"""
-    ext = os.path.splitext(str(path))[1] or ".jpg"
-    ok, buf = cv2.imencode(ext, image, list(params))
-    if not ok:
-        return False
-    with open(path, "wb") as f:
-        f.write(buf.tobytes())
-    return True
 
 
 LIGHT_COLORS ={"red": (60, 60, 255), "green": (80, 200, 80), "yellow": (40, 200, 240)}
@@ -117,7 +133,7 @@ def draw_preview(frame, record, out_path, max_width=960):
     if w > max_width:
         frame = cv2.resize(frame, (max_width, int(h * max_width / w)))
     tmp = str(out_path) + ".tmp.jpg"
-    if not write_image(tmp, frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80]):
+    if not write_jpg(tmp, frame, 80):
         return False
     os.replace(tmp, out_path)
     return True
@@ -141,13 +157,28 @@ def snapshot(video_path, out_path, seconds=None, frame_index=None, max_width=128
         h, w = frame.shape[:2]
         if w > max_width:
             frame = cv2.resize(frame, (max_width, int(h * max_width / w)))
-        return write_image(out_path, frame, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+        return write_jpg(out_path, frame, 88)
     finally:
         cap.release()
 
 
+def is_h264(path):
+    """影片已經是 H.264（例如 run_pipeline --clip-raw 用 Windows 內建編碼器寫的片段）。"""
+    if cv2 is None:
+        return False
+    cap = cv2.VideoCapture(str(path))
+    try:
+        code = int(cap.get(cv2.CAP_PROP_FOURCC) or 0)
+    finally:
+        cap.release()
+    return code.to_bytes(4, "little").decode("ascii", "replace").lower() in ("h264", "avc1")
+
+
 def to_h264(src, dst, ffmpeg):
     """片段轉成瀏覽器能播的 H.264；失敗就原檔複製（UI 會改播原影片片段）。回傳是否為 H.264。"""
+    if not ffmpeg and is_h264(src):
+        shutil.copyfile(src, dst)
+        return True
     if ffmpeg:
         r = subprocess.run([ffmpeg, "-y", "-loglevel", "error", "-i", str(src), "-c:v", "libx264",
                             "-preset", "veryfast", "-pix_fmt", "yuv420p", "-movflags", "+faststart",

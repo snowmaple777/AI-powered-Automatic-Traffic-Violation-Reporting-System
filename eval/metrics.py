@@ -2,6 +2,7 @@
 
 標註檔 eval/ground_truth.json（格式見 eval/README.md）。兩種層級：
   影片層級：videos.<名稱>.category 有填時，該片是否至少輸出一個同規則事件。
+  excluded=true 的影片（附 excluded_reason）兩種層級都不計。
   事件層級：reviewed=true 的影片，依規則與時間區間（±容許秒數）一對一配對，
             計算 TP／FP／FN、精確率、召回率；有標車牌時另算車牌完全正確率。
 用法：python eval/metrics.py outputs/verify/stage1 [其他資料夾 ...] [--min-status confirmed]
@@ -14,6 +15,9 @@ from collections import defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from plate_backfill import event_plate_text
 STATUS_RANK = {"suspected": 0, "confirmed": 1}
 
 
@@ -50,11 +54,10 @@ def edit_distance(a, b):
     return previous[-1]
 
 
-def compatible(gt, event):
+def compatible(gt, event, *, plate_at_event=False):
     """車牌（雙方都有時，差異字元數不得超過標註車牌長度的一半，容許 OCR 部分誤讀）
     與車種家族（二輪／四輪）不得矛盾。"""
-    vehicle = (event.get("evidence") or {}).get("vehicle") or {}
-    plate = normalize_plate(vehicle.get("plate_text"))
+    plate = normalize_plate(event_plate_text(event, at_event=plate_at_event))
     expected = normalize_plate(gt.get("plate"))
     if expected and plate and edit_distance(expected, plate) > len(expected) / 2:
         return False
@@ -68,13 +71,13 @@ def event_time(event):
     return float(event.get("timestamp_sec", 0.0))
 
 
-def evaluate(truth, predictions):
+def evaluate(truth, predictions, *, plate_at_event=False):
     tolerance = float(truth.get("time_tolerance_sec", 1.0))
     per_rule = defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
     video_rows, plate_total, plate_correct = [], 0, 0
     for video, spec in sorted(truth["videos"].items()):
-        if video not in predictions:
-            continue  # 這次沒有處理的影片不列入計算
+        if video not in predictions or spec.get("excluded"):
+            continue  # 這次沒有處理的影片、或標註為暫時排除的影片（excluded）不列入計算
         events = predictions[video]
         category = spec.get("category")
         if category:
@@ -85,17 +88,25 @@ def evaluate(truth, predictions):
         for gt in spec.get("events", []):
             candidates = [e for e in unmatched if e.get("rule_id") == gt["rule_id"] and
                           gt["start_sec"] - tolerance <= event_time(e) <= gt["end_sec"] + tolerance
-                          and compatible(gt, e)]
+                          and compatible(gt, e, plate_at_event=plate_at_event)]
             if not candidates:
                 per_rule[gt["rule_id"]]["fn"] += 1
                 continue
             middle = (gt["start_sec"] + gt["end_sec"]) / 2
-            best = min(candidates, key=lambda e: abs(event_time(e) - middle))
+            expected = normalize_plate(gt.get("plate"))
+
+            def rank(e):
+                # 車牌相同者優先，其次車牌字元差異小者，最後才看時間；避免同一時段多台車時，
+                # 車牌正確的事件被時間較接近、卻沒有車牌的事件搶走而被算成誤報。
+                plate = normalize_plate(event_plate_text(e, at_event=plate_at_event))
+                distance = edit_distance(expected, plate) if expected and plate else len(expected or "") + 1
+                return (plate != expected if expected else True, distance, abs(event_time(e) - middle))
+            best = min(candidates, key=rank)
             unmatched.remove(best)
             per_rule[gt["rule_id"]]["tp"] += 1
             if gt.get("plate"):
                 plate_total += 1
-                predicted = ((best.get("evidence") or {}).get("vehicle") or {}).get("plate_text")
+                predicted = event_plate_text(best, at_event=plate_at_event)
                 plate_correct += normalize_plate(predicted) == normalize_plate(gt["plate"])
         for event in unmatched:
             per_rule[event.get("rule_id")]["fp"] += 1
@@ -116,7 +127,9 @@ def main(argv=None):
     truth = json.loads(args.truth.read_text(encoding="utf-8-sig"))
     if truth.get("version") != 1:
         raise SystemExit("ground_truth.json 需要 version=1")
-    rows, per_rule, plate_total, plate_correct = evaluate(truth, load_predictions(args.folders, args.min_status))
+    predictions = load_predictions(args.folders, args.min_status)
+    rows, per_rule, plate_total, plate_correct = evaluate(truth, predictions)
+    original_rows, original_rules, original_total, original_correct = evaluate(truth, predictions, plate_at_event=True)
     present = rows
     print(f"== 影片層級（只計有輸出檔的影片，共 {len(present)} 支）")
     hits = 0
@@ -129,10 +142,14 @@ def main(argv=None):
         print("  尚無已覆核影片；請在 ground_truth.json 標註事件並設定 reviewed=true")
     for rule, c in sorted(per_rule.items(), key=lambda item: str(item[0])):
         print(f"  {rule}: TP {c['tp']} FP {c['fp']} FN {c['fn']}  精確率 {ratio(c['tp'], c['tp']+c['fp'])}  召回率 {ratio(c['tp'], c['tp']+c['fn'])}")
-    print(f"  車牌完全正確：{plate_correct}/{plate_total}（{ratio(plate_correct, plate_total)}）")
+    print(f"  事件當下車牌完全正確：{original_correct}/{original_total}")
+    print(f"  含補充車牌完全正確：{plate_correct}/{plate_total}（{ratio(plate_correct, plate_total)}）")
     if args.json:
         args.json.write_text(json.dumps({"video_level": present, "event_level": per_rule,
-                                         "plate": [plate_correct, plate_total]}, ensure_ascii=False, indent=2), encoding="utf-8")
+                                         "plate": [plate_correct, plate_total],
+                                         "plate_at_event": [original_correct, original_total],
+                                         "event_level_at_event": original_rules,
+                                         "video_level_at_event": original_rows}, ensure_ascii=False, indent=2), encoding="utf-8")
     return 0
 
 

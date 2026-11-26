@@ -14,9 +14,13 @@ def signal_lights(lights):
 class TemporalSignalState:
     def __init__(self, fps, anchor_confidence=.30, support_confidence=.18,
                  window_seconds=.5, max_missing_seconds=.20, min_samples=3,
-                 min_mean_confidence=None, id_prefix="signal", yellow_confirm_seconds=0.):
+                 min_mean_confidence=None, id_prefix="signal", yellow_confirm_seconds=0.,
+                 selected_continuity=False):
         """yellow_confirm_seconds：同一燈由紅轉黃時，黃燈需連續觀測這麼久才中斷紅燈記憶；
-        在此之前黃燈不寫入歷史、也不觸發轉燈，紅燈證據照常延續。0 為原行為（立即中斷）。"""
+        在此之前黃燈不寫入歷史、也不觸發轉燈，紅燈證據照常延續。0 為原行為（立即中斷）。
+        selected_continuity：多個穩定燈顏色衝突時，若先前已確立的主燈號（selected）仍穩定且目前是綠／黃燈，
+        沿用它的顏色（reason=selected_signal_continuity）。主燈號是紅燈時仍回報未知，因此只會讓紅燈判定更少、
+        不會新增紅燈證據。用途：紅轉綠後畫面同時有主綠燈與側邊紅燈（行人／橫向號誌）時，避免綠燈被判成未知。"""
         self.window=max(3,round(fps*window_seconds))
         self.yellow_confirm=max(1,round(fps*yellow_confirm_seconds))
         self.max_missing=max(1,round(fps*max_missing_seconds))
@@ -25,6 +29,7 @@ class TemporalSignalState:
         self.min_samples=min_samples
         self.min_mean_confidence=min_mean_confidence
         self.id_prefix=id_prefix
+        self.selected_continuity=selected_continuity
         self.tracks={}
         self.sequence=0
         self.selected=None
@@ -107,6 +112,14 @@ class TemporalSignalState:
         # 無車道標定時，不把不同燈的紅／綠票混合。多個穩定燈衝突則回報未知。
         colors={samples[-1][1] for _,_,samples in stable}
         if len(colors)!=1:
+            chosen=next((item for item in stable if item[0]==self.selected),None) if self.selected_continuity else None
+            if chosen is not None and chosen[2][-1][1] in {"green","yellow"}:
+                key,track,samples=chosen
+                self.evidence={"state":samples[-1][1],"signal_id":key,"sample_count":len(samples),
+                               "sample_frames":[s[0] for s in samples],"last_observed_frame":track["last"],
+                               "max_confidence":max(s[2] for s in samples),"reason":"selected_signal_continuity",
+                               "conflicting_colors":sorted(colors)}
+                return self.evidence["state"]
             self.evidence={"state":"unknown","reason":"conflicting_signal_tracks"}
             return None
         key,track,samples=max(stable,key=lambda item:(item[0]==self.selected,len(item[2]),max(s[2] for s in item[2])))
@@ -131,12 +144,14 @@ class CombinedSignalState:
     """
 
     def __init__(self, fps, anchor_confidence=.30, window_seconds=.5, weak_evidence=True, hold_seconds=3.0,
-                 yellow_confirm_seconds=.2):
+                 yellow_confirm_seconds=.2, selected_continuity=False):
         self.strong = TemporalSignalState(fps, anchor_confidence=anchor_confidence, window_seconds=window_seconds,
-                                          yellow_confirm_seconds=yellow_confirm_seconds)
+                                          yellow_confirm_seconds=yellow_confirm_seconds,
+                                          selected_continuity=selected_continuity)
         self.weak = (TemporalSignalState(fps, anchor_confidence=.12, support_confidence=.12, window_seconds=1.0,
                                          max_missing_seconds=.4, min_samples=6, min_mean_confidence=.15,
-                                         id_prefix="weak-signal", yellow_confirm_seconds=yellow_confirm_seconds)
+                                         id_prefix="weak-signal", yellow_confirm_seconds=yellow_confirm_seconds,
+                                         selected_continuity=selected_continuity)
                      if weak_evidence else None)
         self.hold = max(0, round(fps * hold_seconds))
         self.yellow_confirm = max(1, round(fps * yellow_confirm_seconds))

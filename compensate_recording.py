@@ -5,7 +5,7 @@ from contextlib import ExitStack
 import json
 from pathlib import Path
 import cv2
-from observation_schema import SCHEMA_VERSION
+from observation_schema import SCHEMA_VERSION, marking_evidence
 from road_compensation import CompensationConfig, RoadMarkingCompensator, attach_compensation
 from road_compensation.render import draw_compensation
 
@@ -60,8 +60,10 @@ def main():
             if video_fps>0 and (abs(video_fps-metadata["fps"])>.05 or abs(metadata["timestamp_sec"]-index/video_fps)>.002):
                 raise ValueError(f"Video/JSONL timing mismatch at {index}")
             obs=record["observations"]
+            # 標線降頻的推移幀不算直接觀測（舊紀錄沒有來源欄位時視為直接觀測）。
             result=compensator.process(frame,frame_index=index,timestamp_sec=metadata["timestamp_sec"],
-                                      road_markings=obs.get("road_markings_raw",obs["road_markings"]),vehicles=obs["vehicles"])
+                                      road_markings=obs.get("road_markings_raw",obs["road_markings"]),vehicles=obs["vehicles"],
+                                      direct_observation=marking_evidence(record)["direct"])
             record["schema_version"]=SCHEMA_VERSION
             destination.write(json.dumps(attach_compensation(record,result),ensure_ascii=False,allow_nan=False)+"\n")
             counts["frames"]+=1

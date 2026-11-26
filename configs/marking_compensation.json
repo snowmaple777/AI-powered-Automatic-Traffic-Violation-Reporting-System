@@ -8,5 +8,7 @@
   "max_missing_seconds": 0.1,
   "confidence_half_life": 0.35,
   "min_rule_support": 0.65,
-  "max_uncertainty_ratio": 0.01
+  "max_uncertainty_ratio": 0.01,
+  "allow_motion_gaps": true,
+  "max_motion_gap_seconds": 0.5
 }

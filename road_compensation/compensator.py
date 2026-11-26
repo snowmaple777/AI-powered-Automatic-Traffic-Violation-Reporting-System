@@ -19,6 +19,10 @@ class _Track:
     last_observed_time: float
     support: float
     uncertainty: float
+    # 只計模型直接觀測（標線降頻時推移遮罩的配對不計入），供「確認」條件使用。
+    direct_observations: int = 0
+    last_direct_frame: int | None = None
+    last_direct_time: float | None = None
 
 
 class RoadMarkingCompensator:
@@ -37,12 +41,17 @@ class RoadMarkingCompensator:
         self.previous_index=None
         self.previous_time=None
         self.previous_shape=None
+        self.last_valid_motion_time=None  # 最近一次鏡頭運動有效（或影片開頭）的時間，計算失效持續秒數
 
-    def process(self, frame, *, frame_index, timestamp_sec, road_markings, vehicles, motion=None):
+    def process(self, frame, *, frame_index, timestamp_sec, road_markings, vehicles, motion=None,
+                direct_observation=True):
         """輸入：原圖 BGR、索引／秒、原始標線與車框；回傳獨立 CompensationResult。
 
         motion 為 EgoMotionTracker 對同一幀的估計；提供時直接使用，不重複估計
         （兩者重置條件相同，結果與自行估計完全一致）。
+        direct_observation=False：本幀標線是推移前幀遮罩得到的估計（標線降頻）。仍用於幾何對齊與
+        既有的 observations／rule_eligible（行為不變），但不增加 direct_observations，
+        因此 direct_rule_eligible（確認條件使用）只依模型直接觀測累積。
         不載入模型，不執行違規規則，不修改傳入 frame、road_markings 或 vehicles。
         """
         external_motion = motion
@@ -65,6 +74,8 @@ class RoadMarkingCompensator:
             reset_reason="discontinuous_input"
         motion=MotionEstimate(False,reason="first_frame")
         expired=[]
+        motion_gap=False
+        motion_gap_seconds=0.
         if self.previous_index is not None:
             if external_motion is not None:
                 motion=external_motion
@@ -73,14 +84,25 @@ class RoadMarkingCompensator:
                     motion=self.motion_estimator.estimate(self.previous_gray,gray,self.previous_mask,mask)
                 except cv2.error:
                     motion=MotionEstimate(False,reason="opencv_motion_error")
-            # 鏡頭配準失敗時不使用 identity transform 猜位置，也不延續舊可信度。
             if not motion.valid:
-                expired=[{"id":t.identity,"reason":motion.reason} for t in self.tracks.values()]
-                self.tracks={}
-                reset_reason=motion.reason
+                start=self.last_valid_motion_time if self.last_valid_motion_time is not None else self.previous_time
+                motion_gap_seconds=timestamp_sec-start
+                if cfg.allow_motion_gaps and motion_gap_seconds<=cfg.max_motion_gap_seconds:
+                    # 短暫失敗：以「鏡頭不動」近似保留軌跡；未被觀測更新的線不提供給規則，
+                    # 被觀測更新的線標記 motion_gap（規則只能據以產生疑似）。
+                    motion_gap=True
+                else:
+                    # 鏡頭配準失敗過久（或未啟用容忍）：不使用 identity transform 猜位置，也不延續舊可信度。
+                    expired=[{"id":t.identity,"reason":motion.reason} for t in self.tracks.values()]
+                    self.tracks={}
+                    reset_reason=motion.reason
+        if motion.valid or self.previous_index is None:
+            self.last_valid_motion_time=timestamp_sec
 
         projected={}
-        if motion.valid:
+        if motion_gap:
+            projected={key:clone(track.component) for key,track in self.tracks.items()}
+        elif motion.valid:
             for key,track in self.tracks.items():
                 component=project(track.component,motion.matrix,w,h,cfg)
                 if component is not None:
@@ -127,25 +149,31 @@ class RoadMarkingCompensator:
                 self.sequence+=1
                 key=f"comp-stop-{self.sequence:06d}"
                 track=_Track(key,class_id,current,1,frame_index,timestamp_sec,0.,2.)
+                track.direct_observations=0
             else:
                 unused.remove(best)
                 key=best
                 track=self.tracks[key]
                 previous=projected[key]
                 # 先投影再平滑，並保持當幀觀測的 x 範圍，不憑空擴大標線支撐區。
+                # 運動失效期間舊位置未經投影，不拿來平滑，直接採用當幀觀測。
                 line=current["line_xyxy"]
-                for i in (0,2):
-                    line[i+1]=cfg.smoothing_alpha*line[i+1]+(1-cfg.smoothing_alpha)*line_y(previous,line[i])
+                if not motion_gap:
+                    for i in (0,2):
+                        line[i+1]=cfg.smoothing_alpha*line[i+1]+(1-cfg.smoothing_alpha)*line_y(previous,line[i])
                 current["centroid"]=[(line[0]+line[2])/2,(line[1]+line[3])/2]
                 track.observations+=1
                 track.uncertainty=2.+(1-cfg.smoothing_alpha)*best_distance+motion.reprojection_error_px
             track.component=current
             track.last_observed_frame=frame_index
             track.last_observed_time=timestamp_sec
+            if direct_observation:
+                track.direct_observations+=1
+                track.last_direct_frame,track.last_direct_time=frame_index,timestamp_sec
             # support_score 是幾何／時序可靠度啟發值，並非模型 softmax 機率。
             track.support=.95*min(1.,track.observations/cfg.min_observations)
             self.tracks[key]=track
-            outputs.append(self._annotate(track,"observed",timestamp_sec,vehicles,w,h))
+            outputs.append(self._annotate(track,"observed",timestamp_sec,vehicles,w,h,motion_gap=motion_gap))
 
         for key in sorted(unused):  # 集合走訪順序隨字串雜湊種子而變，必須排序才可重現
             track=self.tracks[key]
@@ -158,7 +186,9 @@ class RoadMarkingCompensator:
                 del self.tracks[key]
                 continue
             track.uncertainty+=motion.reprojection_error_px+max(.5,h*.0005)
-            outputs.append(self._annotate(track,"predicted_occluded" if occluded else "predicted_missing",timestamp_sec,vehicles,w,h))
+            source="predicted_occluded" if occluded else "predicted_missing"
+            outputs.append(self._annotate(track,source,timestamp_sec,vehicles,w,h,
+                                          motion_gap=motion_gap,predicted_in_gap=motion_gap))
 
         compensated=[clone(m) for m in raw if m["class_name"]!=cfg.target_class]
         for class_id in sorted({c[0] for c in outputs}):
@@ -175,18 +205,32 @@ class RoadMarkingCompensator:
                     continue
             rule_markings.append(item)
         usable=sum(c["compensation"]["rule_eligible"] for _,c in outputs)
+        direct_usable=sum(c["compensation"]["direct_rule_eligible"] for _,c in outputs)
         diagnostics={"enabled":True,"version":1,"motion":motion.to_dict(),
                      "status":"usable" if usable else "unknown", "eligible_stop_lines":usable,
+                     "direct_observation":bool(direct_observation),"direct_eligible_stop_lines":direct_usable,
                      "rejected_components":rejected,"expired_tracks":expired,
-                     "reset_reason":reset_reason,"config":asdict(cfg)}
+                     "reset_reason":reset_reason,"motion_gap":motion_gap,
+                     "motion_gap_seconds":round(motion_gap_seconds,5) if motion_gap else 0.,
+                     "config":asdict(cfg)}
         self.previous_gray,self.previous_mask=gray,mask
         self.previous_index,self.previous_time=frame_index,timestamp_sec
         self.previous_shape=frame.shape[:2]
         return CompensationResult(raw,compensated,rule_markings,diagnostics)
 
-    def _annotate(self,track,source,timestamp,vehicles,width,height):
+    def _annotate(self,track,source,timestamp,vehicles,width,height,motion_gap=False,predicted_in_gap=False):
         age=max(0.,timestamp-track.last_observed_time)
         score=track.support*math.exp(-math.log(2)*age/self.config.confidence_half_life)
+        # 「只計直接觀測」的同一套可靠度：次數與年齡都以模型直接觀測為準。
+        direct_eligible=False
+        direct_age=None
+        if track.last_direct_time is not None:
+            direct_age=max(0.,timestamp-track.last_direct_time)
+            direct_score=(.95*min(1.,track.direct_observations/self.config.min_observations)
+                          *math.exp(-math.log(2)*direct_age/self.config.confidence_half_life))
+            direct_eligible=bool(track.direct_observations>=self.config.min_observations
+                                 and direct_score>=self.config.min_rule_support
+                                 and track.uncertainty<=height*self.config.max_uncertainty_ratio)
         component=clone(track.component)
         component["compensation"]={
             "id":track.identity,"source":source,"support_score":round(score,5),
@@ -195,5 +239,14 @@ class RoadMarkingCompensator:
             "occlusion_ratio":round(occlusion_ratio(component,vehicles,width,height),4),
             "rule_eligible":bool(track.observations>=self.config.min_observations
                                  and score>=self.config.min_rule_support
-                                 and track.uncertainty<=height*self.config.max_uncertainty_ratio)}
+                                 and track.uncertainty<=height*self.config.max_uncertainty_ratio),
+            "direct_observed_frames":track.direct_observations,
+            "last_direct_observed_frame":track.last_direct_frame,
+            "direct_age_seconds":None if direct_age is None else round(direct_age,5),
+            "direct_rule_eligible":direct_eligible}
+        if predicted_in_gap:
+            # 運動失效期間未被觀測的線位置只是未投影的舊值：保留記憶但不給規則使用。
+            component["compensation"].update(rule_eligible=False,direct_rule_eligible=False)
+        if motion_gap:
+            component["compensation"]["motion_gap"]=True
         return track.class_id,component

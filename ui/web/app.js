@@ -40,7 +40,7 @@ function collectDraft() {
     step: state.step, max_step: state.maxStep, video: state.video, gps: state.gps,
     gps_tab: currentGpsTab(), preset_index: +$("#preset-select").value || 0,
     recorded_at: $("#recorded-at").value, speed: $("#speed").value,
-    mode: state.mode, max_seconds: $("#max-seconds").value,
+    mode: state.mode, max_seconds: $("#max-seconds").value, triage: $("#triage").value,
     job_id: state.job ? state.job.id : null, ignored: [...state.ignored], filter: state.filter,
     selected: state.selected ? state.selected.id : null, forms: state.forms, cases: state.cases,
   };
@@ -134,6 +134,7 @@ function fmtDur(sec) {
   const m = Math.floor(sec / 60), s = sec % 60;
   return m < 60 ? `${m} 分 ${s} 秒` : `${Math.floor(m / 60)} 小時 ${m % 60} 分`;
 }
+function mmss(s) { s = Math.max(0, Math.floor(s)); return `${pad(Math.floor(s / 60))}:${pad(s % 60)}`; }
 function fmtSec(s) { const m = Math.floor(s / 60); return `${pad(m)}:${(s - m * 60).toFixed(1).padStart(4, "0")}`; }
 
 /* 數字滾動動畫 */
@@ -196,6 +197,7 @@ $$("#dropzone [data-src]").forEach((b) => b.addEventListener("click", () => {
   else if (src === "clips") openClipLibrary();
   else if (src === "cloud") openCloudImport();
   else if (src === "long") openLongUpload();
+  else if (src === "stream") openStreamDialog();
 }));
 $("#btn-reselect").addEventListener("click", () => {
   $("#src-selected").classList.add("hidden"); dz.classList.remove("hidden");
@@ -205,7 +207,49 @@ const SOURCES = {
   clips: { icon: "layers", cls: "", label: "已切好的片段" },
   local: { icon: "upload", cls: "blue", label: "本機上傳" },
   cloud: { icon: "download", cls: "green", label: "雲端匯入" },
+  stream: { icon: "broadcast", cls: "violet", label: "即時串流" },
 };
+const isStream = (v) => !!(v && v.source === "stream");
+
+/* ---- 即時串流：輸入網址 ---- */
+function streamLabel(url) {
+  try { const u = new URL(url); return u.host + (u.pathname !== "/" ? u.pathname : ""); } catch (e) { return url; }
+}
+function openStreamDialog() {
+  openModal(`<h2><span class="ic-bubble violet">${ic("broadcast")}</span>即時串流</h2>
+    <form class="stream-form" id="stream-form">
+      <input id="stream-url" type="url" placeholder="rtsp://… 或 http://…" required value="${esc(isStream(state.video) ? state.video.stream_url : "")}">
+      <button class="btn primary" type="submit">${ic("check")}使用這個串流</button>
+    </form>`);
+  $(".modal-card").classList.add("narrow-modal");
+  const input = $("#stream-url"); input.focus();
+  $("#stream-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const url = input.value.trim();
+    if (!/^(rtsps?|rtmps?|https?|udp|tcp|srt):\/\/./i.test(url)) { toast("網址格式不正確", "alert"); return; }
+    closeModal(); useStream(url);
+  });
+}
+async function useStream(url) {
+  state.video = { source: "stream", stream_url: url, name: streamLabel(url) };
+  showVideo(state.video, true);
+  if (state.mode !== "remote") setMode("remote", false);
+  if (state.gps.lat == null && state.presets[0]) await setPoint(state.presets[0].lat, state.presets[0].lon, "preset");
+  refreshAnalyzeBtn();
+  try { await ensureDraft(); showDraftBar(); saveDraft(); } catch (e) { setSaveState("error"); }
+}
+/* 串流時「分析長度」改成收錄長度 */
+function syncLengthOptions() {
+  const live = isStream(state.video), sel = $("#max-seconds");
+  $("#max-label").textContent = live ? "收錄長度" : "分析長度";
+  sel.options[0].text = live ? "直到按停止" : "整支影片";
+  [...sel.options].forEach((o) => {
+    if (o.hasAttribute("data-stream")) o.hidden = !live;
+    else if (o.value) o.text = live ? `${o.value} 秒` : (o.value === "10" ? "只分析前 10 秒（快速測試）" : `只分析前 ${o.value} 秒`);
+  });
+  if (!live && sel.selectedOptions[0] && sel.selectedOptions[0].hidden) sel.value = "";
+  $("#triage-field").classList.toggle("hidden", !live);
+}
 
 /* 用 XHR 上傳（才拿得到進度），回傳伺服器的 JSON */
 function xhrUpload(url, file, bar) {
@@ -268,6 +312,15 @@ async function useVideo(video, msg) {
 }
 
 function showVideo(video, fresh = false) {
+  syncLengthOptions();
+  if (isStream(video)) {
+    $("#video-wrap").classList.add("hidden"); $("#video-preview").removeAttribute("src");
+    $("#src-selected-icon").className = "src-art sm violet"; $("#src-selected-icon").innerHTML = ic("broadcast");
+    $("#src-selected-name").textContent = video.name; $("#src-selected-from").textContent = SOURCES.stream.label;
+    $("#src-selected-name").title = video.stream_url;
+    dz.classList.add("hidden"); $("#src-selected").classList.remove("hidden");
+    return;
+  }
   const v = $("#video-preview");
   v.src = video.url; $("#video-wrap").classList.remove("hidden");
   const size = video.size ? `${(video.size / 1e6).toFixed(1)} MB` : "";
@@ -313,7 +366,7 @@ async function refreshClipCount() {
   } catch (e) { /* 未登入或伺服器沒開 */ }
 }
 
-async function openClipLibrary() {
+async function openClipLibrary(focusGroup) {
   openModal(`<h2>${ic("layers")}已切好的片段</h2>
     <div class="lib-bar">
       <select id="lib-group"><option value="">全部資料夾</option></select>
@@ -337,6 +390,7 @@ async function openClipLibrary() {
       $("#lib-path").innerHTML = `${ic("folder", "xs")}你的片段資料夾：${esc(r.dir)}`;
       $("#lib-group").innerHTML = `<option value="">全部資料夾（${all.length}）</option>` +
         r.groups.map((g) => `<option value="${esc(g)}">${esc(g || "（根目錄）")}（${all.filter((c) => c.group === g).length}）</option>`).join("");
+      if (typeof focusGroup === "string" && r.groups.includes(focusGroup)) { $("#lib-group").value = focusGroup; focusGroup = null; }
       setClipLine(all.length, all);
       render();
     } catch (e) { $("#lib-grid").innerHTML = `<div class="lib-empty">${ic("alert")}${esc(e.message)}</div>`; }
@@ -442,13 +496,52 @@ function openCloudImport() {
   });
 }
 
-/* ---- 長片自動切段（上傳到待切分資料夾，由切段程式處理） ---- */
+/* ---- 長片自動切段（4bu：上傳後由推論服務降頻掃描，疑似違規剪成短片放進片段庫） ---- */
+const LONG_STATES = {
+  waiting: ["clock", "等待切段", "amber"], queued: ["clock", "排隊中", "amber"],
+  uploading: ["upload", "傳送中", "blue"], cutting: ["scissors", "粗略切段", "violet"],
+  saving: ["download", "存成片段", "violet"], done: ["check", "完成", "green"],
+  error: ["alert", "失敗", "red"], cancelled: ["x", "已取消", "muted"],
+};
+function longItemHTML(x) {
+  const [icon, label, tone] = LONG_STATES[x.state] || LONG_STATES.waiting;
+  const pct = (v) => `${Math.floor((v || 0) * 100)}%`;
+  let pill = label, bar = null, sub = [], act = "";
+  if (x.state === "uploading") { pill += ` ${pct(x.upload)}`; bar = x.upload; }
+  if (x.state === "cutting") {
+    pill += ` ${pct(x.progress)}`; bar = x.progress;
+    if (x.queued) sub.push("分析服務排隊中");
+    else if (x.eta_sec) sub.push(`剩約 ${fmtDur(x.eta_sec)}`);
+    if (x.deep) sub.push(`逐幀確認 ${mmss(x.deep[0])}–${mmss(x.deep[1])}`);
+  }
+  if (x.state === "saving") bar = 1;
+  if (["cutting", "saving"].includes(x.state) && x.found) sub.push(`發現 ${x.found} 筆疑似違規`);
+  if (x.state === "done") {
+    pill = x.clips ? `完成・${x.clips} 段` : "沒有疑似違規";
+    if (x.clips) act = `<button class="btn soft small" type="button" data-act="open" data-folder="${esc(x.folder || "")}">${ic("layers")}查看片段</button>`;
+  }
+  if (x.state === "error") {  // 推論服務的錯誤可能很長（含路徑）：顯示前 160 字，完整內容在滑鼠提示
+    const msg = x.error || "切段失敗";
+    sub.push({ wrap: esc(msg.length > 160 ? msg.slice(0, 160) + "…" : msg), title: esc(msg) });
+  }
+  if (["waiting", "error", "cancelled"].includes(x.state))
+    act = `<button class="btn soft small" type="button" data-act="start">${ic(x.state === "waiting" ? "scissors" : "refresh")}${x.state === "waiting" ? "開始切段" : "重試"}</button>`;
+  if (["queued", "uploading", "cutting"].includes(x.state))
+    act = `<button class="btn ghost small" type="button" data-act="cancel">${ic("x")}取消</button>`;
+  const size = x.size ? `${(x.size / 1e6).toFixed(1)} MB` : "";
+  return `<div class="long-item" data-name="${esc(x.name)}">
+    <div class="long-row">${ic("video", "xs")}<b title="${esc(x.name)}">${esc(x.name)}</b><span>${size}</span><span>${esc(x.modified || "")}</span>
+      <em class="tone-${tone}">${ic(icon, "xs")}${pill}</em></div>
+    ${bar === null ? "" : `<div class="progress slim${x.state === "saving" ? " busy" : ""}"><div style="width:${Math.min(100, bar * 100)}%"></div></div>`}
+    ${sub.length || act ? `<div class="long-sub"><span>${sub.map((s) => s.wrap ? `<i class="wrap" title="${s.title}">${s.wrap}</i>` : `<i>${s}</i>`).join("")}</span>${act}</div>` : ""}
+  </div>`;
+}
 function openLongUpload() {
   openModal(`<h2>${ic("scissors")}長片自動切段</h2>
     <div class="long-flow">
       <div><span class="ic-bubble sm amber">${ic("upload")}</span><b>上傳長片</b><small>整趟行車的原始檔</small></div>
       <i>${ic("right")}</i>
-      <div><span class="ic-bubble sm violet">${ic("scissors")}</span><b>自動切段</b><small>切成一段段短片</small></div>
+      <div><span class="ic-bubble sm violet">${ic("scissors")}</span><b>自動切段</b><small>AI 快速掃過，剪下疑似違規</small></div>
       <i>${ic("right")}</i>
       <div><span class="ic-bubble sm blue">${ic("layers")}</span><b>挑片段分析</b><small>在「已切好的片段」選擇</small></div>
     </div>
@@ -456,27 +549,45 @@ function openLongUpload() {
       <input type="file" id="long-input" accept="video/*" hidden>
       <div class="dz-art">${ic("upload")}</div>
       <div class="dz-text">拖曳長片到這裡，或 <u>選擇檔案</u></div>
-      <div class="dz-hint">MP4・MOV・AVI・可達數 GB</div>
+      <div class="dz-hint">MP4・MOV・AVI・可達數 GB・上傳後自動切段</div>
     </label>
     <div id="long-progress" class="progress hidden"><div></div><span></span></div>
-    <h3 class="mini-title" style="margin-top:20px">切段中的長片</h3>
+    <h3 class="mini-title" style="margin-top:20px">長片</h3>
     <div class="long-list" id="long-list"><div class="muted small">讀取中…</div></div>
-    <div class="long-next">${ic("info", "xs")}<span>切好的片段會放進「已切好的片段」，從那裡挑出有違規的那一段來分析。</span>
+    <div class="long-next">${ic("info", "xs")}<span>每段是疑似違規的前 8 秒到後 6 秒，放在以長片命名的資料夾。</span>
       <button class="btn soft small" type="button" id="long-to-lib">${ic("layers")}去挑片段</button></div>`);
-  $("#long-to-lib").onclick = openClipLibrary;
-  const ldz = $("#long-dz"), input = $("#long-input");
+  $("#long-to-lib").onclick = () => openClipLibrary();
+  const ldz = $("#long-dz"), input = $("#long-input"), list = $("#long-list");
+  let timer = null, doneCount = null;
   const loadList = async () => {
+    clearTimeout(timer);
+    if (!document.body.contains(list)) return;  // 視窗已關閉
     try {
       const r = await api("/api/longs");
-      $("#long-list").innerHTML = r.items.length
-        ? r.items.map((x) => `<div class="long-item">${ic("video", "xs")}<b>${esc(x.name)}</b><span>${(x.size / 1e6).toFixed(1)} MB</span><span>${esc(x.modified)}</span><em>${ic("clock", "xs")}等待切段</em></div>`).join("")
-        : `<div class="muted small">目前沒有待切分的長片</div>`;
-    } catch (e) { $("#long-list").innerHTML = `<div class="muted small">${esc(e.message)}</div>`; }
+      if (!document.body.contains(list)) return;
+      list.innerHTML = r.items.length ? r.items.map(longItemHTML).join("") : `<div class="muted small">還沒有上傳長片</div>`;
+      const done = r.items.filter((x) => x.state === "done").length;
+      if (doneCount !== null && done > doneCount) refreshClipCount();  // 切好新的片段：首頁「已切好的片段」跟著更新
+      doneCount = done;
+      if (r.active) timer = setTimeout(loadList, 2000);
+    } catch (e) { list.innerHTML = `<div class="muted small">${esc(e.message)}</div>`; }
   };
+  list.addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-act]");
+    if (!btn) return;
+    const name = btn.closest(".long-item").dataset.name;
+    if (btn.dataset.act === "open") { openClipLibrary(btn.dataset.folder); return; }
+    btn.disabled = true;
+    try {
+      await postJSON(`/api/longs/${btn.dataset.act}`, { name });
+      if (btn.dataset.act === "cancel") toast("已取消切段", "x");
+    } catch (err) { toast(err.message, "alert"); }
+    loadList();
+  });
   const send = async (file) => {
     try {
       const r = await xhrUpload("/api/longs", file, $("#long-progress"));
-      toast(`${r.name} 上傳完成，正在等待切段`, "scissors");
+      toast(`${r.name} 上傳完成，開始切段`, "scissors");
       loadList();
     } catch (e) { toast(e.message, "alert"); }
   };
@@ -614,6 +725,8 @@ $("#btn-sim-gps").addEventListener("click", async () => {
   const base = state.gps.lat != null ? state.gps : state.presets[0] || { lat: 22.7335, lon: 120.285 };
   const name = (state.video && state.video.name) || "simulated";
   btn.disabled = true;
+  const oldHtml = btn.innerHTML;
+  btn.innerHTML = `${ic("refresh", "spin")}沿道路規劃中…`;
   try {
     const data = await postJSON("/api/gps/simulate", {
       lat: base.lat, lon: base.lon, start: $("#recorded-at").value, name,
@@ -624,12 +737,14 @@ $("#btn-sim-gps").addEventListener("click", async () => {
     simUrl = URL.createObjectURL(new Blob([data.gpx], { type: "application/gpx+xml" }));
     const a = $("#sim-gpx-dl"); a.href = simUrl; a.download = name.replace(/\.[^.]+$/, "") + ".gpx"; a.classList.remove("hidden");
     btn.innerHTML = `${ic("refresh")}換一條`;
-    toast(`已產生 ${data.count} 點的模擬軌跡`, "sparkles");
-  } catch (err) { toast(err.message, "alert"); }
+    toast(data.road
+      ? `已產生 ${data.count} 點的模擬軌跡，沿 ${data.roads.slice(0, 3).join("、")}`
+      : `已產生 ${data.count} 點的模擬軌跡（連不到 OpenStreetMap，這條不會沿著道路）`, data.road ? "sparkles" : "info");
+  } catch (err) { btn.innerHTML = oldHtml; toast(err.message, "alert"); }
   finally { btn.disabled = false; }
 });
 ["#recorded-at", "#speed"].forEach((s) => $(s).addEventListener("change", saveDraft));
-["#max-seconds"].forEach((s) => $(s).addEventListener("change", saveDraft));
+["#max-seconds", "#triage"].forEach((s) => $(s).addEventListener("change", saveDraft));
 
 /* ---- 分析方式：真實模型（推論服務）／模擬展示 ---- */
 function setMode(mode, save = true) {
@@ -649,6 +764,15 @@ async function checkHealth() {
   try { state.health = await api("/api/inference/health"); } catch (e) { state.health = { online: false, error: e.message }; }
   renderHealth(); refreshAnalyzeBtn();
 }
+/* 推論服務的模型預先載入狀態（舊版服務沒有這個欄位就不顯示） */
+function preloadText(p) {
+  if (!p || !p.enabled) return "";
+  if (p.state === "ready" || p.state === "busy") return `${ic("check", "xs")} 模型已預先載入`;
+  if (p.state === "starting") return `${ic("clock", "xs")} 模型預先載入中…`;
+  if (p.state === "failed") return `${ic("alert", "xs")} 模型預先載入失敗，分析時會另外載入`;
+  return "";
+}
+
 function renderHealth() {
   const h = state.health, chip = $("#svc-status"), box = $("#svc-detail");
   if (!h) { chip.className = "svc-status"; chip.textContent = "檢查中…"; box.innerHTML = ""; return; }
@@ -663,6 +787,7 @@ function renderHealth() {
     const parts = [
       gpu.cuda ? `${ic("cpu", "xs")} GPU：${esc(gpu.name || "CUDA")}` : gpu.error || gpu.cuda === false ? `${ic("alert", "xs")} 沒有偵測到 GPU，會用 CPU 跑（很慢）` : `${ic("cpu", "xs")} GPU 偵測中…`,
       `${ic("layers", "xs")} 模型 ${h.models_ready}/${h.models_total}`,
+      preloadText(h.preload),
       h.queue_length ? `${ic("clock", "xs")} 排隊中 ${h.queue_length} 個` : "",
       h.ffmpeg ? "" : `${ic("info", "xs")} 沒有 ffmpeg，片段改播原影片`,
     ].filter(Boolean);
@@ -676,6 +801,7 @@ setInterval(() => { if (state.mode === "remote" && state.step === 1 && document.
 function refreshAnalyzeBtn() {
   let reason = "";
   if (!state.video) reason = "請先上傳影片";
+  else if (isStream(state.video) && state.mode !== "remote") reason = "串流只能用真實模型";
   else if (state.gps.lat == null) reason = "請補上 GPS 軌跡檔（或改用固定地點）";
   else if (state.mode === "remote") {
     const h = state.health;
@@ -692,12 +818,15 @@ $("#btn-analyze").addEventListener("click", startAnalysis);
 $("#btn-rerun").addEventListener("click", startAnalysis);
 async function startAnalysis() {
   if (!state.video) { goStep(1); return; }
-  const g = state.gps;
+  const g = state.gps, live = isStream(state.video);
+  if (live) $("#recorded-at").value = toLocalInput(new Date());   // 串流從現在開始錄
   const body = {
-    video_id: state.video.video_id, recorded_at: $("#recorded-at").value || null,
+    video_id: live ? null : state.video.video_id, stream_url: live ? state.video.stream_url : null,
+    recorded_at: $("#recorded-at").value || null,
     speed: +$("#speed").value, analyzer: state.mode || "remote",
-    options: { max_seconds: $("#max-seconds").value ? +$("#max-seconds").value : null, rules: "all" },
-    gps: g.track ? { mode: "track", track: g.track } : { mode: g.mode, lat: g.lat, lon: g.lon },
+    options: { max_seconds: $("#max-seconds").value ? +$("#max-seconds").value : null, rules: "all",
+               triage: live ? +$("#triage").value : 0 },
+    gps: g.track && !live ? { mode: "track", track: g.track, simulated: !!g.simulated } : { mode: g.mode, lat: g.lat, lon: g.lon },
   };
   try {
     const job = await postJSON("/api/jobs", body);
@@ -717,8 +846,38 @@ $("#btn-cancel").addEventListener("click", async () => {
   try { await postJSON(`/api/jobs/${state.job.id}/cancel`, {}); } catch (e) { toast(e.message, "alert"); b.disabled = false; }
 });
 
+$("#btn-stop-stream").addEventListener("click", async () => {
+  if (!state.job) return;
+  const b = $("#btn-stop-stream"); b.disabled = true; b.innerHTML = `${ic("stop")}停止中…`;
+  try { await postJSON(`/api/jobs/${state.job.id}/stop`, {}); } catch (e) { toast(e.message, "alert"); b.disabled = false; }
+});
+/* 串流狀態：收錄／分析／落後 */
+function renderStream(job) {
+  const s = job.stream || {}, live = job.source === "stream", chips = $("#stream-chips");
+  chips.classList.toggle("hidden", !live || !s.fps);
+  const running = ["queued", "running"].includes(job.status);
+  const stopBtn = $("#btn-stop-stream");
+  stopBtn.classList.toggle("hidden", !live || !running || job.stop || ["stopped", "ended", "error"].includes(s.state));
+  if (job.stop && running) { stopBtn.classList.remove("hidden"); stopBtn.disabled = true; stopBtn.innerHTML = `${ic("stop")}停止中…`; }
+  if (!live || !s.fps) return;
+  const behind = s.behind_sec || 0, tri = s.triage, deep = running && tri && tri.deep;
+  chips.innerHTML = `<span>${ic("broadcast", "xs")}收錄 ${fmtDur(s.recorded_sec || 0)}</span>`
+    + `<span>${ic("scan", "xs")}分析 ${fmtDur(s.analyzed_sec || 0)}</span>`
+    + `<span class="${behind > 30 ? "warn" : ""}">${ic("clock", "xs")}落後 ${fmtDur(behind)}</span>`
+    + (tri ? `<span title="降頻篩選：平時約每秒 ${tri.fps} 幀，事件前後逐幀分析">${ic("sparkles", "xs")}`
+             + (deep ? `逐幀分析 ${mmss(deep[0])}–${mmss(deep[1])}` : running ? `篩選中` : `降頻篩選`) + (tri.windows ? `・${tri.windows} 段` : "") + `</span>` : "");
+  if (running && job.current_stage === "analyzing") {
+    $("#ring-stage").textContent = deep ? "逐幀分析事件前後"
+      : s.state === "recording" && !job.stop ? (tri ? "收錄中・降頻篩選" : "收錄中・邊收邊分析") : "分析剩下的畫面";
+    $("#ring-eta").innerHTML = `${ic("clock", "xs")} 已經過 ${fmtDur((Date.now() - state.jobStartedAt) / 1000)}${job.fps ? `・${job.fps.toFixed(1)} FPS` : ""}`;
+  }
+}
+
 function resetAnalysisUI() {
   state.logCount = 0; state.foundCount = 0;
+  const sb = $("#btn-stop-stream"); sb.classList.add("hidden"); sb.disabled = false; sb.innerHTML = `${ic("stop")}停止串流`;
+  $("#stream-chips").classList.add("hidden"); $("#stream-chips").innerHTML = "";
+  $("#job-meta").textContent = "準備中…";
   $("#btn-rerun").classList.add("hidden");
   $("#btn-cancel").classList.remove("hidden"); $("#btn-cancel").disabled = false;
   $("#console").innerHTML = ""; $("#alert-stack").innerHTML = "";
@@ -769,10 +928,12 @@ function applyJob(job, restoring) {
     img.onload = () => $("#live-empty").classList.add("hidden");
     img.src = `/api/jobs/${job.id}/preview.jpg?v=${job.preview_version}`;
   }
+  renderStream(job);
   // 統計數字
   const st = job.stats || {};
   $$("#stats b[data-k]").forEach((b) => animateNum(b, st[b.dataset.k] || 0));
   if (st.frames_total) $("#frames-total").textContent = `/ ${st.frames_total.toLocaleString()}`;
+  else if (job.source === "stream" && job.video_meta && job.video_meta.frames) $("#frames-total").textContent = `/ ${job.video_meta.frames.toLocaleString()}`;
   // 新發現的違規
   (job.found || []).slice(state.foundCount).forEach((f) => pushFound(f, !restoring));
   state.foundCount = (job.found || []).length;
@@ -786,12 +947,12 @@ function applyJob(job, restoring) {
   state.logCount = job.logs.length;
   if (job.video_meta) {
     const m = job.video_meta;
-    $("#job-meta").textContent = `${job.video_name}・${m.width}×${m.height}・${Math.round(m.fps)} FPS・${fmtSec(m.duration)}`;
+    $("#job-meta").textContent = `${job.video_name}・${job.source === "stream" ? "串流・" : ""}${m.width}×${m.height}・${Math.round(m.fps)} FPS・${fmtSec(m.duration)}`;
   }
 
   if (["done", "error", "interrupted", "cancelled"].includes(job.status)) {
     clearInterval(state.pollTimer);
-    $("#btn-cancel").classList.add("hidden");
+    $("#btn-cancel").classList.add("hidden"); $("#btn-stop-stream").classList.add("hidden");
     $("#live-frame").classList.add("idle");
     const tag = $("#live-tag"); tag.classList.add("off");
     tag.innerHTML = `<span class="dot"></span>${job.status === "done" ? "完成" : "中斷"}`;
@@ -863,7 +1024,10 @@ function renderReview() {
     <div class="stat" style="--i:0"><span class="ic-bubble violet">${ic("review")}</span><div><b>${vs.length}</b><small>違規事件</small></div></div>
     <div class="stat red" style="--i:1"><span class="ic-bubble red">${ic("shield")}</span><div><b>${nC}</b><small>確定違規</small></div></div>
     <div class="stat amber" style="--i:2"><span class="ic-bubble amber">${ic("alert")}</span><div><b>${vs.length - nC}</b><small>疑似違規・需確認</small></div></div>`;
-  const fv = $("#full-video"); fv.src = job.video_url;
+  const fv = $("#full-video"), noVideo = !job.video_url;
+  if (noVideo) fv.removeAttribute("src"); else fv.src = job.video_url;
+  $(".timeline-wrap").classList.toggle("no-video", noVideo);
+  $("#timeline-hint").innerHTML = `${ic("info", "xs")} ${noVideo ? "點時間軸上的色塊可以看違規片段" : "點時間軸上的色塊可以跳到違規時間點"}`;
   const dur = (job.video_meta && job.video_meta.duration) || 1;
   // 時間重疊的事件放到不同列，避免色塊疊在一起
   const laneEnds = [], laneOf = {};
@@ -876,7 +1040,10 @@ function renderReview() {
   $("#timeline").innerHTML = vs.map((v) => `
     <div class="mark ${v.status}" data-t="${v.t_start}" title="${v.id}・${esc(v.label)}（${v.ts_label}）"
       style="top:${6 + laneOf[v.id] * 34}px;left:${(v.t_start / dur) * 100}%;width:${((v.t_end - v.t_start) / dur) * 100}%"><span>${v.id}・${esc(v.label)}</span></div>`).join("") + `<div class="cursor" id="tl-cursor"></div>`;
-  $$("#timeline .mark").forEach((m) => m.addEventListener("click", () => { fv.currentTime = +m.dataset.t; fv.play().catch(() => {}); }));
+  $$("#timeline .mark").forEach((m) => m.addEventListener("click", () => {
+    if (noVideo) { const v = vs.find((x) => m.title.startsWith(x.id + "・")); if (v) playClip(v); return; }
+    fv.currentTime = +m.dataset.t; fv.play().catch(() => {});
+  }));
   fv.ontimeupdate = () => { const c = $("#tl-cursor"); if (c) c.style.left = (fv.currentTime / dur) * 100 + "%"; };
   renderViolationCards();
   refreshCaseStatus();
@@ -960,6 +1127,7 @@ function clipPlayer(v, job, autoplay = true) {
   if (v.snapshot_url) vid.poster = v.snapshot_url;
   const fallback = () => {
     vid.onerror = null;
+    if (!job.video_url) { note.textContent = "（瀏覽器無法播放這段剪輯；推論服務有 ffmpeg 時會轉成可播放格式）"; return; }
     vid.src = `${job.video_url}#t=${v.t_start},${v.t_end}`;
     note.textContent = "（瀏覽器無法播放剪輯檔，改播原影片對應片段）";
   };
@@ -1021,7 +1189,13 @@ async function autoAddress(v) {
     $("#case-form").dispatchEvent(new Event("input"));    // 存進草稿
     locHint("ok", "已依 GPS 自動填入路名（OpenStreetMap），GPS 有幾公尺誤差，送出前請確認");
   } else {
-    locHint("warn", "查不到路名（可能沒有網路），請補上路名／門牌");
+    if (r && r.district) {                                 // 路名沒有，但 OSM 給的行政區比離線表準
+      const d = $("#case-form [name=district]");
+      if (d && (!d.value || d.value === geo.district)) { d.value = r.district; $("#case-form").dispatchEvent(new Event("input")); }
+    }
+    locHint("warn", r && r.error === "no_road"
+      ? "OpenStreetMap 在這個位置找不到路名，請補上路名／門牌"
+      : "查不到路名（可能沒有網路），請補上路名／門牌");
   }
 }
 function openCaseForm(v) { fillCaseForm(v); unlock(4); goStep(4); }
@@ -1792,6 +1966,7 @@ async function restoreDraft(d) {
   if (d.recorded_at) $("#recorded-at").value = d.recorded_at; else $("#recorded-at").value = toLocalInput(new Date());
   if (d.speed) $("#speed").value = d.speed;
   if (d.max_seconds != null) $("#max-seconds").value = d.max_seconds;
+  if (d.triage != null && $(`#triage option[value="${d.triage}"]`)) $("#triage").value = d.triage;
   if (d.mode) setMode(d.mode, false);
   if (d.preset_index != null) $("#preset-select").value = d.preset_index;
   if (d.gps && d.gps.lat != null) {

@@ -197,6 +197,14 @@ confirmed 需要：實際偵測到的停止線、強燈號證據（原本的燈�
 evidence.measurement_name=side_footprint_overlap_ratio），不會被佔用確認升級；與原車頭路徑的觀測分開累積。
 正式＋新影片合併：停等區 28/11/20 → 30/12/18（0.8；救回 CIM009、CIM014），確認不變。新增的 FP 是 CIM022 的 GT 車輛但車牌讀錯，
 闖紅燈影片另有 3 筆未計分的貼邊車疑似，precision 由 .718 降到 .714，因此未納入預設（refactor_log 4bl）。
+高召回設定（4by）：加 --rule-profile high_recall，一次啟用上面兩個選項（停止線延伸 1 倍、貼邊佔用 0.8）和雙線過寬元件截除
+（trim_wide_rows），設定檔在 configs/high_recall/。三項都只產生疑似，確認事件不變；明確指定的 --red-light-config／
+--area-rule-config／--double-line-config 優先。重算既有 JSONL（evaluate_violations.py、tools/rule_eval.py）時雙線幾何已在觀測裡，
+截除不生效，只改規則參數。網頁的長片自動切段固定使用這組設定（切段只是粗篩，片段之後會再人工看）。例如：
+  啟動辨識.cmd "input\長片.mp4" --rules all --rule-profile high_recall --triage-fps 10 --clip-raw
+正式＋新影片合併（2026-11-24 標註）：全部候選 82/24/115 → 90/30/107（precision .774 → .750、recall .416 → .457），確認 16/1/181 不變。
+新增 8 筆計分 FP 中，2 筆是標註車輛但車牌讀錯（CIM014、CIM022），4 筆是 cy009 同一台車的重複事件；另有 4 筆未計分事件
+（2 筆停等區看圖像真違規、2 筆闖紅燈像誤報）。詳見 refactor_log 4by。
 
 4bh 預設組合（正式 31 支＋新影片 141 支粗略 GT 合併評估；採用條件為全部候選與確認事件兩個層級的 precision、recall 都不下降，
 詳見 refactor_log 4bh）：

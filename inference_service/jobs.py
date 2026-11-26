@@ -31,6 +31,9 @@ from pathlib import Path
 from . import media
 from .preload import PreloadedPipeline
 
+# run_pipeline --rule-profile 的選項（與專案根目錄 rule_profiles.PROFILES 相同；推論服務可指向別處的 pipeline，所以不直接匯入）
+RULE_PROFILES = ("default", "high_recall")
+
 STAGES = [
     ("queued", "排隊中"),
     ("loading", "載入模型"),
@@ -251,10 +254,14 @@ class Manager:
             # 4bu 長片切段：降頻篩選＋原始片段（不畫標註，之後要再分析）
             "triage": float(options.get("triage") or 0),
             "clip_raw": str(options.get("clip_raw") or "").lower() in ("1", "true", "yes"),
+            "profile": options.get("profile") or "default",  # 4by 規則設定組合（high_recall＝長片切段用）
         }
         if opts["triage"] and not 2 <= opts["triage"] <= 30:
             shutil.rmtree(jdir, ignore_errors=True)
             raise ValueError("降頻篩選的幀率要在 2～30 FPS 之間（0＝每幀分析）")
+        if opts["profile"] not in RULE_PROFILES:
+            shutil.rmtree(jdir, ignore_errors=True)
+            raise ValueError(f"規則設定組合只能是 {'、'.join(sorted(RULE_PROFILES))}")
         frames_total = meta["frames"] if meta and meta.get("frames") else None
         if opts["max_seconds"]:
             fps = (meta or {}).get("fps") or 30.0
@@ -279,9 +286,12 @@ class Manager:
             "clip_after": float(options.get("clip_after") or 5),
             "device": options.get("device") or "auto",
             "triage": float(options.get("triage") or 0),
+            "profile": options.get("profile") or "default",
         }
         if opts["triage"] and not 2 <= opts["triage"] <= 30:
             raise ValueError("降頻篩選的幀率要在 2～30 FPS 之間（0＝每幀分析）")
+        if opts["profile"] not in RULE_PROFILES:
+            raise ValueError(f"規則設定組合只能是 {'、'.join(sorted(RULE_PROFILES))}")
         name = (parsed.hostname or "stream") + (parsed.path if parsed.path not in ("", "/") else "")
         job = self._new_job(jid, jdir, opts, name, url, None, None, source="stream",
                             stream={"state": "connecting"})
@@ -403,6 +413,8 @@ class Manager:
             job["triage"] = {"fps": opts["triage"], "windows": 0, "deep": None}
         if opts.get("clip_raw"):
             cmd += ["--clip-raw"]
+        if opts.get("profile", "default") != "default":
+            cmd += ["--rule-profile", opts["profile"]]
         cmd += self.extra_args
         job.update(state="running", stage="loading", started=_now())
         started = time.time()

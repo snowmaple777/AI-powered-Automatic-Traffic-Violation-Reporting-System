@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
 from violation_engine import RuleContext, ViolationEngine, create_rules, red_light_rule_options  # noqa: E402
 from double_lines import double_line_rule_options, write_final_double_line_diagnostics  # noqa: E402
 from area_rules import area_rule_options  # noqa: E402
+from rule_profiles import add_profile_argument, apply_profile  # noqa: E402
 from plate_backfill import PlateBackfill, add_plate_arguments, CLI_WINDOW_SECONDS
 from motion_notes import MotionNotes, add_motion_arguments, read_motion_mask, write_motion_summary
 
@@ -96,7 +97,8 @@ def main(argv=None):
     add_motion_arguments(parser, offline=True)
     parser.add_argument("--no-direct-marking-gate", action="store_true",
                         help="停用確認需直接觀測標線的閘門（對照用）")
-    args = parser.parse_args(argv)
+    add_profile_argument(parser)  # 重算既有 JSONL 時，雙線幾何（截除）已在觀測裡，組合只改規則參數
+    args = apply_profile(parser.parse_args(argv))
     if args.motion_mask_dir is not None and not args.motion_mask_dir.is_dir():
         parser.error("--motion-mask-dir 必須是存在的根目錄")
     options = rule_options(not args.no_direct_marking_gate, args.double_line_config, args.area_rule_config,

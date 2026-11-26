@@ -2525,3 +2525,53 @@ A1 的片段重播因篩選視窗幾乎整片而中止，只算了觸發與深�
   - `/api/geocode/address` 反查到「高雄市楠梓區高雄大學路700號附近」。
   - 瀏覽器沒有錯誤。
   - 單元測試 395 項通過；`test_batch_integrity` 需要 `input/ms01`，暫存 checkout 沒有，所以這一項沒有跑成。
+
+### 4by：高召回設定檔（`--rule-profile high_recall`；Opus，2026-11-26，新選項；一般預設不變，長片切段改用）
+
+- 使用者要求：把已做好但未納入預設的召回選項組成高召回設定，用在之後會再人工看片段的場合（長片切段、串流篩選）。
+- 內容：`configs/high_recall/` 三份設定，各自只比預設多一個選項（`tests/test_rule_profiles.py` 檢查只差這三項）：
+  - 闖紅燈停止線有限延伸 `stop_line_extension_widths=1.0`（4bk）；
+  - 停等區貼邊佔用 `waiting_side_occupancy_ratio=0.8`（4bl）；
+  - 雙線過寬元件逐列截除 `geometry.trim_wide_rows=true`（4bg，標線後處理）。
+
+  三項都只產生疑似。
+- 入口：
+  - `rule_profiles.py` 的 `--rule-profile default|high_recall` 一次切換三份設定，用在 `run_pipeline.py`、
+    `evaluate_violations.py`、`tools/rule_eval.py`；明確指定的 `--*-config` 優先。
+  - 重算既有 JSONL 時雙線幾何已在觀測裡，截除不生效。
+  - 推論服務的檔案與串流工作接受 `profile`（`jobs.RULE_PROFILES`，不合法時拒絕）。
+  - 網頁長片切段（`ui/core/longcut.py`）改送 `profile=high_recall`。
+- 評估（正式 31 支＋新影片 141 支主類別，2026-11-24 標註；outputs/high_recall_20261126/）：
+  - 先以既有輸出重算（rescore.py），各實驗與自己的基準比：截除 +5 TP／+4 FP、延伸 +2／0、貼邊 +1／+2。
+  - 實際合跑（hr1，全部規則）：截除重播（outputs/trim_rows_20261120/trim）只重算了雙線、沒有區域資料，
+    所以組合取雙線的截除結果＋其他規則的原幾何合跑。雙線不參與跨規則合併，兩者等價。score_hr1.py。
+
+| | 全部候選 | 確認 |
+| --- | --- | --- |
+| 現行預設 | 82/24/115（P .774 R .416） | 16/1/181 |
+| high_recall | 90/30/107（P .750 R .457） | 16/1/181 |
+
+  各規則：
+  - 雙黃 17/0/47 → 22/3/42，雙白另 +1 FP（正式集 ms04，4bj 已知）；
+  - 闖紅燈 27/3/30 → 29/3/28；
+  - 停等區 22/13/18 → 23/15/17；
+  - 斑馬線不變。
+- 逐筆：
+  - 新增 TP：雙黃 cy010、cy015、cy027、cy040、cy047，cy031、cy032、cdy01 改時間後仍配對；闖紅燈 vr012、vr031；停等區 CIM009。
+  - 新增計分 FP 共 8 筆：
+    - CIM014 4.43 秒、CIM022 12.56 秒：看圖都是紅燈時停在停等區邊緣的標註車輛，車牌 OCR 讀成 L8-801／QQ-861
+      （標註 7586-DP／ATY-5277）而配對失敗。CIM014 在舊標註下是 TP，新標註補上車牌後變 FP。
+    - cy009 4 筆：同一台 GT 休旅車（追蹤 47／101／478）在彎道雙黃線遠端的重複事件；GT 是整段 0–59 秒的一筆。
+    - ms04 雙白 3.67 秒。
+  - 計分範圍外新增 4 筆：vr004、vr022 停等區（4bl 看圖像真違規、未標註），cy003、SOZ022 闖紅燈（4bk 看圖像誤報）。
+- 決定：
+  - 一般預設不變，因為 precision 下降。
+  - 長片切段改用 high_recall：切段只是粗篩、每段都會再人工看，多出的片段多是同車重複或車牌讀錯，
+    少漏掉 8 筆違規較重要。
+- 未執行：長片 A1／A5（截除幾何需要重新跑標線後處理，A1 單支約 2.5 小時；4bj 時中斷）。延伸與貼邊只增加疑似，
+  不影響 `eval/long_video_review.json` 的已知誤報判定，但長片新增的疑似數未量測。
+- 驗證：
+  - 單元測試新增 `tests/test_rule_profiles.py`（6 項）；
+  - `test_inference_longcut`（profile 參數與拒絕不合法值）、`test_ui_longcut`（切段送出 `profile=high_recall`）已更新；
+  - 全套單元測試結果見提交訊息。
+- 回退：不加 `--rule-profile`（或 `default`）；長片切段把 `longcut.RULE_PROFILE` 改回 `"default"`。

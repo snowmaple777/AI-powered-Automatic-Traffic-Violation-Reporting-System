@@ -12,6 +12,7 @@ from double_lines import double_line_rule_options, write_final_double_line_diagn
 from area_rules import AREA_RULES, area_rule_options
 from plate_backfill import PlateBackfill, add_plate_arguments
 from motion_notes import MotionNotes, add_motion_arguments, read_motion_mask, write_motion_summary
+from rule_profiles import add_profile_argument, apply_profile
 
 
 def main():
@@ -36,7 +37,8 @@ def main():
     add_clip_arguments(parser)
     add_plate_arguments(parser)
     add_motion_arguments(parser, offline=True)
-    args = parser.parse_args()
+    add_profile_argument(parser)  # 重算既有 JSONL 時，雙線幾何（截除）已在觀測裡，組合只改規則參數
+    args = apply_profile(parser.parse_args())
     if args.motion_mask_dir is not None and not args.motion_mask_dir.is_dir():
         parser.error("--motion-mask-dir 必須是存在的資料夾")
     try:

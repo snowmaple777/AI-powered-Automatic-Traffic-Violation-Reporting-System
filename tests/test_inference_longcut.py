@@ -70,7 +70,8 @@ class FileTriageJobTests(unittest.TestCase):
         return self.manager.create('long.avi', io.BytesIO(self.data), len(self.data), options)
 
     def test_file_job_passes_triage_and_raw_clips_and_reports_deep_windows(self):
-        job = self.create({'triage': '10', 'clip_raw': '1', 'clip_before': '8', 'clip_after': '6'})
+        job = self.create({'triage': '10', 'clip_raw': '1', 'clip_before': '8', 'clip_after': '6',
+                           'profile': 'high_recall'})
         self.assertEqual(job['frames_total'], 30)
         self.assertTrue(wait(lambda: (job.get('triage') or {}).get('deep') == [0.5, 1.6]))
         self.assertEqual(self.manager.public(job)['triage']['windows'], 1)
@@ -82,18 +83,22 @@ class FileTriageJobTests(unittest.TestCase):
         self.assertIn('--clip-raw', argv)
         self.assertEqual(argv[argv.index('--clip-before') + 1], '8.0')
         self.assertNotIn('--stream-name', argv)
+        self.assertEqual(argv[argv.index('--rule-profile') + 1], 'high_recall')  # 4by
         result = json.loads((Path(job['dir']) / 'result.json').read_text(encoding='utf-8'))
         self.assertEqual([e['event_id'] for e in result['events']], ['e1'])
 
     def test_plain_file_job_has_no_triage(self):
         with patch.object(self.manager.queue, 'put'):
             job = self.create({})
-        self.assertEqual((job['options']['triage'], job['options']['clip_raw']), (0.0, False))
+        self.assertEqual((job['options']['triage'], job['options']['clip_raw'], job['options']['profile']),
+                         (0.0, False, 'default'))
         self.assertIsNone(self.manager.public(job)['triage'])
 
     def test_rejects_out_of_range_triage(self):
         with self.assertRaises(ValueError):
             self.create({'triage': '1'})
+        with self.assertRaises(ValueError):
+            self.create({'profile': 'loose'})
         self.assertEqual(list((self.root / 'data' / 'jobs').iterdir()), [])  # 不留下半成品
 
 

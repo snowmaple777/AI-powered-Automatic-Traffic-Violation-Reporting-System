@@ -22,6 +22,7 @@ from local_lanes import draw_local_motion
 from stream_source import SegmentedCapture, SegmentedFrames, StreamProcess, input_source, is_stream_url, stream_name
 from stream_triage import HOLD_SECONDS, TRIAGE_SKIP_STAGES, DeepWindows, held_events
 from core.timing import StageTimer
+from rule_profiles import add_profile_argument, apply_profile
 
 
 def parse_args(argv=None):
@@ -82,7 +83,8 @@ def parse_args(argv=None):
     add_clip_arguments(parser)
     add_plate_arguments(parser)
     add_motion_arguments(parser)
-    return parser.parse_args(argv)
+    add_profile_argument(parser)
+    return apply_profile(parser.parse_args(argv))
 
 
 def main():

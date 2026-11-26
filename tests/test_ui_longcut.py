@@ -119,9 +119,9 @@ class LongCutTests(unittest.TestCase):
         item = self.item()
         self.assertEqual(item['state'], 'done', item.get('error'))
         self.assertEqual((item['clips'], item['found'], item['folder']), (1, 2, 'trip'))
-        # 推論服務收到降頻篩選＋原始片段、前 8 後 6 秒
+        # 推論服務收到降頻篩選＋原始片段、前 8 後 6 秒、高召回規則組合（4by）
         self.assertEqual(service.uploaded[1], {'filename': 'trip.mp4', 'rules': 'all', 'triage': '10', 'clip_raw': '1',
-                                               'clip_before': '8', 'clip_after': '6'})
+                                               'clip_before': '8', 'clip_after': '6', 'profile': 'high_recall'})
         # 進度條：上傳 50% → 粗略切段 25% → 50%（逐幀確認 60–81.4 秒）→ 存成片段
         self.assertIn({'upload': 0.5}, seen)
         cutting = [s for s in seen if s.get('state') == 'cutting' and 'deep' in s]

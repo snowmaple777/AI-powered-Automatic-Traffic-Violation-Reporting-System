@@ -25,6 +25,7 @@ RECORD_DIR = "_切段紀錄"
 DONE_DIR = "_已切分"
 TRIAGE_FPS = 10              # 降頻篩選幀率（4bs：每秒 10 幀，確認事件不變）
 CLIP_BEFORE, CLIP_AFTER = 8.0, 6.0  # 4bo：疑似事件前 8 後 6 秒的片段可重現整片的事件
+RULE_PROFILE = "high_recall"  # 4by：切段只是粗篩、片段之後會再人工看，用高召回規則組合（漏報較少、誤報較多）
 ACTIVE = ("queued", "uploading", "cutting", "saving")
 POLL_SECONDS = 1.5
 REPLACE_RETRIES = 30  # 切段紀錄被別的程式開著時，最多等約 3 秒
@@ -257,7 +258,7 @@ def _cut(email, name):
             _update(email, name, upload=round(frac, 3))
 
     query = {"filename": name, "rules": "all", "triage": f"{TRIAGE_FPS:g}", "clip_raw": "1",
-             "clip_before": f"{CLIP_BEFORE:g}", "clip_after": f"{CLIP_AFTER:g}"}
+             "clip_before": f"{CLIP_BEFORE:g}", "clip_after": f"{CLIP_AFTER:g}", "profile": RULE_PROFILE}
     remote = client._upload(path, query, on_up)  # noqa: SLF001
     rid = remote["id"]
     _update(email, name, state="cutting", upload=1.0, progress=0.0, remote={"url": client.base, "job_id": rid})

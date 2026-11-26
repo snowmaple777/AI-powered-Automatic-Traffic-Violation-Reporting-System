@@ -1,11 +1,13 @@
 """規則設定組合（4by）：一次切換闖紅燈、區域、雙線三份規則設定檔。
 
 - default：configs/*.json（現行預設）。
-- high_recall：configs/high_recall/*.json＝預設＋四個召回選項。四項都只產生疑似事件：
+- high_recall：configs/high_recall/*.json＝預設＋以下召回選項，都只產生疑似事件：
   - 停止線有限延伸 1 倍車寬（4bk）；
   - 停等區貼邊車輛佔用 0.8（4bl）；
   - 雙線過寬元件逐列截除（4bg）；
-  - 斑馬線違停模式（4ca）。
+  - 斑馬線違停模式（4ca）；
+  - 燈號主燈位置（4cb，闖紅燈與停等區）；
+  - 雙黃／雙白線壓線 1.0 秒（4cb）。
 
   用在長片切段、串流篩選等之後會再人工看片段的場合。漏報較少，誤報也較多，數字見 docs/refactor_log.md 4by。
 
@@ -21,7 +23,7 @@ PROFILES = {"default": ROOT / "configs", "high_recall": ROOT / "configs" / "high
 
 def add_profile_argument(parser):
     parser.add_argument("--rule-profile", choices=sorted(PROFILES), default="default",
-                        help="規則設定組合：default＝現行預設；high_recall＝加上四個只產生疑似的召回選項"
+                        help="規則設定組合：default＝現行預設；high_recall＝加上只產生疑似的召回選項"
                              "（長片切段、串流篩選用，誤報較多）。明確指定的 --*-config 優先")
 
 

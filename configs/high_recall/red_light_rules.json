@@ -4,5 +4,6 @@
   "confirm_line_handoff": true,
   "confirm_crosswalk_proxy": true,
   "deferred_confirmation_seconds": 3.0,
-  "stop_line_extension_widths": 1.0
+  "stop_line_extension_widths": 1.0,
+  "signal_spatial_main": true
 }

@@ -633,7 +633,7 @@ class RecallDetailTests(unittest.TestCase):
 
     def test_disabled_by_default_and_not_in_parameters(self):
         from double_lines import RECALL_OPTION_KEYS, RULE_DEFAULTS
-        self.assertEqual([RULE_DEFAULTS[k] for k in RECALL_OPTION_KEYS], [0.0, False])
+        self.assertEqual([RULE_DEFAULTS[k] for k in RECALL_OPTION_KEYS], [0.0, False, 0.0])
         default = run_records(sequence(LANE_CHANGE), legacy_margin=False)[0]
         self.assertFalse(set(RECALL_OPTION_KEYS) & set(default["evidence"]["parameters"]))
         rule = create_rules(["double_yellow_line_crossing"], RuleContext("test", 10, 400, 300))[0]

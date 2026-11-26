@@ -46,5 +46,6 @@
   "same_vehicle_merge_seconds": 10.0,
   "geometry": {
     "trim_wide_rows": true
-  }
+  },
+  "straddle_presence_seconds": 1.0
 }

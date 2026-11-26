@@ -7,6 +7,11 @@ import math
 SIGNAL_COLORS = frozenset({"red", "green", "yellow"})
 
 
+# 4cb 主燈位置（spatial_main）：衝突時取離畫面這一點最近的穩定燈當主燈（正規化座標，x 為水平中央、y 偏上）。
+# 行車紀錄器上本車方向的號誌多在畫面上方偏中央；行人／橫向號誌多在左右邊緣或較低處。
+SPATIAL_MAIN_REFERENCE = (0.5, 0.3)
+
+
 def signal_lights(lights):
     return [light for light in lights if light["class_name"].lower() in SIGNAL_COLORS]
 
@@ -15,12 +20,15 @@ class TemporalSignalState:
     def __init__(self, fps, anchor_confidence=.30, support_confidence=.18,
                  window_seconds=.5, max_missing_seconds=.20, min_samples=3,
                  min_mean_confidence=None, id_prefix="signal", yellow_confirm_seconds=0.,
-                 selected_continuity=False):
+                 selected_continuity=False, spatial_main=None):
         """yellow_confirm_seconds：同一燈由紅轉黃時，黃燈需連續觀測這麼久才中斷紅燈記憶；
         在此之前黃燈不寫入歷史、也不觸發轉燈，紅燈證據照常延續。0 為原行為（立即中斷）。
         selected_continuity：多個穩定燈顏色衝突時，若先前已確立的主燈號（selected）仍穩定且目前是綠／黃燈，
         沿用它的顏色（reason=selected_signal_continuity）。主燈號是紅燈時仍回報未知，因此只會讓紅燈判定更少、
-        不會新增紅燈證據。用途：紅轉綠後畫面同時有主綠燈與側邊紅燈（行人／橫向號誌）時，避免綠燈被判成未知。"""
+        不會新增紅燈證據。用途：紅轉綠後畫面同時有主綠燈與側邊紅燈（行人／橫向號誌）時，避免綠燈被判成未知。
+        spatial_main（4cb，(畫面寬, 高) 或 None）：多個穩定燈顏色衝突時，取中心離 SPATIAL_MAIN_REFERENCE 最近的燈當主燈；
+        只有主燈是紅燈時才採用（reason=spatial_main_signal，優先於 selected_continuity），否則維持原判定。
+        呼叫端（CombinedSignalState）把這種紅燈標成 weak，只支持疑似。"""
         self.window=max(3,round(fps*window_seconds))
         self.yellow_confirm=max(1,round(fps*yellow_confirm_seconds))
         self.max_missing=max(1,round(fps*max_missing_seconds))
@@ -30,6 +38,7 @@ class TemporalSignalState:
         self.min_mean_confidence=min_mean_confidence
         self.id_prefix=id_prefix
         self.selected_continuity=selected_continuity
+        self.spatial_main=spatial_main
         self.tracks={}
         self.sequence=0
         self.selected=None
@@ -112,6 +121,22 @@ class TemporalSignalState:
         # 無車道標定時，不把不同燈的紅／綠票混合。多個穩定燈衝突則回報未知。
         colors={samples[-1][1] for _,_,samples in stable}
         if len(colors)!=1:
+            if self.spatial_main is not None:
+                width,height=self.spatial_main
+                located=[item for item in stable if item[1]["center"] is not None]
+                if located:
+                    main=min(located,key=lambda item:(math.dist((item[1]["center"][0]/width,item[1]["center"][1]/height),
+                                                                SPATIAL_MAIN_REFERENCE),item[0]))
+                    if main[2][-1][1]=="red":
+                        key,track,samples=main
+                        self.selected=key
+                        self.evidence={"state":"red","signal_id":key,"sample_count":len(samples),
+                                       "sample_frames":[s[0] for s in samples],"last_observed_frame":track["last"],
+                                       "max_confidence":max(s[2] for s in samples),"reason":"spatial_main_signal",
+                                       "conflicting_colors":sorted(colors),
+                                       "main_center_normalized":[round(track["center"][0]/width,3),
+                                                                 round(track["center"][1]/height,3)]}
+                        return "red"
             chosen=next((item for item in stable if item[0]==self.selected),None) if self.selected_continuity else None
             if chosen is not None and chosen[2][-1][1] in {"green","yellow"}:
                 key,track,samples=chosen
@@ -144,14 +169,14 @@ class CombinedSignalState:
     """
 
     def __init__(self, fps, anchor_confidence=.30, window_seconds=.5, weak_evidence=True, hold_seconds=3.0,
-                 yellow_confirm_seconds=.2, selected_continuity=False):
+                 yellow_confirm_seconds=.2, selected_continuity=False, spatial_main=None):
         self.strong = TemporalSignalState(fps, anchor_confidence=anchor_confidence, window_seconds=window_seconds,
                                           yellow_confirm_seconds=yellow_confirm_seconds,
-                                          selected_continuity=selected_continuity)
+                                          selected_continuity=selected_continuity, spatial_main=spatial_main)
         self.weak = (TemporalSignalState(fps, anchor_confidence=.12, support_confidence=.12, window_seconds=1.0,
                                          max_missing_seconds=.4, min_samples=6, min_mean_confidence=.15,
                                          id_prefix="weak-signal", yellow_confirm_seconds=yellow_confirm_seconds,
-                                         selected_continuity=selected_continuity)
+                                         selected_continuity=selected_continuity, spatial_main=spatial_main)
                      if weak_evidence else None)
         self.hold = max(0, round(fps * hold_seconds))
         self.yellow_confirm = max(1, round(fps * yellow_confirm_seconds))
@@ -167,6 +192,8 @@ class CombinedSignalState:
         self.yellow_run = self.yellow_run + 1 if yellow else 0
         if strong is not None:
             state, evidence, strength = strong, dict(self.strong.evidence), "strong"
+            if evidence.get("reason") == "spatial_main_signal":
+                strength = "weak"  # 4cb：依位置推定的主燈只支持疑似
         elif weak is not None:
             state, evidence, strength = weak, dict(self.weak.evidence), "weak"
         else:

@@ -52,6 +52,10 @@ OPTIONAL |= {"waiting_side_occupancy_ratio"}
 #     原路徑的事件與確認不受影響；保留期滿才輸出（事件時間仍是成立當下）。
 PARKING_HOLD_SECONDS = 3.0
 OPTIONAL |= {"crosswalk_parking_mode"}
+# 4cb 選用設定（停等區，預設不存在＝行為不變）：
+#   signal_spatial_main：燈號顏色衝突時依位置推定主燈（signal_state.SPATIAL_MAIN_REFERENCE），主燈是紅燈時當作 weak 紅燈，
+#     只支持疑似（停等區確認需要強燈號）。
+OPTIONAL |= {"signal_spatial_main"}
 # 4ar 選用設定（斑馬線，預設不存在＝行為不變）：
 #   stationary_window_seconds：靜止判定改為「最近這段時間內」的接地中心位移不超過半徑，
 #     而不是與第一次的位置比較；拍攝者走動時的推移誤差不會一路累積到重置。
@@ -77,6 +81,11 @@ def settings_for(overrides=None):
             value = settings[key]
             if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f'{key} must be finite and positive')
+    if "signal_spatial_main" in settings:
+        if type(settings["signal_spatial_main"]) is not bool:
+            raise ValueError("signal_spatial_main must be boolean")
+        if not settings["signal_spatial_main"]:
+            settings.pop("signal_spatial_main")
     if "crosswalk_parking_mode" in settings:
         if type(settings["crosswalk_parking_mode"]) is not bool:
             raise ValueError("crosswalk_parking_mode must be boolean")
@@ -575,7 +584,9 @@ class AreaOccupancyRule:
         # 沒有車道標定（行車紀錄器）時改用整個畫面的燈號；與闖紅燈規則相同的強／弱／延續證據。
         # 斑馬線：本車方向主燈號為綠燈時（車流通行、行人紅燈）不報告停留（crosswalk_suppress_on_green），
         # 衝突時沿用主燈號（只會解出綠／黃）；停等區維持原本的燈號判定。
-        self.signal = (CombinedSignalState(context.fps) if self.kind == "motorcycle_waiting_area" else
+        self.signal = (CombinedSignalState(context.fps, spatial_main=(
+                           (context.frame_width, context.frame_height) if self.settings.get("signal_spatial_main") else None))
+                       if self.kind == "motorcycle_waiting_area" else
                        CombinedSignalState(context.fps, selected_continuity=True)
                        if self.settings["crosswalk_suppress_on_green"] else None)
         # 斑馬線：停留前 3 秒是橫向移動的車（橫越路口或轉彎）不是本車道的停留（crosswalk_exclude_lateral）。

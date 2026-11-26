@@ -1,4 +1,4 @@
-"""規則設定組合（4by、4ca）：high_recall 設定檔只比預設多四個召回選項，且三個入口都能切換。"""
+"""規則設定組合（4by、4ca、4cb）：high_recall 設定檔只比預設多幾個召回選項，且三個入口都能切換。"""
 import json
 import unittest
 from pathlib import Path
@@ -24,9 +24,10 @@ class HighRecallConfigTests(unittest.TestCase):
     def test_differs_from_defaults_only_by_the_recall_options(self):
         # 預設設定日後改了，high_recall 也要跟著改；這裡確保兩邊只差這幾個召回選項
         expected = {
-            'red_light_rules.json': {'stop_line_extension_widths': 1.0},
-            'area_rules.json': {'waiting_side_occupancy_ratio': 0.8, 'crosswalk_parking_mode': True},
-            'double_line_rules.json': {'geometry': {'trim_wide_rows': True}},
+            'red_light_rules.json': {'stop_line_extension_widths': 1.0, 'signal_spatial_main': True},
+            'area_rules.json': {'waiting_side_occupancy_ratio': 0.8, 'crosswalk_parking_mode': True,
+                                'signal_spatial_main': True},
+            'double_line_rules.json': {'geometry': {'trim_wide_rows': True}, 'straddle_presence_seconds': 1.0},
         }
         for name, extra in expected.items():
             base, high = raw(DEFAULT / name), raw(HIGH / name)
@@ -39,8 +40,9 @@ class HighRecallConfigTests(unittest.TestCase):
         self.assertEqual(area['car_motorcycle_waiting_area']['settings']['waiting_side_occupancy_ratio'], 0.8)
         self.assertTrue(area['crosswalk_stopping']['settings']['crosswalk_parking_mode'])
         self.assertEqual(double_line_geometry_options(HIGH / 'double_line_rules.json'), {'trim_wide_rows': True})
-        self.assertEqual(double_line_rule_options(HIGH / 'double_line_rules.json'),
-                         double_line_rule_options(DEFAULT / 'double_line_rules.json'))  # 雙線規則參數相同，只差幾何
+        high_dl = double_line_rule_options(HIGH / 'double_line_rules.json')
+        self.assertEqual(high_dl['double_yellow_line_crossing']['settings']['straddle_presence_seconds'], 1.0)
+        self.assertEqual(red_light_rule_options(HIGH / 'red_light_rules.json')['signal_spatial_main'], True)
 
 
 class ProfileArgumentTests(unittest.TestCase):

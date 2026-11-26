@@ -158,7 +158,7 @@ class RedLightStopLineCrossingRule(ViolationRule):
                  signal_selected_continuity=True, occluded_contact="skip",
                  proxy_requires_red=True, proxy_exclude_lateral=True,
                  confirm_line_handoff=False, confirm_crosswalk_proxy=False,
-                 deferred_confirmation_seconds=3.0, stop_line_extension_widths=0.0):
+                 deferred_confirmation_seconds=3.0, stop_line_extension_widths=0.0, signal_spatial_main=False):
         """weak_signal_evidence／signal_hold_seconds／crosswalk_proxy 只讓事件成為「疑似」：
         「確認」仍要求強燈號證據（與先前相同）且觀測到真正的停止線。
         require_red_for_suspected：疑似事件也必須在越線前後有紅燈證據（任何強度）。
@@ -191,7 +191,9 @@ class RedLightStopLineCrossingRule(ViolationRule):
         斑馬線深度、不是橫向移動（proxy_exclude_lateral），排除斑馬線多邊形抖動與橫越、路邊的車。
         stop_line_extension_widths（4bk，0＝停用）：車框沒有和任何真正停止線水平重疊時，線段端點離車框不超過
         「此值 × 車框寬」的真正停止線沿線方向延伸到車框中心判斷側別（停止線常只偵測到部分車道，左轉車在線段外越線；
-        或線被車身蓋住後只剩相鄰片段）。用到延伸線的越線狀態只能產生疑似（條件 stop_line_under_vehicle=false）。"""
+        或線被車身蓋住後只剩相鄰片段）。用到延伸線的越線狀態只能產生疑似（條件 stop_line_under_vehicle=false）。
+        signal_spatial_main（4cb，預設關閉）：燈號顏色衝突時依位置推定主燈（見 signal_state.SPATIAL_MAIN_REFERENCE），
+        主燈是紅燈時當作 weak 紅燈（只支持疑似），優先於 signal_selected_continuity。"""
         self.context = context
         self.signal_confidence = signal_confidence
         self.line_margin = max(line_margin_pixels,
@@ -217,7 +219,9 @@ class RedLightStopLineCrossingRule(ViolationRule):
                                                   window_seconds=stable_signal_seconds,
                                                   weak_evidence=weak_signal_evidence,
                                                   hold_seconds=signal_hold_seconds,
-                                                  selected_continuity=signal_selected_continuity)
+                                                  selected_continuity=signal_selected_continuity,
+                                                  spatial_main=((context.frame_width, context.frame_height)
+                                                                if signal_spatial_main else None))
         if occluded_contact not in ("skip", "suspected", "off"):
             raise ValueError("occluded_contact must be skip, suspected or off")
         self.occluded_contact = occluded_contact
@@ -944,6 +948,8 @@ class DoubleLineCrossingRule(ViolationRule):
         self.dwell_min_band = option("band_dwell_min_observations")
         self.dwell_min_line = option("band_dwell_min_line_ratio") * context.frame_height
         self.dwell_min_height = option("band_dwell_min_box_height_ratio") * context.frame_height
+        self.straddle_seconds = self.settings.get("straddle_presence_seconds", 0.0)  # 4cb 壓線疑似
+        self.straddle_active = set()  # 已報壓線、仍在線帶上的車（離開線帶前不再報）
         self.dwell_series = {}   # object_id -> 逐幀側別樣本（每幀一個）
         self.dwell_last = {}     # object_id -> 同車最後一筆雙線事件的確認時間
         self.dwell_pending = []
@@ -1254,7 +1260,7 @@ class DoubleLineCrossingRule(ViolationRule):
                     continue
                 side, point, box = position["side"], position["point"], position["box"]
                 self._diagnose_position(key, frame, position)
-                if self.dwell_seconds > 0:
+                if self.dwell_seconds > 0 or self.straddle_seconds > 0:
                     self._band_dwell_sample(frame, vehicle, line, position)
                 state = self.states.get(key)
                 if state:
@@ -1374,7 +1380,7 @@ class DoubleLineCrossingRule(ViolationRule):
                         "；缺少線帶內觀測，待覆核。")
                     events.append(event)
                 state.update(phase="reported", destination=side, rearm_since=now)
-        if self.dwell_seconds > 0:
+        if self.dwell_seconds > 0 or self.straddle_seconds > 0:
             reported = {event["object_id"] for event in events}
             for event in events:
                 self.dwell_last[event["object_id"]] = now
@@ -1401,12 +1407,60 @@ class DoubleLineCrossingRule(ViolationRule):
                 return
             series.pop()
         series.append(sample)
-        horizon = self.dwell_seconds + ENDPOINT_CLUSTER_SECONDS + 1.
+        horizon = max(self.dwell_seconds + ENDPOINT_CLUSTER_SECONDS, self.straddle_seconds) + 1.
         while series and now - series[0]["time"] > horizon:
             series.pop(0)
-        event = self._band_dwell_check(vehicle["object_id"], series, frame)
+        event = self._band_dwell_check(vehicle["object_id"], series, frame) if self.dwell_seconds > 0 else None
+        if event is None and self.straddle_seconds > 0:
+            event = self._straddle_check(vehicle["object_id"], series, frame)
         if event is not None:
             self.dwell_pending.append(event)
+
+    def _straddle_check(self, object_id, series, frame):
+        """4cb 壓線疑似：不要求起點側，車底點落在線帶本身的觀測達次數與秒數即成立（見 double_lines.RULE_DEFAULTS）。"""
+        now, cfg = frame["timestamp_sec"], self.settings
+        if object_id in self.straddle_active:
+            if series[-1]["band"]:
+                return None  # 同一次壓線只報一次
+            self.straddle_active.discard(object_id)
+        floor = self.dwell_last.get(object_id, -math.inf)
+        recent = [s for s in series if s["time"] > floor and now - s["time"] <= self.straddle_seconds + 1. + 1e-9]
+        band = [s for s in recent if s["band"]]
+        if (len(band) < self.dwell_min_band or band[-1]["index"] != frame["index"]
+                or band[-1]["time"] - band[0]["time"] < self.straddle_seconds - 1e-9
+                or band[-1]["height"] < self.dwell_min_height):
+            return None
+        span = [s for s in recent if s["time"] >= band[0]["time"]]
+        if 2 * len(band) < len(span):
+            return None  # 期間多數觀測不在線帶上（側別來回跳動，多為遠端尖點或分割雜訊）
+        if any(key[0] == object_id and state["phase"] == "crossing" for key, state in self.states.items()):
+            return None  # 原規則對這台車有跨越中的候選，交給原規則
+        line_ids = sorted({s["line"].get("track_id") for s in band}, key=str)
+        conditions = dict(
+            stable_origin=False, stable_destination=False, complete_band_crossing=False, continuous_tracks=True,
+            geometry_verified=True, uninterrupted_positions=False,
+            directly_observed_pair=all(s["line"].get("component_count") == 2 and not s["line"].get("partial_support", False)
+                                       for s in band),
+            transition_observed=False, line_observed_at_footprint=not any(s["extrapolated"] for s in band),
+            same_line_track=len(line_ids) == 1, camera_motion_compensated=False)
+        onset = band[0]
+        snapshot = lambda s: {"frame": s["frame"], "vehicle": s["vehicle"], "double_line": s["line"], "side": s["side"]}
+        evidence = {"before": snapshot(onset), "transition": snapshot(onset), "after": snapshot(band[-1]),
+                    "direction": {"reason": "straddle_not_classified"},
+                    "reference_point_method": "bbox_inset_bottom_edge_proxy", "parameters": cfg,
+                    "maneuver": "line_straddle",
+                    "straddle": {"band_observations": len(band), "observed_samples": len(recent),
+                                 "span_sec": round(band[-1]["time"] - onset["time"], 3), "line_track_ids": line_ids}}
+        event = self.build_event(onset["frame"], onset["vehicle"], onset["line"], status="suspected",
+                                 conditions=conditions, evidence=evidence)
+        event.update(behavior="line_straddle", confirmation_frame=frame["index"], confirmation_timestamp_sec=now)
+        vehicle = band[-1]["vehicle"]
+        if vehicle.get("plate_text"):
+            event["evidence"]["vehicle"]["plate_text"] = vehicle["plate_text"]
+        event["description"] = (self.label + "（壓線）：車底代理點持續落在雙線線帶上，"
+                                "未觀測到完整跨越（可能一出現就已在線上或由後方進入畫面），待覆核。")
+        self.straddle_active.add(object_id)
+        return event
 
     def _band_dwell_check(self, object_id, series, frame):
         """4bb 壓線停留跨越：起點側方向樣本 → 線帶內觀測 → 終點側穩定（見 double_lines.RULE_DEFAULTS 說明）。"""
@@ -1627,7 +1681,8 @@ RULE_FACTORIES = {
 
 
 RED_LIGHT_CONFIG_OPTIONS = {"confirm_line_handoff": bool, "confirm_crosswalk_proxy": bool,
-                            "deferred_confirmation_seconds": (int, float), "stop_line_extension_widths": (int, float)}
+                            "deferred_confirmation_seconds": (int, float), "stop_line_extension_widths": (int, float),
+                            "signal_spatial_main": bool, "signal_hold_seconds": (int, float)}
 
 
 def red_light_rule_options(path):

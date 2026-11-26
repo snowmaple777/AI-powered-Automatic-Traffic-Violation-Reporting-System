@@ -73,14 +73,19 @@ RULE_DEFAULTS = dict(
     same_vehicle_merge_seconds=0.0,
     # band_dwell_last_band_time：4bb 事件時間取最後一個線帶樣本（原規則的事件時間也是最後一個跨越中樣本），
     #   而不是第一個線帶樣本；只改事件時間與 transition 快照，不改是否成立。
-    band_dwell_last_band_time=False)
+    band_dwell_last_band_time=False,
+    # 4cb 壓線疑似（預設關閉；等於預設值時不寫入規則設定與事件參數）：不要求看到起點側（車一出現就已壓在線上、
+    #   或由後方超車進入畫面），車底點落在線帶本身的觀測至少 band_dwell_min_observations 次、首末相距達此秒數即成立。
+    #   沿用 4bb 的逐幀側別序列、線長（band_dwell_min_line_ratio）與車框高度（band_dwell_min_box_height_ratio）門檻；
+    #   原規則對同一台車有跨越中的候選時交給原規則。只產生疑似（behavior=line_straddle，complete_band_crossing=False）。
+    straddle_presence_seconds=0.0)
 
 # 4ba 選項：等於預設值時不放進規則的設定字典（事件 evidence.parameters 不變）。
 ENDPOINT_OPTION_KEYS = ("endpoint_inference_seconds", "endpoint_min_box_height_ratio")
 
 # 4bb 選項：同 ENDPOINT_OPTION_KEYS。
 # 4bj 選項：同 ENDPOINT_OPTION_KEYS。
-RECALL_OPTION_KEYS = ("same_vehicle_merge_seconds", "band_dwell_last_band_time")
+RECALL_OPTION_KEYS = ("same_vehicle_merge_seconds", "band_dwell_last_band_time", "straddle_presence_seconds")
 BAND_DWELL_OPTION_KEYS = ("band_dwell_seconds", "band_dwell_min_observations", "band_dwell_min_line_ratio",
                           "band_dwell_min_box_height_ratio")
 
@@ -127,7 +132,8 @@ def validate_rule_settings(overrides=None):
                                                                                                          "direction_side_margin_px", "direction_margin_width_ratio",
                                                                                                          "endpoint_inference_seconds", "endpoint_min_box_height_ratio",
                                                                                                          "band_dwell_seconds", "band_dwell_min_line_ratio",
-                                                                                                         "band_dwell_min_box_height_ratio", "same_vehicle_merge_seconds") else value <= 0):
+                                                                                                         "band_dwell_min_box_height_ratio", "same_vehicle_merge_seconds",
+                                                                                                         "straddle_presence_seconds") else value <= 0):
             raise ValueError(f"{key} must be finite and positive")
     for key in ("endpoint_min_box_height_ratio", "band_dwell_min_line_ratio", "band_dwell_min_box_height_ratio"):
         if settings[key] >= 1:
@@ -136,6 +142,8 @@ def validate_rule_settings(overrides=None):
         raise ValueError("band_dwell_min_observations must be an integer >= 1")
     if settings["band_dwell_seconds"] > 0 and not settings["direction_side_margin_px"]:
         raise ValueError("band_dwell_seconds requires direction_side_margin_px > 0")
+    if settings["straddle_presence_seconds"] > 0 and not settings["direction_side_margin_px"]:
+        raise ValueError("straddle_presence_seconds requires direction_side_margin_px > 0")
     if settings["endpoint_inference_seconds"] > 0 and not settings["direction_side_margin_px"]:
         raise ValueError("endpoint_inference_seconds requires direction_side_margin_px > 0")
     for key in ("min_line_observations", "stable_observations", "direction_min_samples"):

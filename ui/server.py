@@ -28,7 +28,7 @@ if hasattr(sys.stdout, "reconfigure"):
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 # 這些路徑要登入，而且只能存取自己的資料
 PRIVATE_PREFIXES = ("/api/jobs", "/api/cases", "/api/drafts", "/api/profile", "/api/upload", "/files/",
-                    "/api/clips", "/api/import", "/api/longs")
+                    "/api/clips", "/api/import", "/api/longs", "/api/overlay")
 FILE_ROOTS = {"uploads": store.UPLOAD_DIR, "jobs": store.JOB_DIR, "cases": store.CASE_DIR}
 mimetypes.add_type("video/mp4", ".mp4")
 mimetypes.add_type("application/javascript", ".js")
@@ -252,6 +252,8 @@ class Handler(BaseHTTPRequestHandler):
             if n <= 0:
                 return self._error("沒有收到檔案")
             return self._json(store.save_upload(q.get("filename", ["video.mp4"])[0], self.rfile, n))
+        if p == "/api/overlay/scan":  # 讀影片開頭畫面上的浮水印時間／座標（幾秒）
+            return self._json(store.scan_overlay(self._body_json().get("video_id")))
         if p == "/api/clips/use":
             return self._json(clips.use_clip(self._body_json().get("id")))
         if p == "/api/import/url":

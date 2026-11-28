@@ -22,7 +22,7 @@ import uuid
 import zipfile
 from datetime import datetime, timedelta
 
-from . import geo, gps_parser
+from . import geo, gps_parser, overlay_scan
 from .analyzers import ANALYZERS, JobCancelled, fmt_ts
 from .remote import RemoteAnalyzer
 
@@ -181,6 +181,34 @@ def save_upload(filename: str, stream, length: int) -> dict:
     with open(_owner_file(name), "w", encoding="utf-8") as f:
         f.write(user)
     return {"video_id": name, "size": os.path.getsize(path), "url": f"/files/uploads/{name}"}
+
+
+_overlay_locks: dict = {}
+
+
+def scan_overlay(video_id: str) -> dict:
+    """讀影片開頭畫面上的浮水印時間與座標（core/overlay_scan.py），預先填錄影時間與位置用。
+
+    結果快取在 uploads/<影片>.overlay.json；同一支影片同時只掃一次。
+    沒有辨識模型或 onnxruntime 時回傳 available=False 與原因（不快取，補上之後再上傳就會掃）。
+    """
+    name = safe_name(video_id or "")
+    path = os.path.join(UPLOAD_DIR, name)
+    if not os.path.exists(path) or not owns_upload(name):
+        raise FileNotFoundError("找不到上傳的影片，請重新上傳")
+    cache = path + ".overlay.json"
+    with _lock:
+        lock = _overlay_locks.setdefault(name, threading.Lock())
+    with lock:
+        cached = _read_json(cache)
+        if cached and cached.get("version") == overlay_scan.VERSION:
+            return cached
+        res = overlay_scan.scan(path, CONFIG.get("overlay_ocr_model") or None)
+        res["version"] = overlay_scan.VERSION
+        res["geo"] = geo.reverse_geocode(res["lat"], res["lon"]) if res.get("lat") is not None else None
+        if res.get("available"):
+            _write_json(cache, res)
+    return res
 
 
 # ---------------------------------------------------------------------------

@@ -21,7 +21,8 @@ $MainCommit  = "9a1f58cac97442eb7b68114e100c1a2f8101d3a2"   # main
 $LightCommit = "ff6d731e95a4c6b2ee8af20c9dc42555cd46ec1d"   # feature/traffic-light-model
 $RoadCommit  = "e4b4c1a1a9f2e0fe4cbb8814327ecf44bbe02fce"   # feature/road-marking（Git LFS）
 
-# Kind：git = 從本機 git 物件取出；lfs = 從 GitHub LFS 網址下載；head = 目前分支裡的檔案（修正換行）
+# Kind：git = 從本機 git 物件取出；lfs = 從 GitHub LFS 網址下載；head = 目前分支裡的檔案（修正換行）；
+#       url = 從外部網址下載（一樣比對 SHA-256，來源檔案若被換掉會下載失敗而不是拿到別的檔案）
 $Models = @(
     @{ Name = "車輛模型 YOLO26s";      Target = "models/vehicle/yolo26s.onnx";
        Kind = "git"; Ref = $MainCommit; Path = "perception/checkpoints/yolo26s.onnx";
@@ -49,7 +50,11 @@ $Models = @(
        Sha = "98ada7422100554f89cff5dc1a4062ef295c3ccbf39cfd91c839670fdd22a1c2" },
     @{ Name = "OCR 權重 pdiparams";     Target = "models/ocr/PP-OCRv6_taiwan_infer/inference.pdiparams";
        Kind = "head"; Path = "models/ocr/PP-OCRv6_taiwan_infer/inference.pdiparams";
-       Sha = "a2403aadb52bad4f623ff9d88c0c8703d14d0077d065ab92d623e39f848b9341" }
+       Sha = "a2403aadb52bad4f623ff9d88c0c8703d14d0077d065ab92d623e39f848b9341" },
+    # 介面讀行車紀錄器畫面浮水印（時間、座標）用；PaddleOCR 官方通用版，Apache-2.0
+    @{ Name = "浮水印 OCR PP-OCRv6 small"; Target = "models/ocr/PP-OCRv6_small_rec_onnx/inference.onnx";
+       Kind = "url"; Url = "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/main/inference.onnx";
+       Sha = "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634" }
 )
 
 function Get-Sha256($file) {
@@ -143,6 +148,7 @@ foreach ($m in $Models) {
                 $url = "https://media.githubusercontent.com/media/$Repo/$($m.Ref)/$($m.Path)"
                 Write-Host "  從 GitHub LFS 下載（約 100 MB）"; Save-Url $url $tmp
             }
+            "url"  { Write-Host "  下載 $($m.Url)"; Save-Url $m.Url $tmp }
         }
         $got = Get-Sha256 $tmp
         if ($got -ne $m.Sha) { throw "SHA-256 不符：拿到 $got" }

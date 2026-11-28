@@ -12,6 +12,13 @@
   models/ocr/ppocrv6_dict.txt（微調模型字典）
   models/ocr/PP-OCRv6_rec_small.onnx（純 ONNX 替代）
 
+畫面浮水印文字（介面讀行車紀錄器疊在畫面上的時間、座標；ui/core/overlay_scan.py）
+  models/ocr/PP-OCRv6_small_rec_onnx/inference.onnx（PaddleOCR 官方通用版 PP-OCRv6_small_rec，ONNX，Apache-2.0）
+  來源 https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx
+  字典與車牌模型共用 models/ocr/ppocrv6_dict.txt（與官方 inference.yml 的 18708 字逐字相同）
+  大小 21159378 bytes
+  SHA256 5435FD747C9E0EFE15A96D0B378D5BD157E9492ED8FD80EDF08F30D02FA24634
+
 以上 Perception 檔案大小與 SHA256 記錄於 models/perception_manifest.json。
 
 道路標線模型

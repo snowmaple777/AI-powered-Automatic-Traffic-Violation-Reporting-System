@@ -291,6 +291,8 @@ async function useVideo(video, msg) {
   const gps = video.gps; delete video.gps;          // 軌跡放 state.gps，不塞進 video
   if (gps && gps.track && gps.track[0] && gps.track[0].time) video.recorded_start = gps.track[0].time;
   state.video = video;
+  delete $("#recorded-at").dataset.touched;
+  overlayNote(null);
   if (gps) {
     applyTrack(gps, gps.simulated ? `${gps.file}（模擬軌跡）` : gps.file, gps.simulated);
     gpsNote("ok", gps);
@@ -298,6 +300,7 @@ async function useVideo(video, msg) {
   } else {
     // 這支影片沒有附軌跡檔：清掉上一支的位置，提醒使用者補
     state.gps = { mode: "track", lat: null, lon: null, track: null, geo: null };
+    $("#lat-input").value = $("#lon-input").value = "";   // 上一支影片的座標不要留著
     $("#gps-file-name").textContent = "選擇 GPS 軌跡檔";
     $("#sim-gpx-dl").classList.add("hidden");
     $("#btn-sim-gps").innerHTML = `${ic("sparkles")}產生模擬軌跡`;
@@ -309,6 +312,7 @@ async function useVideo(video, msg) {
   refreshAnalyzeBtn();
   toast(msg);
   try { await ensureDraft(); showDraftBar(); saveDraft(); } catch (e) { setSaveState("error"); }
+  if (!isStream(video) && video.video_id) scanOverlay(video);
 }
 
 function showVideo(video, fresh = false) {
@@ -719,6 +723,81 @@ function applyTrack(data, label, simulated = false) {
   $("#gps-file-name").textContent = label;
   renderGpsInfo(); drawMap(); refreshAnalyzeBtn(); saveDraft();
 }
+/* ---- 畫面浮水印：讀影片開頭幾秒疊在畫面上的時間與座標，幫忙先填好（ui/core/overlay_scan.py） ----
+   優先順序：片段附的真實 GPS 軌跡 ＞ 浮水印 ＞ 模擬軌跡、檔案修改時間、尚未設定。
+   使用者自己改過的不覆蓋，改給「改用這個」按鈕。 */
+const fmtOverlayTime = (s) => s.replace("T", " ").replace(/-/g, "/");
+async function scanOverlay(video) {
+  overlayNote("scan");
+  let r;
+  try { r = await postJSON("/api/overlay/scan", { video_id: video.video_id }); }
+  catch (e) { if (state.video === video) overlayNote(null); return; }
+  if (state.video !== video) return;                 // 掃描期間已經換成別支影片
+  if (!r.available) return overlayNote("off", r);
+  if (!r.recorded_at && r.lat == null) return overlayNote("none");
+  const done = {}, realTrack = !!(state.gps.track && state.gps.track.length > 1 && !state.gps.simulated);
+  if (r.recorded_at) {
+    if (realTrack && video.recorded_start && video.recorded_from !== "overlay") done.time = "track";
+    else if ($("#recorded-at").dataset.touched) done.time = "kept";
+    else done.time = await applyOverlay(r, "time");
+  }
+  if (r.lat != null) {
+    const g = state.gps;
+    if (realTrack) done.pos = "track";
+    else if (g.lat != null && g.mode === "manual") done.pos = "kept";
+    else done.pos = await applyOverlay(r, "pos");
+  }
+  overlayNote("found", r, done);
+}
+async function applyOverlay(r, what) {
+  if (what === "time") {
+    Object.assign(state.video, { recorded_start: r.recorded_at, recorded_from: "overlay" });
+    $("#recorded-at").value = r.recorded_at;
+    delete $("#recorded-at").dataset.touched;
+    saveDraft();
+  } else {
+    switchGpsTab("manual");
+    $("#lat-input").value = r.lat; $("#lon-input").value = r.lon;
+    await setPoint(r.lat, r.lon, "manual");          // 會清掉「缺軌跡檔」提示、更新地圖與受理縣市
+  }
+  return "set";
+}
+const OV_STATUS = {   // 沒有自動填入時的短標籤；完整說明放在滑鼠提示
+  track: ["現用軌跡", "目前使用影片附的 GPS 軌跡，按「套用」改用浮水印讀到的值"],
+  kept: ["現用手動值", "你手動改過，沒有自動覆蓋，按「套用」改用浮水印讀到的值"],
+};
+function overlayNote(kind, r, done = {}) {
+  const el = $("#overlay-note");
+  clearTimeout(overlayNote.timer);
+  if (!kind) { el.className = "ov-note hidden"; el.innerHTML = ""; return; }
+  el.className = `ov-note ${kind}`;
+  if (kind === "scan") {
+    el.innerHTML = `${ic("refresh", "spin xs")}<span>正在讀取畫面上的時間與座標浮水印…</span>`;
+  } else if (kind === "off") {
+    el.innerHTML = `${ic("info", "xs")}<span>無法自動讀取畫面上的時間與座標：${esc((r && r.reason) || "浮水印辨識無法使用")}（見 ui/README.md）</span>`;
+  } else if (kind === "none") {
+    el.innerHTML = `${ic("info", "xs")}<span>畫面上沒有讀到時間或座標浮水印</span>`;
+    overlayNote.timer = setTimeout(() => overlayNote(null), 6000);
+  } else {
+    const row = (what, icon, label, value) => {
+      const st = done[what], [tag, tip] = OV_STATUS[st] || [];
+      const tail = st === "set" ? `<em class="ok">${ic("check", "xs")}已填入</em>`
+        : `<em title="${tip}">${tag}</em><button class="btn soft small ov-apply" type="button" data-ov="${what}" title="${tip}">套用</button>`;
+      return `<li>${ic(icon, "xs")}<span class="ov-txt"><b>${label}</b> ${value}</span>${tail}</li>`;
+    };
+    const nw = (s) => `<span class="ov-val">${esc(s)}</span>`;   // 日期、座標、行政區各自不斷行
+    const geoTxt = r.geo ? nw(`（${r.geo.city}${r.geo.district}）`) : "";
+    el.innerHTML = `<div class="ov-head">${ic("scan", "xs")}<b>從浮水印讀到</b><small>請對照影片確認</small></div><ul>
+        ${r.recorded_at ? row("time", "clock", "影片開頭", nw(fmtOverlayTime(r.recorded_at))) : ""}
+        ${r.lat != null ? row("pos", "pin", "位置", nw(`${r.lat.toFixed(5)}, ${r.lon.toFixed(5)}`) + geoTxt) : ""}
+      </ul>`;
+    $$("[data-ov]", el).forEach((b) => b.addEventListener("click", async () => {
+      done[b.dataset.ov] = await applyOverlay(r, b.dataset.ov);
+      overlayNote("found", r, done);
+    }));
+  }
+}
+
 let simCount = 0, simUrl = null;
 $("#btn-sim-gps").addEventListener("click", async () => {
   const btn = $("#btn-sim-gps"), v = $("#video-preview");
@@ -744,6 +823,7 @@ $("#btn-sim-gps").addEventListener("click", async () => {
   finally { btn.disabled = false; }
 });
 ["#recorded-at", "#speed"].forEach((s) => $(s).addEventListener("change", saveDraft));
+$("#recorded-at").addEventListener("input", (e) => { e.target.dataset.touched = "1"; });  // 手動改過就不再自動覆蓋
 ["#max-seconds", "#triage"].forEach((s) => $(s).addEventListener("change", saveDraft));
 
 /* ---- 分析方式：真實模型（推論服務）／模擬展示 ---- */

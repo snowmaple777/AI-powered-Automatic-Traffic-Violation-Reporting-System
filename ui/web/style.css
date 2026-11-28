@@ -902,6 +902,27 @@ body.authed #auth-screen{display:none!important}
 .gps-need-acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;padding-left:22px}
 @media (max-width:520px){.gps-need-acts{padding-left:0}.gps-need-acts .btn{flex:1 1 auto}}
 
+/* ===================== 畫面浮水印讀取結果 ===================== */
+.ov-note{border-radius:14px;padding:10px 13px;margin:0 0 12px;font-size:13px;line-height:1.5;animation:fadeUp .35s var(--ease)}
+.ov-note.hidden{display:none}
+.ov-note.scan,.ov-note.off,.ov-note.none{display:flex;gap:8px;align-items:flex-start}
+.ov-note.scan{background:var(--blue-soft);color:var(--ink-2)}
+.ov-note.off,.ov-note.none{background:#f4f5f9;color:var(--muted)}
+.ov-note>.ic{margin-top:3px;flex:none}
+.ov-note.found{background:var(--blue-soft);border:1.5px solid #d4e0ff;color:var(--ink-2)}
+.ov-head{display:flex;gap:6px;align-items:center;color:#2f4fc8;margin-bottom:8px}
+.ov-head small{margin-left:auto;font-size:12px;color:var(--muted)}
+.ov-note ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+.ov-note li{display:flex;gap:8px;align-items:center;flex-wrap:wrap;min-height:32px}
+.ov-note li>.ic{flex:none;color:var(--muted)}
+.ov-txt{flex:1;min-width:0}
+.ov-note li b{font-weight:600;color:var(--ink);margin-right:4px}
+.ov-note em{font-style:normal;font-size:12px;color:var(--muted);display:inline-flex;align-items:center;gap:3px;white-space:nowrap}
+.ov-note em.ok{color:var(--green);font-weight:600}
+.ov-val{white-space:nowrap}
+.btn.ov-apply{padding:7px 18px;font-size:13px;font-weight:600;background:#fff;color:var(--brand);border:1.5px solid #c3d0ff}
+.btn.ov-apply:hover{background:var(--brand);border-color:var(--brand);color:#fff}
+
 /* 底圖顏色淡一點，配合介面；右下角圖資來源字小一點 */
 .map .leaflet-tile-pane{filter:saturate(.75) brightness(1.03)}
 .map .leaflet-control-attribution{font-size:10px;background:rgba(255,255,255,.75);border-radius:6px 0 0 0}

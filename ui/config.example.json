@@ -5,5 +5,6 @@
   "autoform_api_key": "",
   "clips_dir": "",
   "long_inbox": "",
-  "overlay_ocr_model": ""
+  "overlay_ocr_model": "",
+  "demo_mode": false
 }

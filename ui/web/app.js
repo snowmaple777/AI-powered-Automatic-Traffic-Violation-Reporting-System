@@ -20,6 +20,7 @@ const state = {
   presets: [], cities: [], profile: {},
   draft: null, saveTimer: null, restoring: false,
   mode: "remote", health: null,   // 分析方式：remote＝真實模型（推論服務）、simulated＝模擬展示
+  demo: false,      // 展示模式（?demo=1 或 config.json 的 demo_mode）：改用模擬分析、提供模擬軌跡
   forms: {},        // 每筆違規在檢舉單頁修改過的欄位 {違規id: 欄位}
   cases: {},        // 每筆違規產生的案件 {違規id: 案件id}
   caseStatus: {},   // {案件id: draft|submitted}
@@ -91,15 +92,6 @@ const STAGE_ICON = {
   upload: "upload", loading: "cpu", analyzing: "scan", clipping: "scissors", packaging: "package",
 };
 const STAGE_WEIGHT = { receive: 0.05, decode: 0.15, detect: 0.45, rules: 0.15, clip: 0.15, package: 0.05 };
-// 每個模型在哪些階段運作（模擬模式：detect/rules；真實模型：analyzing）
-const MODELS = [
-  { name: "車輛偵測 YOLO", icon: "car", stages: ["detect", "analyzing"] },
-  { name: "車牌辨識 OCR", icon: "type", stages: ["detect", "analyzing"] },
-  { name: "單目深度測距", icon: "ruler", stages: ["detect", "analyzing"] },
-  { name: "號誌辨識", icon: "light", stages: ["detect", "analyzing"] },
-  { name: "標線分割", icon: "layers", stages: ["detect", "analyzing"] },
-  { name: "違規判斷引擎", icon: "scale", stages: ["rules", "analyzing"] },
-];
 /* 證據強度文字：真實模型用「條件 x/y」，模擬模式用百分比 */
 const confText = (v) => (v.evidence_kind === "conditions"
   ? `條件 ${v.conditions_met}/${v.conditions_total}` : `信心 ${Math.round((v.confidence || 0) * 100)}%`);
@@ -245,7 +237,7 @@ function syncLengthOptions() {
   sel.options[0].text = live ? "直到按停止" : "整支影片";
   [...sel.options].forEach((o) => {
     if (o.hasAttribute("data-stream")) o.hidden = !live;
-    else if (o.value) o.text = live ? `${o.value} 秒` : (o.value === "10" ? "只分析前 10 秒（快速測試）" : `只分析前 ${o.value} 秒`);
+    else if (o.value) o.text = live ? `${o.value} 秒` : `前 ${o.value} 秒`;
   });
   if (!live && sel.selectedOptions[0] && sel.selectedOptions[0].hidden) sel.value = "";
   $("#triage-field").classList.toggle("hidden", !live);
@@ -355,7 +347,7 @@ function showVideo(video, fresh = false) {
 /* ---- 已處理短片庫 ---- */
 function setClipLine(n, list = []) {
   $("#clips-count").textContent = n || "";
-  $("#clips-line").textContent = n ? "從切段程式輸出的資料夾挑選，點開可以先預覽" : "還沒有片段，先從下面上傳一整趟的長片";
+  $("#clips-line").textContent = n ? "從我的片段挑選" : "還沒有片段";
   $(".src-main").classList.toggle("empty", !n);
   $("#src-or-txt").textContent = n ? "或加入新的影片" : "還沒有片段？從這裡加入影片";
   const box = $("#src-thumbs");
@@ -702,8 +694,8 @@ function gpsNote(kind, gps) {
         <small>要有軌跡才能判斷每筆違規的地點與受理縣市，請擇一補上：</small></span></div>
       <div class="gps-need-acts">
         <button class="btn primary small" type="button" data-gn="file">${ic("route")}選擇軌跡檔</button>
-        <button class="btn soft small" type="button" data-gn="sim">${ic("sparkles")}產生模擬軌跡</button>
-        <button class="btn ghost small" type="button" data-gn="preset">${ic("map")}先用固定地點</button>
+        ${state.demo ? `<button class="btn soft small" type="button" data-gn="sim">${ic("sparkles")}產生模擬軌跡</button>` : ""}
+        <button class="btn ghost small" type="button" data-gn="preset">${ic("map")}先用常用地點</button>
       </div>`;
     $$("[data-gn]", el).forEach((b) => b.addEventListener("click", () => {
       const a = b.dataset.gn;
@@ -826,20 +818,33 @@ $("#btn-sim-gps").addEventListener("click", async () => {
 $("#recorded-at").addEventListener("input", (e) => { e.target.dataset.touched = "1"; });  // 手動改過就不再自動覆蓋
 ["#max-seconds", "#triage"].forEach((s) => $(s).addEventListener("change", saveDraft));
 
-/* ---- 分析方式：真實模型（推論服務）／模擬展示 ---- */
+/* ---- 分析方式：一般使用者固定用真實模型；展示模式（?demo=1 或 config.json 的 demo_mode）才用模擬分析 ----
+   介面上沒有切換入口，右上角標籤永遠標示目前是哪一種。串流只能用真實模型（useStream 會切回）。 */
+const DEMO_KEY = "trafficReport.demo";
+async function resolveDemo() {
+  const q = new URLSearchParams(location.search).get("demo");
+  try {
+    if (q === "1") sessionStorage.setItem(DEMO_KEY, "1");
+    else if (q === "0") sessionStorage.setItem(DEMO_KEY, "0");
+  } catch (e) { /* 無法使用 sessionStorage 時只看這次網址 */ }
+  let flag = q === "1" ? "1" : q === "0" ? "0" : null;
+  if (flag == null) { try { flag = sessionStorage.getItem(DEMO_KEY); } catch (e) { flag = null; } }
+  if (flag == null) { try { flag = (await api("/api/ui-settings")).demo_mode ? "1" : "0"; } catch (e) { flag = "0"; } }
+  state.demo = flag === "1";
+  state.mode = state.demo ? "simulated" : "remote";
+  $("#sim-box").classList.toggle("hidden", !state.demo);
+}
 function setMode(mode, save = true) {
+  if (!state.demo) mode = "remote";
   state.mode = mode;
-  $$("#mode-options .mode-opt").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
-  $$("[data-for]").forEach((el) => el.classList.toggle("hidden", el.dataset.for !== mode));
-  const pill = $(".mode-pill");
+  const pill = $("#mode-pill");
+  pill.classList.remove("hidden");
   pill.classList.toggle("real", mode === "remote");
   pill.innerHTML = `<span class="dot"></span>${mode === "remote" ? "真實模型" : "模擬模式"}`;
-  pill.title = mode === "remote" ? "使用推論服務跑真實模型" : "使用模擬分析器（假資料）";
-  if (mode === "remote") checkHealth();
+  if (mode === "remote") checkHealth(); else { pill.classList.remove("down"); pill.title = "展示模式：使用模擬分析器（假資料）"; }
   refreshAnalyzeBtn();
   if (save) saveDraft();
 }
-$$("#mode-options .mode-opt").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
 async function checkHealth() {
   try { state.health = await api("/api/inference/health"); } catch (e) { state.health = { online: false, error: e.message }; }
   renderHealth(); refreshAnalyzeBtn();
@@ -853,44 +858,44 @@ function preloadText(p) {
   return "";
 }
 
+/* 推論服務狀態只給架設主機的人看：放在右上角標籤的提示文字裡，主畫面只在無法分析時顯示一行原因 */
 function renderHealth() {
-  const h = state.health, chip = $("#svc-status"), box = $("#svc-detail");
-  if (!h) { chip.className = "svc-status"; chip.textContent = "檢查中…"; box.innerHTML = ""; return; }
-  if (!h.online) {
-    chip.className = "svc-status off"; chip.textContent = "推論服務未開啟";
-    box.innerHTML = `${ic("alert", "xs")} 連不到 <code>${esc(h.url || "")}</code>。請先雙擊專題資料夾裡的 <b>啟動推論服務.cmd</b>，再按 <a class="link" id="btn-recheck">重新檢查</a>。`;
-  } else {
-    const gpu = h.gpu || {};
-    const okModels = h.models_ready === h.models_total;
-    chip.className = `svc-status ${okModels ? "on" : "warn"}`;
-    chip.textContent = okModels ? (h.busy ? "推論服務忙碌中" : "推論服務已連線") : "缺少模型檔";
-    const parts = [
-      gpu.cuda ? `${ic("cpu", "xs")} GPU：${esc(gpu.name || "CUDA")}` : gpu.error || gpu.cuda === false ? `${ic("alert", "xs")} 沒有偵測到 GPU，會用 CPU 跑（很慢）` : `${ic("cpu", "xs")} GPU 偵測中…`,
-      `${ic("layers", "xs")} 模型 ${h.models_ready}/${h.models_total}`,
-      preloadText(h.preload),
-      h.queue_length ? `${ic("clock", "xs")} 排隊中 ${h.queue_length} 個` : "",
-      h.ffmpeg ? "" : `${ic("info", "xs")} 沒有 ffmpeg，片段改播原影片`,
+  const h = state.health, pill = $("#mode-pill");
+  if (state.mode !== "remote") return;
+  pill.classList.toggle("down", !!h && (!h.online || h.models_ready !== h.models_total));
+  let lines;
+  if (!h) lines = ["正在檢查分析服務…"];
+  else if (!h.online) lines = [`連不到推論服務 ${h.url || ""}`, "請在主機上執行「啟動推論服務.cmd」"];
+  else {
+    const gpu = h.gpu || {}, preload = preloadText(h.preload).replace(/<[^>]+>/g, "").trim();
+    lines = [
+      gpu.cuda ? `GPU：${gpu.name || "CUDA"}` : gpu.error || gpu.cuda === false ? "沒有偵測到 GPU，會用 CPU 跑（很慢）" : "GPU 偵測中…",
+      `模型 ${h.models_ready}/${h.models_total}`,
+      preload,
+      h.queue_length ? `排隊中 ${h.queue_length} 個` : "",
+      h.ffmpeg ? "" : "沒有 ffmpeg，片段改播原影片",
+      h.models_ready === h.models_total ? "" : `缺少：${(h.models_missing || []).join("、")}（請執行「下載模型.cmd」）`,
     ].filter(Boolean);
-    box.innerHTML = parts.map((x) => `<span>${x}</span>`).join("")
-      + (okModels ? "" : `<div class="svc-warn">${ic("alert", "xs")} 缺少：${h.models_missing.map(esc).join("、")}。請先執行 <b>下載模型.cmd</b>。</div>`);
   }
-  const re = $("#btn-recheck"); if (re) re.onclick = checkHealth;
+  pill.title = ["真實模型", ...lines].join("\n");
 }
 setInterval(() => { if (state.mode === "remote" && state.step === 1 && document.body.classList.contains("authed")) checkHealth(); }, 8000);
 
 function refreshAnalyzeBtn() {
-  let reason = "";
-  if (!state.video) reason = "請先上傳影片";
+  let reason = "", recheck = false;
+  if (!state.video) reason = "請先選擇影片";
   else if (isStream(state.video) && state.mode !== "remote") reason = "串流只能用真實模型";
-  else if (state.gps.lat == null) reason = "請補上 GPS 軌跡檔（或改用固定地點）";
+  else if (state.gps.lat == null) reason = "請補上 GPS 軌跡檔，或改選常用地點";
   else if (state.mode === "remote") {
     const h = state.health;
-    if (!h) reason = "正在檢查推論服務…";
-    else if (!h.online) reason = "推論服務未開啟";
-    else if (h.models_ready !== h.models_total) reason = "推論服務缺少模型檔";
+    if (!h) reason = "正在連線分析服務…";
+    else if (!h.online) { reason = "分析服務未啟動"; recheck = true; }
+    else if (h.models_ready !== h.models_total) { reason = "分析服務缺少模型檔"; recheck = true; }
   }
   $("#btn-analyze").disabled = !!reason;
-  $("#analyze-hint").textContent = reason;
+  const hint = $("#analyze-hint");
+  hint.innerHTML = esc(reason) + (recheck ? `<button class="link" type="button" id="btn-recheck">重新檢查</button>` : "");
+  const re = $("#btn-recheck"); if (re) re.onclick = checkHealth;
 }
 
 /* ============================ Step 2：分析 ============================ */
@@ -913,7 +918,7 @@ async function startAnalysis() {
     Object.assign(state, { job, jobStartedAt: Date.now(), ignored: new Set(), forms: {}, cases: {}, selected: null });
     await ensureDraft();
     resetAnalysisUI();
-    state.maxStep = 2; goStep(2); renderStages(job); renderModels(job);
+    state.maxStep = 2; goStep(2); renderStages(job);
     startPolling();
   } catch (e) { toast(e.message, "alert"); }
 }
@@ -949,7 +954,7 @@ function renderStream(job) {
   if (running && job.current_stage === "analyzing") {
     $("#ring-stage").textContent = deep ? "逐幀分析事件前後"
       : s.state === "recording" && !job.stop ? (tri ? "收錄中・降頻篩選" : "收錄中・邊收邊分析") : "分析剩下的畫面";
-    $("#ring-eta").innerHTML = `${ic("clock", "xs")} 已經過 ${fmtDur((Date.now() - state.jobStartedAt) / 1000)}${job.fps ? `・${job.fps.toFixed(1)} FPS` : ""}`;
+    $("#ring-eta").innerHTML = `${ic("clock", "xs")} 已經過 ${fmtDur((Date.now() - state.jobStartedAt) / 1000)}`;
   }
 }
 
@@ -989,7 +994,7 @@ async function pollJob() {
 function applyJob(job, restoring) {
   const prevPreview = restoring ? -1 : state.job.preview_version;
   state.job = job;
-  renderStages(job); renderModels(job);
+  renderStages(job);
 
   // 進度環與剩餘時間
   const p = job.status === "done" ? 1 : overallProgress(job);
@@ -998,7 +1003,7 @@ function applyJob(job, restoring) {
   $("#ring-stage").textContent = job.status === "done" ? "分析完成" : cur ? cur.label : "準備開始";
   const elapsed = (Date.now() - state.jobStartedAt) / 1000;
   if (job.status === "done") $("#ring-eta").innerHTML = `${ic("check", "xs")} 共花費 ${elapsed.toFixed(1)} 秒`;
-  else if (job.eta_sec != null) $("#ring-eta").innerHTML = `${ic("clock", "xs")} 預估剩餘 ${fmtDur(job.eta_sec)}${job.fps ? `・${job.fps.toFixed(1)} FPS` : ""}`;
+  else if (job.eta_sec != null) $("#ring-eta").innerHTML = `${ic("clock", "xs")} 預估剩餘 ${fmtDur(job.eta_sec)}`;
   else if (p > 0.04 && job.analyzer !== "remote") $("#ring-eta").innerHTML = `${ic("clock", "xs")} 預估剩餘 ${fmtDur((elapsed / p) * (1 - p))}`;
   else if (job.analyzer === "remote") $("#ring-eta").innerHTML = `${ic("clock", "xs")} 已經過 ${fmtDur(elapsed)}`;
 
@@ -1027,7 +1032,7 @@ function applyJob(job, restoring) {
   state.logCount = job.logs.length;
   if (job.video_meta) {
     const m = job.video_meta;
-    $("#job-meta").textContent = `${job.video_name}・${job.source === "stream" ? "串流・" : ""}${m.width}×${m.height}・${Math.round(m.fps)} FPS・${fmtSec(m.duration)}`;
+    $("#job-meta").textContent = `${job.video_name}・${job.source === "stream" ? "串流" : fmtSec(m.duration)}`;
   }
 
   if (["done", "error", "interrupted", "cancelled"].includes(job.status)) {
@@ -1081,18 +1086,6 @@ function renderStages(job) {
       <div><div class="name">${esc(s.label)}</div><div class="bar"><div style="width:${Math.round(s.progress * 100)}%"></div></div></div>
       <span class="pct">${s.state === "pending" ? "" : Math.round(s.progress * 100) + "%"}</span>
     </li>`).join("");
-}
-function renderModels(job) {
-  const order = job.stages.map((s) => s.key);
-  const curIdx = order.indexOf(job.current_stage);
-  $("#models").innerHTML = MODELS.map((m) => {
-    const idx = order.findIndex((k) => m.stages.includes(k));
-    const stage = job.stages[idx];
-    let cls = "";
-    if (job.status === "done" || (stage && stage.state === "done") || curIdx > idx) cls = "done";
-    else if (curIdx === idx) cls = "run";
-    return `<div class="model ${cls}">${ic(m.icon)}<span>${m.name}</span><i class="lamp"></i></div>`;
-  }).join("");
 }
 $("#btn-to-review").addEventListener("click", () => goStep(3));
 
@@ -2029,6 +2022,7 @@ $("#btn-logout").addEventListener("click", async () => {
 /* ============================ 初始化（登入後） ============================ */
 async function startApp() {
   initMap();
+  await resolveDemo();   // 要在下面清掉網址參數之前讀 ?demo=
   setMode(state.mode, false);
   refreshClipCount();
   try {
@@ -2084,7 +2078,7 @@ async function restoreDraft(d) {
       const job = await api(`/api/jobs/${encodeURIComponent(d.job_id)}`);
       state.job = job;
       state.jobStartedAt = job.started_ts ? job.started_ts * 1000 : Date.now();
-      resetAnalysisUI(); renderStages(job); renderModels(job);
+      resetAnalysisUI(); renderStages(job);
       applyJob(job, true);
       if (job.status === "running" || job.status === "queued") { step = Math.min(step, 2); startPolling(); }
     } catch (e) { state.job = null; }

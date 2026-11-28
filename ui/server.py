@@ -198,6 +198,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(store.autofill_health())
         if p == "/api/inference/health":
             return self._json(store.inference_health())
+        if p == "/api/ui-settings":  # 前端設定：demo_mode＝展示模式（模擬分析），一般使用者看不到切換入口
+            return self._json({"demo_mode": bool(store.CONFIG.get("demo_mode"))})
         if p == "/api/presets":
             return self._json(geo.PRESETS)
         if p == "/api/geocode/address":  # 線上反查路名（查不到回 ok: false）

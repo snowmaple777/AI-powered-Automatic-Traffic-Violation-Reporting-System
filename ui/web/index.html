@@ -197,7 +197,7 @@
     <a data-view="cases"><svg class="ic"><use href="#i-folder"/></svg><span>案件紀錄</span></a>
     <a data-view="profile"><svg class="ic"><use href="#i-user"/></svg><span>檢舉人</span></a>
   </nav>
-  <div class="mode-pill" title="目前使用模擬分析器"><span class="dot"></span>模擬模式</div>
+  <div class="mode-pill hidden" id="mode-pill"><span class="dot"></span></div>
   <div class="user-menu" id="user-menu">
     <button class="avatar-btn" id="user-btn" title="帳號"><span class="avatar sm" id="user-avatar">?</span></button>
     <div class="user-dropdown hidden" id="user-dropdown">
@@ -233,19 +233,18 @@
     <!-- Step 1 -->
     <div class="step" id="step-1">
       <div class="hero">
-        <h1>上傳行車影片，<span class="grad">AI 幫你揪出三寶</span></h1>
-        <p>自動辨識車牌與違規行為、剪好佐證片段、填好檢舉單，你只要確認後送出。</p>
+        <h1>上傳行車影片，<span class="hl">AI 幫你揪出三寶</span></h1>
       </div>
       <div class="grid2">
         <div class="card" style="--i:0">
-          <div class="card-head"><span class="ic-bubble blue"><svg class="ic"><use href="#i-video"/></svg></span><div><h2>行車影片</h2><p>挑一段要檢舉的片段</p></div></div>
+          <div class="card-head"><span class="ic-bubble blue"><svg class="ic"><use href="#i-video"/></svg></span><div><h2>行車影片</h2></div></div>
           <div class="src-picker" id="dropzone">
             <input type="file" id="video-input" accept="video/*" hidden>
             <button class="src-main" type="button" data-src="clips">
               <span class="src-main-head">
                 <span class="src-art"><svg class="ic"><use href="#i-layers"/></svg></span>
                 <span class="src-txt"><b>已切好的片段 <em class="src-badge" id="clips-count"></em></b>
-                  <small id="clips-line">從切段程式輸出的資料夾挑選，點開可以先預覽</small></span>
+                  <small id="clips-line">從我的片段挑選</small></span>
                 <span class="src-cta">去挑片段<svg class="ic"><use href="#i-right"/></svg></span>
               </span>
               <span class="src-thumbs" id="src-thumbs"></span>
@@ -266,7 +265,7 @@
               </div>
               <button class="src-mini wide" type="button" data-src="stream">
                 <span class="src-art violet sm"><svg class="ic"><use href="#i-broadcast"/></svg></span>
-                <span class="src-txt"><b>即時串流</b><small>RTSP／HTTP 網址，邊收邊分析</small></span>
+                <span class="src-txt"><b>即時串流</b><small>貼上串流網址，邊錄邊分析</small></span>
               </button>
             </div>
             <div class="src-drop-hint"><svg class="ic"><use href="#i-upload"/></svg>放開即可上傳這段影片</div>
@@ -284,7 +283,7 @@
         </div>
 
         <div class="card" style="--i:1">
-          <div class="card-head"><span class="ic-bubble green"><svg class="ic"><use href="#i-pin"/></svg></span><div><h2>GPS 位置</h2><p>用來判斷違規地點與受理縣市</p></div></div>
+          <div class="card-head"><span class="ic-bubble green"><svg class="ic"><use href="#i-pin"/></svg></span><div><h2>GPS 位置</h2><p>決定違規地點與受理縣市</p></div></div>
           <div class="ov-note hidden" id="overlay-note" aria-live="polite"></div>
           <div class="gps-note hidden" id="gps-note"></div>
           <div class="seg full" id="gps-tabs">
@@ -303,8 +302,8 @@
           <div class="tab-body hidden" data-tab="file">
             <label class="file-pick"><input type="file" id="gps-input" accept=".csv,.gpx,.nmea,.txt,.log" hidden>
               <svg class="ic"><use href="#i-route"/></svg><span id="gps-file-name">選擇 GPS 軌跡檔</span></label>
-            <div class="muted small">CSV（t,lat,lon）、GPX、NMEA（$GPRMC）</div>
-            <div class="sim-box">
+            <div class="muted small">支援 CSV、GPX、NMEA</div>
+            <div class="sim-box hidden" id="sim-box">
               <div class="sim-txt"><b>沒有軌跡檔？</b><span>以目前地點為起點、依影片長度模擬一段行車軌跡（展示用）</span></div>
               <button class="btn soft small" type="button" id="btn-sim-gps"><svg class="ic"><use href="#i-sparkles"/></svg>產生模擬軌跡</button>
             </div>
@@ -316,44 +315,30 @@
         </div>
       </div>
 
-      <div class="card mode-card" style="--i:2">
-        <div class="card-head"><span class="ic-bubble violet"><svg class="ic"><use href="#i-cpu"/></svg></span><div><h2>分析方式</h2><p>真實模型要先開啟推論服務；模擬展示不需要 GPU</p></div></div>
-        <div class="mode-options" id="mode-options">
-          <button class="mode-opt active" data-mode="remote" type="button">
-            <span class="ic-bubble blue"><svg class="ic"><use href="#i-sparkles"/></svg></span>
-            <span class="mode-txt"><b>真實模型</b><small>呼叫推論服務，跑車輛、車牌、號誌、標線模型與違規規則</small></span>
-            <span class="svc-status" id="svc-status">檢查中…</span>
-          </button>
-          <button class="mode-opt" data-mode="simulated" type="button">
-            <span class="ic-bubble amber"><svg class="ic"><use href="#i-play"/></svg></span>
-            <span class="mode-txt"><b>模擬展示</b><small>用假資料快速走完整個流程，適合展示介面</small></span>
-          </button>
-        </div>
-        <div class="svc-detail" id="svc-detail" data-for="remote"></div>
-        <div class="row mode-extra">
-          <label data-for="remote"><span id="max-label">分析長度</span>
-            <select id="max-seconds">
-              <option value="">整支影片</option>
-              <option value="10">只分析前 10 秒（快速測試）</option>
-              <option value="30">只分析前 30 秒</option>
-              <option value="60">只分析前 60 秒</option>
-              <option value="300" data-stream hidden>5 分鐘</option>
-              <option value="600" data-stream hidden>10 分鐘</option>
-            </select>
-          </label>
-          <label id="triage-field" class="hidden">分析密度
-            <select id="triage">
-              <option value="0">每一幀都分析</option>
-              <option value="10">降頻篩選，事件前後才逐幀</option>
-            </select>
-          </label>
-          <label data-for="simulated" class="hidden">模擬分析速度
-            <select id="speed"><option value="1">1x（展示用）</option><option value="2" selected>2x</option><option value="5">5x（快速測試）</option></select>
-          </label>
-        </div>
-      </div>
-      <div class="actions">
-        <span class="muted small" id="analyze-hint"></span>
+      <div class="actions start-row">
+        <details class="advanced" id="advanced">
+          <summary><svg class="ic xs"><use href="#i-sliders"/></svg>進階設定</summary>
+          <div class="advanced-body">
+            <label><span id="max-label">分析長度</span>
+              <select id="max-seconds">
+                <option value="">整支影片</option>
+                <option value="10">前 10 秒</option>
+                <option value="30">前 30 秒</option>
+                <option value="60">前 60 秒</option>
+                <option value="300" data-stream hidden>5 分鐘</option>
+                <option value="600" data-stream hidden>10 分鐘</option>
+              </select>
+            </label>
+            <label id="triage-field" class="hidden">分析方式
+              <select id="triage">
+                <option value="0">逐幀分析</option>
+                <option value="10">快速篩選，只細看可疑片段</option>
+              </select>
+            </label>
+          </div>
+        </details>
+        <input type="hidden" id="speed" value="2">
+        <span class="analyze-hint" id="analyze-hint" role="status" aria-live="polite"></span>
         <button class="btn primary big" id="btn-analyze" disabled><svg class="ic"><use href="#i-sparkles"/></svg>開始 AI 分析</button>
       </div>
     </div>
@@ -374,7 +359,6 @@
             <div class="scanline"></div>
             <div class="alert-stack" id="alert-stack"></div>
           </div>
-          <div class="models" id="models"></div>
         </div>
 
         <div class="side-col">
@@ -399,9 +383,8 @@
         </div>
       </div>
 
-      <div class="stats" id="stats">
+      <div class="stats three" id="stats">
         <div class="stat"><span class="ic-bubble blue"><svg class="ic"><use href="#i-video"/></svg></span><div><b data-k="frames_done">0</b><small>已處理影格 <em id="frames-total"></em></small></div></div>
-        <div class="stat"><span class="ic-bubble violet"><svg class="ic"><use href="#i-car"/></svg></span><div><b data-k="objects">0</b><small>追蹤目標</small></div></div>
         <div class="stat"><span class="ic-bubble green"><svg class="ic"><use href="#i-type"/></svg></span><div><b data-k="plates">0</b><small>辨識車牌</small></div></div>
         <div class="stat"><span class="ic-bubble red"><svg class="ic"><use href="#i-alert"/></svg></span><div><b data-k="violations">0</b><small>發現違規</small></div></div>
       </div>
@@ -412,7 +395,7 @@
           <div class="feed" id="feed"><div class="feed-empty">還沒發現違規，持續分析中…</div></div>
         </div>
         <div class="card">
-          <details class="log" open>
+          <details class="log">
             <summary><svg class="ic xs"><use href="#i-terminal"/></svg>系統紀錄</summary>
             <div class="console" id="console"></div>
           </details>

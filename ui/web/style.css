@@ -302,11 +302,6 @@ video{width:100%;border-radius:16px;background:#0e1222;display:block;max-height:
 .checklist li.done{color:var(--ink)} .checklist li.done .ico{background:var(--green);color:#fff}
 .checklist li.run{color:var(--brand);background:var(--brand-soft);font-weight:500} .checklist li.run .ico{background:var(--grad);color:#fff}
 .checklist li.run .ico .ic{animation:spin 1s linear infinite}
-.verify{border:1.5px solid var(--line-2);border-radius:18px;padding:18px;display:flex;flex-direction:column;gap:14px;animation:fadeUp .4s var(--ease)}
-.verify-title{display:flex;align-items:center;gap:10px;font-weight:700}
-.captcha-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.captcha-row canvas{border-radius:12px;border:1.5px solid var(--line-2);cursor:pointer}
-.captcha-row input{width:150px;letter-spacing:4px;font-weight:700;text-align:center}
 .check-row{flex-direction:row;align-items:center;gap:10px;color:var(--ink);margin:0;font-weight:400;cursor:pointer}
 .check-row input{width:18px;height:18px;accent-color:var(--brand)}
 .shake{animation:shake .4s}
@@ -320,6 +315,12 @@ video{width:100%;border-radius:16px;background:#0e1222;display:block;max-height:
 .summary-item{display:flex;gap:11px;align-items:flex-start;font-size:13.5px}
 .summary-item .ic{width:17px;height:17px;color:var(--muted);margin-top:2px}
 .summary-item small{display:block;color:var(--muted);font-size:12px}
+.case-manage{display:flex;gap:10px;margin-top:18px;padding-top:16px;border-top:1px dashed var(--line-2)}
+.case-manage .btn{padding:12px 16px;font-size:15px;font-weight:700}
+.case-manage .btn.soft{flex:1}
+.case-manage .btn.soft:hover{background:var(--brand);color:#fff}
+.btn.danger-soft{background:var(--red-soft);color:var(--red)}
+.btn.danger-soft:hover{background:var(--red);color:#fff}
 .files{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
 .file-link{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;padding:7px 11px;border-radius:10px;background:#f4f6fb;color:var(--ink-2);text-decoration:none;transition:background .2s}
 .file-link:hover{background:var(--brand-soft);color:var(--brand)}
@@ -557,7 +558,6 @@ body.authed #auth-screen{display:none!important}
 }
 
 /* ---------------- 自動填表（autoForm） ---------------- */
-.af-tabs{margin-bottom:16px}
 .af-health{display:flex;gap:8px;align-items:flex-start;font-size:13px;padding:10px 12px;border-radius:12px;margin-bottom:14px;background:#f4f6fb;color:var(--muted)}
 .af-health .ic{flex:none;margin-top:2px}
 .af-health.ok{background:var(--green-soft);color:#0d8a60}

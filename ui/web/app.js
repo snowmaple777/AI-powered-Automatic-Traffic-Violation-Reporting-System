@@ -1233,11 +1233,7 @@ $("#btn-make-case").addEventListener("click", async () => {
   } catch (e) { toast(e.message, "alert"); }
 });
 
-/* ============================ Step 5：送出（模擬 autoForm） ============================ */
-const FILL_STEPS = [
-  ["開啟警察局檢舉網站", "send"], ["勾選同意事項", "check"], ["填入檢舉人資料", "user"],
-  ["填入違規時間、地點、車牌", "calendar"], ["選擇違規類別與事實", "scale"], ["上傳佐證影片", "upload"],
-];
+/* ============================ Step 5：送出（autoForm 自動填表） ============================ */
 
 /* 案件的佐證檔：用「違規_車牌_日期時間」當下載檔名，方便自己整理或手動上傳到檢舉網站 */
 function caseDlName(c, ext) {
@@ -1259,7 +1255,6 @@ function renderSubmit(c, root, inModal = false) {
   <div class="grid2 wide-left">
     <div class="card">
       <div class="target"><span class="ic-bubble blue">${ic("shield")}</span><div><b>${esc(c.city)}政府警察局</b><span class="muted small">交通違規檢舉系統</span></div></div>
-      <div class="seg full af-tabs"><button data-af-mode="real">${ic("send")}自動填表（autoForm）</button><button data-af-mode="sim">${ic("sparkles")}模擬送出</button></div>
       <div id="submit-area"></div>
     </div>
     <div class="side-col">
@@ -1272,6 +1267,10 @@ function renderSubmit(c, root, inModal = false) {
           <div class="summary-item">${ic("pin")}<div>${esc(f.location)}</div></div>
           <div class="summary-item">${ic("hash")}<div><small>案件編號</small>${esc(c.id)}</div></div>
         </div>
+        ${c.status !== "submitted" ? `<div class="case-manage">
+          <button class="btn soft" id="btn-case-edit">${ic("edit")}修改檢舉資料</button>
+          <button class="btn danger-soft" id="btn-case-del">${ic("trash")}刪除</button>
+        </div>` : ""}
       </div>
       ${caseHas(c, "evidence.mp4") || caseHas(c, "evidence.jpg") ? `<div class="card evidence-card">
         <h3 class="mini-title">佐證片段</h3>
@@ -1293,33 +1292,107 @@ function renderSubmit(c, root, inModal = false) {
   ${inModal ? "" : `<div class="actions"><button class="btn ghost" id="btn-back-review">${ic("left")}處理下一筆違規</button><button class="btn ghost" data-view-link="cases">${ic("folder")}查看所有案件</button></div>`}`;
   const back = $("#btn-back-review", root); if (back) back.onclick = () => goStep(3);
   const area = $("#submit-area", root);
+  const editBtn = $("#btn-case-edit", root);
+  if (editBtn) editBtn.onclick = () => {
+    if (AF.running) return toast("填表進行中，請先完成或取消", "alert");
+    stopAfPoll(); renderCaseEdit(c, root, inModal);
+  };
+  const delBtn = $("#btn-case-del", root);
+  if (delBtn) delBtn.onclick = async () => {
+    if (AF.running) return toast("填表進行中，請先完成或取消", "alert");
+    if (!delBtn.dataset.armed) {   // 按兩次才刪，避免誤按
+      delBtn.dataset.armed = "1"; delBtn.innerHTML = `${ic("trash")}確定刪除？`;
+      setTimeout(() => { if (delBtn.isConnected) { delete delBtn.dataset.armed; delBtn.innerHTML = `${ic("trash")}刪除`; } }, 4000);
+      return;
+    }
+    delBtn.disabled = true;
+    try {
+      await postJSON(`/api/cases/${encodeURIComponent(c.id)}/delete`, {});
+      stopAfPoll(); syncDeletedCase(c.id);
+      toast("已刪除案件", "trash");
+      if (inModal) { closeModal(); if ($("#case-list")) loadCases().catch(() => {}); }
+      else {
+        root.innerHTML = `<div class="card empty-state"><span class="ic-bubble red">${ic("trash")}</span><h3>案件已刪除</h3><p>回違規列表可以重新產生檢舉案件。</p></div>`;
+        goStep(3);
+      }
+    } catch (err) { toast(err.message, "alert"); delBtn.disabled = false; }
+  };
   stopAfPoll();
-  const tabs = $(".af-tabs", root);
-  if (c.status === "submitted") { tabs.remove(); return renderSuccess(c, area, false); }
+  if (c.status === "submitted") return renderSuccess(c, area, false);
   const renderOnPhone = () => {
     area.innerHTML = `<a class="btn primary big" href="autoform://case/${encodeURIComponent(c.id)}">${ic("send")}在手機開啟${esc(c.city)}自動填表</a>
       <p class="muted small">案件與佐證將帶入官網。請在手機完成驗證，並依官網回覆確認受理狀態。</p>`;
   };
-  const setMode = (m) => {
-    AF.mode = m;
-    $$("[data-af-mode]", tabs).forEach((b) => b.classList.toggle("active", b.dataset.afMode === m));
-    if (m === "sim") renderSimSubmit(c, area);
-    else if (phoneWorkflow) renderOnPhone();
-    else renderRealSubmit(c, area);
-  };
-  $$("[data-af-mode]", tabs).forEach((b) => (b.onclick = () => { if (!AF.running) setMode(b.dataset.afMode); else toast("填表進行中，請先完成或取消", "alert"); }));
-  setMode(c.autofill ? "real" : (AF.mode || "real"));
+  if (phoneWorkflow) renderOnPhone();
+  else renderRealSubmit(c, area);
 }
-function renderSimSubmit(c, area) {
-  area.innerHTML = `<div class="notice">${ic("info")}<span><b>模擬送出</b>：不會連到警察局網站，只是展示流程。</span></div>
-    <ul class="checklist">${FILL_STEPS.map(([s, i]) => `<li data-icon="${i}"><span class="ico">${ic(i)}</span>${s}</li>`).join("")}
-      <li data-icon="shield"><span class="ico">${ic("shield")}</span>人機驗證</li></ul>
-    <button class="btn primary big" id="btn-autofill" style="width:100%">${ic("sparkles")}啟動自動填表（模擬）</button>`;
-  $("#btn-autofill", area).onclick = () => runFill(c, area);
+
+/* 待送出的案件：直接修改檢舉單內容（跟第 4 步一樣的欄位），存回案件資料夾 */
+function renderCaseEdit(c, root, inModal) {
+  const area = $("#submit-area", root), f = c.fields || {};
+  const opts = (list, cur) => list.map((x) => `<option ${x === cur ? "selected" : ""}>${esc(x)}</option>`).join("");
+  const cities = state.cities.map((x) => x.name);
+  if (c.city && !cities.includes(c.city)) cities.unshift(c.city);
+  const vtypes = ["汽車", "機車", "大型重型機車"];
+  if (f.vehicle_type && !vtypes.includes(f.vehicle_type)) vtypes.push(f.vehicle_type);
+  const inp = (name, label, extra = "") => `<label>${label}<input name="${name}" value="${esc(f[name])}" ${extra}></label>`;
+  area.innerHTML = `<form class="form case-edit-form" novalidate>
+    <div class="notice">${ic("edit")}<span>修改檢舉單內容，儲存後自動填表會用新的資料。</span></div>
+    <div class="form-section">${ic("pin")}違規地點</div>
+    <div class="row"><label>受理縣市<select name="city">${opts(cities, f.city || c.city)}</select></label>${inp("district", "違規行政區", "required")}</div>
+    ${inp("location", "交通違規地點", 'required placeholder="例：高雄市楠梓區大學南路 700 號前"')}
+    <div class="form-section">${ic("calendar")}時間與車輛</div>
+    <div class="row">${inp("date", "違規日期", 'type="date" required')}${inp("time", "違規時間", 'type="time" required')}</div>
+    <div class="row">${inp("plate", "車牌號碼", 'required class="plate-input"')}
+      <label>違規車種類型<select name="vehicle_type">${opts(vtypes, f.vehicle_type)}</select></label></div>
+    <div class="form-section">${ic("scale")}違規內容</div>
+    <div class="row">${inp("category", "違規類別", "required")}${inp("fact", "違規事實", "required")}</div>
+    <label>違規事實敘述<textarea name="description" rows="3">${esc(f.description)}</textarea></label>
+    <div class="actions"><button type="button" class="btn ghost" id="btn-edit-cancel">取消</button>
+      <button type="submit" class="btn primary" id="btn-edit-save">${ic("check")}儲存修改</button></div>
+  </form>`;
+  const form = $(".case-edit-form", area);
+  $("#btn-edit-cancel", area).onclick = () => renderSubmit(c, root, inModal);
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    if (!form.reportValidity()) return;
+    const fields = Object.fromEntries(new FormData(form).entries());
+    fields.plate = fields.plate.trim().toUpperCase();
+    $("#btn-edit-save", area).disabled = true;
+    try {
+      const nc = await postJSON(`/api/cases/${encodeURIComponent(c.id)}/fields`, fields);
+      syncEditedCase(nc);
+      toast("已更新檢舉資料", "check");
+      renderSubmit(nc, root, inModal);
+      if (inModal && $("#case-list")) loadCases().catch(() => {});
+    } catch (err) { toast(err.message, "alert"); $("#btn-edit-save", area).disabled = false; }
+  };
+}
+/* 案件刪掉後，草稿裡對應的違規回到「還沒產生案件」（檢舉單內容保留） */
+function syncDeletedCase(cid) {
+  if (state.caseObj && state.caseObj.id === cid) state.caseObj = null;
+  delete state.caseStatus[cid];
+  const vids = Object.keys(state.cases || {}).filter((vid) => state.cases[vid] === cid);
+  if (!vids.length) return;
+  vids.forEach((vid) => { delete state.cases[vid]; });
+  saveDraft();
+  if (state.job) renderViolationCards();
+}
+/* 目前開著的草稿如果有這個案件，也把第 4 步的檢舉單換成新資料 */
+function syncEditedCase(nc) {
+  if (state.caseObj && state.caseObj.id === nc.id) state.caseObj = nc;
+  const vids = Object.keys(state.cases || {}).filter((vid) => state.cases[vid] === nc.id);
+  if (!vids.length) return;
+  vids.forEach((vid) => { state.forms[vid] = Object.assign({}, nc.fields); });
+  if (state.selected && vids.includes(String(state.selected.id))) {
+    const f = $("#case-form");
+    Object.entries(nc.fields).forEach(([k, val]) => { if (f.elements[k]) f.elements[k].value = val; });
+  }
+  saveDraft();
 }
 
 /* ---- 真的自動填表：推論服務在這台電腦開瀏覽器，執行組員的 autoForm ---- */
-const AF = { mode: null, timer: null, running: false };
+const AF = { timer: null, running: false };
 const AF_STEPS = [["starting", "開啟瀏覽器", "send"], ["filling", "填寫表單、上傳佐證", "edit"],
   ["waiting_verification", "人機驗證（請到瀏覽器操作）", "shield"], ["submitting", "送出並確認", "check"]];
 function stopAfPoll() { clearTimeout(AF.timer); AF.timer = null; AF.running = false; }
@@ -1433,59 +1506,6 @@ document.addEventListener("click", (e) => {
   navigator.clipboard?.writeText(b.dataset.copy).then(() => toast("已複製指令", "copy"), () => toast("複製失敗，請手動選取", "alert"));
 });
 
-async function runFill(c, area) {
-  $("#btn-autofill", area).remove();
-  const items = $$(".checklist li", area);
-  for (let i = 0; i < FILL_STEPS.length; i++) {
-    items[i].className = "run"; items[i].querySelector(".ico").innerHTML = ic("refresh");
-    await sleep(520);
-    items[i].className = "done"; items[i].querySelector(".ico").innerHTML = ic("check");
-  }
-  const last = items[items.length - 1]; last.className = "run"; last.querySelector(".ico").innerHTML = ic("refresh");
-  area.insertAdjacentHTML("beforeend", `
-    <div class="verify">
-      <div class="verify-title"><span class="ic-bubble amber" style="width:34px;height:34px;border-radius:11px">${ic("shield", "xs")}</span>請完成人機驗證</div>
-      <div class="captcha-row"><canvas id="captcha" width="140" height="48" title="點一下換一張"></canvas>
-        <input id="captcha-input" placeholder="驗證碼" maxlength="4" inputmode="numeric" autocomplete="off">
-        <button class="btn soft small" id="btn-recap" title="換一張">${ic("refresh")}</button></div>
-      <label class="check-row"><input type="checkbox" id="mail-ok"> ${ic("mail", "xs")} 我已完成 Gmail／簡訊認證（部分縣市需要）</label>
-      <div class="actions left"><button class="btn primary" id="btn-final">${ic("send")}確認送出檢舉</button><span class="muted small" id="verify-msg"></span></div>
-    </div>`);
-  const cv = $("#captcha", area);
-  let code = drawCaptcha(cv);
-  const re = () => { code = drawCaptcha(cv); };
-  cv.onclick = re; $("#btn-recap", area).onclick = re;
-  $("#captcha-input", area).focus();
-  $("#btn-final", area).onclick = async () => {
-    const inp = $("#captcha-input", area);
-    if (inp.value.trim() !== code) {
-      $("#verify-msg", area).textContent = "驗證碼錯誤，請再試一次";
-      inp.classList.remove("shake"); void inp.offsetWidth; inp.classList.add("shake");
-      re(); inp.value = ""; return;
-    }
-    $("#btn-final", area).disabled = true;
-    try {
-      const done = await postJSON(`/api/cases/${encodeURIComponent(c.id)}/submit`, { verify: $("#mail-ok", area).checked ? "captcha+email" : "captcha" });
-      state.caseObj = done; state.caseStatus[done.id] = "submitted";
-      renderSuccess(done, area, true); toast("檢舉已送出（模擬）", "sparkles"); saveDraft();
-    } catch (e) { toast(e.message, "alert"); $("#btn-final", area).disabled = false; }
-  };
-}
-function drawCaptcha(cv) {
-  const ctx = cv.getContext("2d"), code = String(Math.floor(1000 + Math.random() * 9000));
-  const g = ctx.createLinearGradient(0, 0, cv.width, cv.height); g.addColorStop(0, "#f3f5ff"); g.addColorStop(1, "#f7f0ff");
-  ctx.fillStyle = g; ctx.fillRect(0, 0, cv.width, cv.height);
-  for (let i = 0; i < 6; i++) {
-    ctx.strokeStyle = `hsla(${Math.random() * 360},60%,65%,.7)`; ctx.lineWidth = 1.5; ctx.beginPath();
-    ctx.moveTo(Math.random() * cv.width, Math.random() * cv.height); ctx.bezierCurveTo(Math.random() * cv.width, Math.random() * cv.height, Math.random() * cv.width, Math.random() * cv.height, Math.random() * cv.width, Math.random() * cv.height); ctx.stroke();
-  }
-  ctx.font = "bold 28px Consolas, monospace"; ctx.textBaseline = "middle";
-  [...code].forEach((ch, i) => {
-    ctx.save(); ctx.translate(18 + i * 29, 25); ctx.rotate((Math.random() - 0.5) * 0.5);
-    ctx.fillStyle = `hsl(${220 + Math.random() * 80},55%,35%)`; ctx.fillText(ch, 0, 0); ctx.restore();
-  });
-  return code;
-}
 function renderSuccess(c, area, animate) {
   area.innerHTML = `<div class="success">
     <svg class="check-anim" viewBox="0 0 100 100" ${animate ? "" : 'style="--d:0"'}><circle cx="50" cy="50" r="45"/><path d="M30 52 l13 13 l27 -28"/></svg>
@@ -1714,13 +1734,9 @@ async function finishLogin(res, remember, isNew) {
 }
 
 /* ---- 檢舉人資料：註冊後第一步就填 ---- */
-const TW_ID_CODE = "ABCDEFGHJKLMNPQRSTUVXYWZIO";
+/* 身分證字號：大寫英文字母開頭＋9 位數字，共 10 碼（不驗檢查碼） */
 function validTwId(v) {
-  if (!/^[A-Z][1289]\d{8}$/.test(v)) return false;
-  const n = TW_ID_CODE.indexOf(v[0]) + 10;
-  let sum = Math.floor(n / 10) + (n % 10) * 9 + Number(v[9]);
-  for (let i = 1; i <= 8; i++) sum += Number(v[i]) * (9 - i);
-  return sum % 10 === 0;
+  return /^[A-Z]\d{9}$/.test(v);
 }
 const cleanPhone = (v) => (v || "").replace(/[\s-]/g, "");
 const profileComplete = (p) => !!(p && p.reporter_name && p.reporter_id && p.reporter_phone);

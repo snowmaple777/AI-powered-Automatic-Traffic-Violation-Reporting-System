@@ -14,7 +14,6 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-import random
 import shutil
 import threading
 import time
@@ -422,6 +421,13 @@ INFO_KEYS = [
 ]
 
 
+def _write_info(cdir, fields):
+    """autoForm 讀的案件資料檔。"""
+    with open(os.path.join(cdir, "info.txt"), "w", encoding="utf-8") as f:
+        for zh, k in INFO_KEYS:
+            f.write(f"{zh}: {str(fields.get(k, '')).strip()}\n")
+
+
 def create_case(payload: dict) -> dict:
     job = get_job(payload["job_id"])
     if not job:
@@ -445,9 +451,7 @@ def create_case(payload: dict) -> dict:
             src = os.path.join(jdir, ev[key])
             if os.path.exists(src):
                 shutil.copy2(src, os.path.join(cdir, "evidence" + os.path.splitext(ev[key])[1]))
-    with open(os.path.join(cdir, "info.txt"), "w", encoding="utf-8") as f:
-        for zh, k in INFO_KEYS:
-            f.write(f"{zh}: {str(fields.get(k, '')).strip()}\n")
+    _write_info(cdir, fields)
     case = {
         "id": cid, "owner": require_user(), "created": old["created"] if old else _now(), "updated": _now(), "status": "draft", "job_id": job["id"], "violation": ev,
         "fields": fields, "city": city, "city_code": geo.CITY_CODES.get(city, "kaohsiung"),
@@ -455,6 +459,81 @@ def create_case(payload: dict) -> dict:
     }
     _write_json(os.path.join(cdir, "case.json"), case)
     return _public_case(case)
+
+
+CASE_FIELD_KEYS = ("city", "district", "location", "date", "time", "plate", "vehicle_type",
+                   "category", "fact", "description")
+CASE_REQUIRED = {"district": "違規行政區", "location": "交通違規地點", "date": "違規日期", "time": "違規時間",
+                 "plate": "車牌號碼", "category": "違規類別", "fact": "違規事實"}
+
+
+def update_case_fields(cid, payload: dict) -> dict:
+    """修改待送出案件的檢舉單內容（案件紀錄裡點進去改），重寫 info.txt。"""
+    with _lock:
+        case = _case_or_404(cid)
+        if case.get("status") == "submitted":
+            raise ValueError("這個案件已經送出，不能再修改")
+        af = case.get("autofill")
+        if af and not af.get("final"):
+            raise ValueError("自動填表進行中，請先完成或取消再修改")
+        fields = dict(case.get("fields") or {})
+        for k in CASE_FIELD_KEYS:
+            if k in payload:
+                fields[k] = str(payload[k] or "").strip()
+        fields["plate"] = fields.get("plate", "").upper()
+        for k, zh in CASE_REQUIRED.items():
+            if not fields.get(k):
+                raise ValueError(f"請填寫{zh}")
+        city = fields.get("city") or case.get("city", "")
+        if city not in geo.CITY_CODES:
+            raise ValueError("受理縣市不正確")
+        fields["city"] = city
+        cdir = os.path.join(CASE_DIR, case["id"])
+        _write_info(cdir, fields)
+        case.update(fields=fields, city=city, city_code=geo.CITY_CODES[city], updated=_now(),
+                    autofill=None)  # 資料改了，上次的填表結果就不算數
+        case["files"] = sorted(os.listdir(cdir))
+        _write_json(os.path.join(cdir, "case.json"), case)
+        # 草稿裡對應這筆違規的檢舉單也一起改，回到第 4 步時才不會看到舊資料
+        for name in os.listdir(DRAFT_DIR):
+            path = os.path.join(DRAFT_DIR, name)
+            d = _read_json(path)
+            if not d or not owns(d):
+                continue
+            vids = [vid for vid, c in (d.get("cases") or {}).items() if c == case["id"]]
+            if vids:
+                for vid in vids:
+                    d.setdefault("forms", {})[vid] = dict(fields)
+                _write_json(path, d)
+    return _public_case(case)
+
+
+def delete_case(cid):
+    """刪除待送出的案件（整個案件資料夾），草稿裡對應的違規回到「還沒產生案件」。"""
+    with _lock:
+        case = _case_or_404(cid)
+        if case.get("status") == "submitted":
+            raise ValueError("已送出的案件不能刪除")
+        af = case.get("autofill")
+        if af and not af.get("final"):
+            raise ValueError("自動填表進行中，請先完成或取消再刪除")
+        shutil.rmtree(os.path.join(CASE_DIR, case["id"]))
+        try:
+            os.remove(os.path.join(DATA_DIR, f"{case['id']}.zip"))
+        except OSError:
+            pass
+        for name in os.listdir(DRAFT_DIR):
+            path = os.path.join(DRAFT_DIR, name)
+            d = _read_json(path)
+            if not d or not owns(d):
+                continue
+            cases = d.get("cases") or {}
+            vids = [vid for vid, c in cases.items() if c == case["id"]]
+            if vids:
+                for vid in vids:
+                    del cases[vid]   # 檢舉單內容（forms）留著，之後可以直接重新產生案件
+                _write_json(path, d)
+    return {"deleted": case["id"]}
 
 
 def _public_case(case):
@@ -478,22 +557,6 @@ def list_cases():
         if c:
             out.append(c)
     return out
-
-
-def submit_case(cid, payload):
-    """模擬 autoForm 送出：產生受理編號並記錄時間。"""
-    case = _read_json(os.path.join(CASE_DIR, safe_name(cid), "case.json"))
-    if not case or not owns(case):
-        raise FileNotFoundError("找不到案件")
-    time.sleep(0.5)
-    case["status"] = "submitted"
-    case["submit"] = {
-        "time": _now(), "simulated": True,
-        "receipt": f"SIM{datetime.now().strftime('%Y%m%d')}{random.randint(10000, 99999)}",
-        "verify": payload.get("verify", "captcha"),
-    }
-    _write_json(os.path.join(CASE_DIR, case["id"], "case.json"), case)
-    return _public_case(case)
 
 
 # ---------------------------------------------------------------------------
@@ -707,16 +770,9 @@ def get_profile():
     return {k: data.get(k, "") for k in PROFILE_KEYS}
 
 
-_ID_LETTERS = dict(zip("ABCDEFGHJKLMNPQRSTUVXYWZIO", range(10, 36)))
-
-
 def valid_tw_id(v: str) -> bool:
-    """身分證字號／新式居留證號（第二碼 1、2、8、9）的檢查碼。"""
-    if not re.fullmatch(r"[A-Z][1289]\d{8}", v or ""):
-        return False
-    n = _ID_LETTERS[v[0]]
-    total = n // 10 + (n % 10) * 9 + sum(int(d) * w for d, w in zip(v[1:9], range(8, 0, -1))) + int(v[9])
-    return total % 10 == 0
+    """身分證字號：大寫英文字母開頭＋9 位數字，共 10 碼（不驗檢查碼）。"""
+    return bool(re.fullmatch(r"[A-Z]\d{9}", v or ""))
 
 
 def save_profile(data):

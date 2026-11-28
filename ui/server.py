@@ -304,12 +304,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(store.stop_job(p.split("/")[3]))
         if p == "/api/cases":
             return self._json(store.create_case(self._body_json()))
+        if p.startswith("/api/cases/") and p.endswith("/delete"):
+            return self._json(store.delete_case(p.split("/")[3]))
+        if p.startswith("/api/cases/") and p.endswith("/fields"):
+            return self._json(store.update_case_fields(p.split("/")[3], self._body_json()))
         if p.startswith("/api/cases/") and p.endswith("/autofill"):
             return self._json(store.start_autofill(p.split("/")[3], self._body_json()))
         if p.startswith("/api/cases/") and (p.endswith("/autofill/continue") or p.endswith("/autofill/cancel")):
             return self._json(store.autofill_status(p.split("/")[3], p.rsplit("/", 1)[1]))
-        if p.startswith("/api/cases/") and p.endswith("/submit"):
-            return self._json(store.submit_case(p.split("/")[3], self._body_json()))
         if p.startswith("/api/auth/"):
             return self._route_auth(p.split("/")[3], self._body_json())
         if p == "/api/profile":
